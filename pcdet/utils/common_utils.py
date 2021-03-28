@@ -121,16 +121,23 @@ def init_dist_slurm(tcp_port, local_rank, backend='nccl'):
     Returns:
 
     """
+    print("SLURM_PROCID: ", os.environ["SLURM_PROCID"])
+    print("SLURM_NTASKS: ", os.environ["SLURM_NTASKS"])
+    print("cuda device count: ", torch.cuda.device_count())
+    print("SLURM_NODELIST: ", os.environ["SLURM_NODELIST"])
+    print("WORLD_SIZE: ", os.environ["WORLD_SIZE"])
+    print("LOCAL_RANK: ", os.environ["LOCAL_RANK"])
+
     proc_id = int(os.environ['SLURM_PROCID'])
-    ntasks = int(os.environ['SLURM_NTASKS'])
-    node_list = os.environ['SLURM_NODELIST']
+    # ntasks = int(os.environ['SLURM_NTASKS'])
+    # node_list = os.environ['SLURM_NODELIST']
     num_gpus = torch.cuda.device_count()
     torch.cuda.set_device(proc_id % num_gpus)
-    addr = subprocess.getoutput('scontrol show hostname {} | head -n1'.format(node_list))
-    os.environ['MASTER_PORT'] = str(tcp_port)
-    os.environ['MASTER_ADDR'] = addr
-    os.environ['WORLD_SIZE'] = str(ntasks)
-    os.environ['RANK'] = str(proc_id)
+    # addr = subprocess.getoutput('scontrol show hostname {} | head -n1'.format(node_list))
+    # os.environ['MASTER_PORT'] = str(tcp_port)
+    # os.environ['MASTER_ADDR'] = addr
+    # os.environ['WORLD_SIZE'] = str(ntasks)
+    # os.environ['RANK'] = str(proc_id)
     dist.init_process_group(backend=backend)
 
     total_gpus = dist.get_world_size()

@@ -5,6 +5,7 @@ import torch
 import tqdm
 from torch.nn.utils import clip_grad_norm_
 
+from eval_utils import eval_utils
 
 def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False):
@@ -64,7 +65,8 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
 def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_cfg,
                 start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, train_sampler=None,
                 lr_warmup_scheduler=None, ckpt_save_interval=1, max_ckpt_save_num=50,
-                merge_all_iters_to_one_epoch=False):
+                merge_all_iters_to_one_epoch=False, val_loader=None, target_val_loader=None,
+                eval_output_dir=None, eval_target_output_dir=None, logger=None, cfg=None, eval_last_n_epochs=10):
     accumulated_iter = start_iter
     with tqdm.trange(start_epoch, total_epochs, desc='epochs', dynamic_ncols=True, leave=(rank == 0)) as tbar:
         total_it_each_epoch = len(train_loader)
@@ -109,6 +111,22 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
                     checkpoint_state(model, optimizer, trained_epoch, accumulated_iter), filename=ckpt_name,
                 )
 
+            if trained_epoch >= max(total_epochs - eval_last_n_epochs, 0):
+                if val_loader:
+                    eval_output_dir_epoch = eval_output_dir / 'epoch_{}'.format(cur_epoch)
+                    eval_output_dir_epoch.mkdir(parents=True, exist_ok=True)
+                    eval_utils.eval_one_epoch(
+                        cfg, model, val_loader, cur_epoch, logger, dist_test=True if cfg.LAUNCHER != 'none' else False,
+                        accumulated_iter=accumulated_iter, result_dir=eval_output_dir_epoch, tb_log=tb_log)
+
+                if target_val_loader:
+                    eval_target_output_dir_epoch = eval_target_output_dir / 'epoch_{}'.format(cur_epoch)
+                    eval_target_output_dir_epoch.mkdir(parents=True, exist_ok=True)
+                    eval_utils.eval_one_epoch(
+                        cfg, model, target_val_loader, cur_epoch, logger,
+                        dist_test=True if cfg.LAUNCHER != 'none' else False,
+                        accumulated_iter=accumulated_iter, result_dir=eval_target_output_dir_epoch,
+                        tb_log=tb_log, tb_prefix='eval_target/')
 
 def model_state_to_cpu(model_state):
     model_state_cpu = type(model_state)()  # ordered dict

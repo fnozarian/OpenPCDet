@@ -12,6 +12,52 @@ def log_config_to_file(cfg, pre='cfg', logger=None):
             continue
         logger.info('%s.%s: %s' % (pre, key, val))
 
+def get_args_deltas(parser, args, ignore_args=['cfg_file', 'launcher']):
+    deltas = []
+    for key, val in vars(args).items():
+        if parser.get_default(key) != val and key not in ignore_args:
+            deltas.append('%s:%s' % (key, val))
+    return deltas
+
+def flatten_cfg(cfg, pre='cfg'):
+    if is_leaf(cfg):
+        return {pre: cfg}
+
+    if isinstance(cfg, EasyDict):
+        sub_cfgs = {}
+        for key, val in cfg.items():
+            flat_sub_cfg = flatten_cfg(val, pre=pre + '.' + key)
+            sub_cfgs.update(flat_sub_cfg)
+        return sub_cfgs
+
+    if isinstance(cfg, list):
+        sub_cfgs = {}
+        for val in cfg:
+            flat_sub_cfg = flatten_cfg(val, pre=pre)
+            sub_cfgs.update(flat_sub_cfg)
+        return sub_cfgs
+
+def cmpr_conf_with_default(conf, default_conf):
+    conf_dict = flatten_cfg(conf)
+    default_conf_dict = flatten_cfg(default_conf)
+    deltas = {}
+    for key, val in conf_dict.items():
+        if key not in default_conf_dict:
+            deltas.update({key: val})
+        elif val == default_conf_dict[key]:
+            continue
+        else:
+            deltas.update({key: val})
+
+    reduced_deltas = [str(key).split('.')[-1] + ':' + str(val) for key, val in deltas.items()]
+    return reduced_deltas
+
+def is_leaf(node):
+    if isinstance(node, dict):
+        return False
+    if isinstance(node, list):
+        return all([is_leaf(n) for n in node])
+    return True
 
 def cfg_from_list(cfg_list, config):
     """Set config keys via list (e.g., from command line)."""
@@ -83,3 +129,7 @@ def cfg_from_yaml_file(cfg_file, config):
 cfg = EasyDict()
 cfg.ROOT_DIR = (Path(__file__).resolve().parent / '../').resolve()
 cfg.LOCAL_RANK = 0
+
+default_cfg = EasyDict()
+default_cfg.ROOT_DIR = (Path(__file__).resolve().parent / '../').resolve()
+default_cfg.LOCAL_RANK = 0
