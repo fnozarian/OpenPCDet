@@ -5,6 +5,7 @@ import torch
 import tqdm
 from torch.nn.utils import clip_grad_norm_
 
+from eval_utils import eval_utils
 
 def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False):
@@ -60,11 +61,81 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         pbar.close()
     return accumulated_iter
 
+def train_one_epoch_da(model, optimizer, train_loader, target_loader, model_func, lr_scheduler, accumulated_iter,
+                       optim_cfg, rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False):
+    if total_it_each_epoch == len(train_loader):
+        dataloader_iter = iter(train_loader)
+
+    target_dataloader_iter = iter(target_loader)
+    if rank == 0:
+        pbar = tqdm.tqdm(total=total_it_each_epoch, leave=leave_pbar, desc='train', dynamic_ncols=True)
+
+    for cur_it in range(total_it_each_epoch):
+        try:
+            batch = next(dataloader_iter)
+        except StopIteration:
+            dataloader_iter = iter(train_loader)
+            batch = next(dataloader_iter)
+            print('new iters')
+        try:
+            batch_t = next(target_dataloader_iter)
+        except StopIteration:
+            target_dataloader_iter = iter(target_loader)
+            batch_t = next(target_dataloader_iter)
+            print('new iters target')
+
+        lr_scheduler.step(accumulated_iter)
+
+        try:
+            cur_lr = float(optimizer.lr)
+        except:
+            cur_lr = optimizer.param_groups[0]['lr']
+
+        if tb_log is not None:
+            tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
+
+        model.train()
+        optimizer.zero_grad()
+
+        loss, tb_dict, disp_dict = model_func(model, batch)
+        loss_t, tb_dict_t, disp_dict_t = model_func(model, batch_t, target=True)
+
+        loss_total = loss + loss_t
+
+        loss_total.backward()
+        clip_grad_norm_(model.parameters(), optim_cfg.GRAD_NORM_CLIP)
+        optimizer.step()
+
+        accumulated_iter += 1
+        disp_dict.update({'loss': loss.item(), 'lr': cur_lr})
+        disp_dict_t.update({'loss_t': loss_t.item(), 'lr': cur_lr})
+
+        # log to console and tensorboard
+        if rank == 0:
+            pbar.update()
+            pbar.set_postfix(dict(total_it=accumulated_iter))
+            tbar.set_postfix(disp_dict)
+            tbar.refresh()
+
+            if tb_log is not None:
+                tb_log.add_scalar('train/loss', loss, accumulated_iter)
+                tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
+                for key, val in tb_dict.items():
+                    tb_log.add_scalar('train/' + key, val, accumulated_iter)
+                    if key in tb_dict_t.keys():
+                        tb_log.add_scalar('train/' + key + '_t', tb_dict_t[key], accumulated_iter)
+                tb_log.add_scalar('train/loss_t', loss_t, accumulated_iter)
+    if rank == 0:
+        pbar.close()
+    return accumulated_iter
+
 
 def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_cfg,
                 start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, train_sampler=None,
                 lr_warmup_scheduler=None, ckpt_save_interval=1, max_ckpt_save_num=50,
-                merge_all_iters_to_one_epoch=False):
+                merge_all_iters_to_one_epoch=False,
+                target_train_loader=None, val_loader=None, target_val_loader=None,
+                eval_output_dir=None, eval_target_output_dir=None, logger=None, cfg=None, eval_last_n_epochs=10):
     accumulated_iter = start_iter
     with tqdm.trange(start_epoch, total_epochs, desc='epochs', dynamic_ncols=True, leave=(rank == 0)) as tbar:
         total_it_each_epoch = len(train_loader)
@@ -83,15 +154,24 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
                 cur_scheduler = lr_warmup_scheduler
             else:
                 cur_scheduler = lr_scheduler
-            accumulated_iter = train_one_epoch(
-                model, optimizer, train_loader, model_func,
-                lr_scheduler=cur_scheduler,
-                accumulated_iter=accumulated_iter, optim_cfg=optim_cfg,
-                rank=rank, tbar=tbar, tb_log=tb_log,
-                leave_pbar=(cur_epoch + 1 == total_epochs),
-                total_it_each_epoch=total_it_each_epoch,
-                dataloader_iter=dataloader_iter
-            )
+            if cfg.get('DOMAIN_ADAPTATION_ON', False):
+                accumulated_iter = train_one_epoch_da(
+                    model, optimizer, train_loader, target_train_loader, model_func,
+                    lr_scheduler=cur_scheduler,
+                    accumulated_iter=accumulated_iter, optim_cfg=optim_cfg,
+                    rank=rank, tbar=tbar, tb_log=tb_log,
+                    leave_pbar=(cur_epoch + 1 == total_epochs),
+                    total_it_each_epoch=total_it_each_epoch,
+                    dataloader_iter=dataloader_iter)
+            else:
+                accumulated_iter = train_one_epoch(
+                    model, optimizer, train_loader, model_func,
+                    lr_scheduler=cur_scheduler,
+                    accumulated_iter=accumulated_iter, optim_cfg=optim_cfg,
+                    rank=rank, tbar=tbar, tb_log=tb_log,
+                    leave_pbar=(cur_epoch + 1 == total_epochs),
+                    total_it_each_epoch=total_it_each_epoch,
+                    dataloader_iter=dataloader_iter)
 
             # save trained model
             trained_epoch = cur_epoch + 1
@@ -109,6 +189,22 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
                     checkpoint_state(model, optimizer, trained_epoch, accumulated_iter), filename=ckpt_name,
                 )
 
+            if trained_epoch >= max(total_epochs - eval_last_n_epochs, 0):
+                if val_loader:
+                    eval_output_dir_epoch = eval_output_dir / 'epoch_{}'.format(cur_epoch)
+                    eval_output_dir_epoch.mkdir(parents=True, exist_ok=True)
+                    eval_utils.eval_one_epoch(
+                        cfg, model, val_loader, cur_epoch, logger, dist_test=True if cfg.LAUNCHER != 'none' else False,
+                        accumulated_iter=accumulated_iter, result_dir=eval_output_dir_epoch, tb_log=tb_log)
+
+                if target_val_loader:
+                    eval_target_output_dir_epoch = eval_target_output_dir / 'epoch_{}'.format(cur_epoch)
+                    eval_target_output_dir_epoch.mkdir(parents=True, exist_ok=True)
+                    eval_utils.eval_one_epoch(
+                        cfg, model, target_val_loader, cur_epoch, logger,
+                        dist_test=True if cfg.LAUNCHER != 'none' else False,
+                        accumulated_iter=accumulated_iter, result_dir=eval_target_output_dir_epoch,
+                        tb_log=tb_log, tb_prefix='eval_target/')
 
 def model_state_to_cpu(model_state):
     model_state_cpu = type(model_state)()  # ordered dict

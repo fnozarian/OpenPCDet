@@ -19,7 +19,8 @@ def statistics_info(cfg, ret_dict, metric, disp_dict):
         '(%d, %d) / %d' % (metric['recall_roi_%s' % str(min_thresh)], metric['recall_rcnn_%s' % str(min_thresh)], metric['gt_num'])
 
 
-def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, save_to_file=False, result_dir=None):
+def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, save_to_file=False, result_dir=None,
+                   accumulated_iter=None, tb_log=None, tb_prefix=None):
     result_dir.mkdir(parents=True, exist_ok=True)
 
     final_output_dir = result_dir / 'final_result' / 'data'
@@ -113,7 +114,12 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
         output_path=final_output_dir
     )
 
-    logger.info(result_str)
+    if tb_log is not None:
+        prefix = tb_prefix if tb_prefix else "eval/"
+        for key, val in result_dict.items():
+            tb_log.add_scalar(prefix + key, val, accumulated_iter)
+
+    logger.info('\n' + result_str)
     ret_dict.update(result_dict)
 
     logger.info('Result is save to %s' % result_dir)

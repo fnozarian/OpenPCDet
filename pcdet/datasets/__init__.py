@@ -7,11 +7,13 @@ from pcdet.utils import common_utils
 from .dataset import DatasetTemplate
 from .kitti.kitti_dataset import KittiDataset
 from .nuscenes.nuscenes_dataset import NuScenesDataset
+from .kitti.kitti_dataset_da import KittiDatasetDA
 
 __all__ = {
     'DatasetTemplate': DatasetTemplate,
     'KittiDataset': KittiDataset,
-    'NuScenesDataset': NuScenesDataset
+    'NuScenesDataset': NuScenesDataset,
+    'KittiDatasetDA': KittiDatasetDA
 }
 
 
@@ -64,7 +66,7 @@ def build_dataloader(dataset_cfg, class_names, batch_size, dist, root_path=None,
     dataloader = DataLoader(
         dataset, batch_size=batch_size, pin_memory=True, num_workers=workers,
         shuffle=(sampler is None) and training, collate_fn=dataset.collate_batch,
-        drop_last=False, sampler=sampler, timeout=0
+        drop_last=True if training else False, sampler=sampler, timeout=0
     )
 
     return dataset, dataloader, sampler
