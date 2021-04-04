@@ -140,6 +140,9 @@ class KittiDataset(DatasetTemplate):
 
             if has_label:
                 obj_list = self.get_label(sample_idx)
+                if len(obj_list) == 0:
+                    print(f"no gt object available for sample {sample_idx}")
+                    return
                 annotations = {}
                 annotations['name'] = np.array([obj.cls_type for obj in obj_list])
                 annotations['truncated'] = np.array([obj.truncation for obj in obj_list])
@@ -188,7 +191,8 @@ class KittiDataset(DatasetTemplate):
         sample_id_list = sample_id_list if sample_id_list is not None else self.sample_id_list
         with futures.ThreadPoolExecutor(num_workers) as executor:
             infos = executor.map(process_single_scene, sample_id_list)
-        return list(infos)
+        infos = [info for info in list(infos) if info is not None]
+        return infos
 
     def create_groundtruth_database(self, info_path=None, used_classes=None, split='train'):
         import torch
@@ -354,6 +358,12 @@ class KittiDataset(DatasetTemplate):
             pts_rect = calib.lidar_to_rect(points[:, 0:3])
             fov_flag = self.get_fov_flag(pts_rect, img_shape, calib)
             points = points[fov_flag]
+
+        if self.dataset_cfg.get('NORM_INTENSITY', False):
+            points[:, 3] = points[:, 3] / 255.0
+
+        if self.dataset_cfg.get('ZERO_INTENSITY', False):
+            points[:, 3] = 0
 
         input_dict = {
             'points': points,

@@ -121,6 +121,12 @@ class NuScenesDataset(DatasetTemplate):
         info = copy.deepcopy(self.infos[index])
         points = self.get_lidar_with_sweeps(index, max_sweeps=self.dataset_cfg.MAX_SWEEPS)
 
+        if self.dataset_cfg.get('NORM_INTENSITY', False):
+            points[:, 3] = points[:, 3] / 255.0
+
+        if self.dataset_cfg.get('ZERO_INTENSITY', False):
+            points[:, 3] = 0
+
         input_dict = {
             'points': points,
             'frame_id': Path(info['lidar_path']).stem,
