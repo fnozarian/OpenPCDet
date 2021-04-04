@@ -1,6 +1,12 @@
 import mayavi.mlab as mlab
 import numpy as np
 import torch
+import open3d as o3d
+from matplotlib import cm
+import time
+
+VIRIDIS = np.array(cm.get_cmap('plasma').colors)
+VID_RANGE = np.linspace(0.0, 1.0, VIRIDIS.shape[0])
 
 box_colormap = [
     [1, 1, 1],
@@ -213,3 +219,64 @@ def draw_corners3d(corners3d, fig, color=(1, 1, 1), line_width=2, cls=None, tag=
                     line_width=line_width, figure=fig)
 
     return fig
+
+
+def add_open3d_axis(vis):
+    """Add a small 3D axis on Open3D Visualizer"""
+    axis = o3d.geometry.LineSet()
+    axis.points = o3d.utility.Vector3dVector(np.array([
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0]]))
+    axis.lines = o3d.utility.Vector2iVector(np.array([
+        [0, 1],
+        [0, 2],
+        [0, 3]]))
+    axis.colors = o3d.utility.Vector3dVector(np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0]]))
+    vis.add_geometry(axis)
+
+
+def convert_intensities_to_color(intensities):
+    intensity = intensities
+    intensity_col = 1.0 - np.log(intensity) / np.log(np.exp(-0.004 * 100))
+    int_color = np.c_[
+        np.interp(intensity_col, VID_RANGE, VIRIDIS[:, 0]),
+        np.interp(intensity_col, VID_RANGE, VIRIDIS[:, 1]),
+        np.interp(intensity_col, VID_RANGE, VIRIDIS[:, 2])]
+
+    return int_color
+
+
+def draw_scene_open3d(point_cloud_list, capture_screenshot=False, show_axis=True):
+    """
+    Args:
+       point_cloud_list: a list of numpy arrays with the shape of (N, 4) where the forth column is intensity
+       show_axis: if true, show the origin axis
+       capture_screenshot: if True, saves a screenshot image of point cloud on disk
+    Returns:
+    """
+
+    pcd = o3d.geometry.PointCloud()
+    for i, points in enumerate(point_cloud_list):
+        pcd.points = o3d.utility.Vector3dVector(points[:, :-1])
+        colors = convert_intensities_to_color(points[:, -1])
+        pcd.colors = o3d.utility.Vector3dVector(colors)
+        vis = o3d.visualization.Visualizer()
+        vis.create_window()
+        # vis.get_render_option().background_color = [0.05, 0.05, 0.05]
+        vis.get_render_option().point_size = 2
+
+        if show_axis:
+            add_open3d_axis(vis)
+
+        vis.add_geometry(pcd)
+        vis.run()
+
+        # if capture_screenshot:
+        #     vis.capture_screen_image(f'pc_{i}.png')
+
+        vis.destroy_window()
