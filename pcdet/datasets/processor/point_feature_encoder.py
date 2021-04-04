@@ -45,3 +45,15 @@ class PointFeatureEncoder(object):
             point_feature_list.append(points[:, idx:idx+1])
         point_features = np.concatenate(point_feature_list, axis=1)
         return point_features, True
+
+    def absolute_coordinates_encoding_with_fake_timestamp(self, points=None):
+        if points is None:
+            num_output_features = len(self.used_feature_list) + 1
+            return num_output_features
+
+        point_features, _ = self.absolute_coordinates_encoding(points)
+        # Add fake timestamp to make the dataset compatible with nuScenes
+        fake_timestamps = np.zeros((point_features.shape[0], 1), dtype=np.float32)
+        point_features = np.concatenate([point_features, fake_timestamps], axis=-1)
+        return point_features, True
+
