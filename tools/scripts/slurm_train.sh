@@ -7,8 +7,8 @@ JOB_NAME=$2
 GPUS=$3
 PY_ARGS=${@:4}
 
-GPUS_PER_NODE=${GPUS_PER_NODE:-8}
-CPUS_PER_TASK=${CPUS_PER_TASK:-5}
+GPUS_PER_NODE=${GPUS_PER_NODE:-6}
+CPUS_PER_TASK=${CPUS_PER_TASK:-8}
 SRUN_ARGS=${SRUN_ARGS:-""}
 
 while true
@@ -23,10 +23,15 @@ echo $PORT
 
 srun -p ${PARTITION} \
     --job-name=${JOB_NAME} \
-    --gres=gpu:${GPUS_PER_NODE} \
+    --gpus-per-node=${GPUS_PER_NODE} \
     --ntasks=${GPUS} \
     --ntasks-per-node=${GPUS_PER_NODE} \
     --cpus-per-task=${CPUS_PER_TASK} \
     --kill-on-bad-exit=1 \
+    --container-mounts=/netscratch/nozarian:/netscratch/nozarian,/ds-av:/ds-av,/home/nozarian:/home/nozarian \
+    --container-image=/netscratch/nozarian/openpcdet.sqsh \
+    --container-workdir=/home/nozarian/OpenPCDet/tools \
+    --export="NCCL_SOCKET_IFNAME=bond,NCCL_IB_HCA=mlx5" \
+    --container-save="/netscratch/nozarian/openpcdet2.sqsh" \
     ${SRUN_ARGS} \
     python -u train.py --launcher slurm --tcp_port $PORT ${PY_ARGS}
