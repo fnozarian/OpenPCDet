@@ -133,8 +133,7 @@ def train_one_epoch_da(model, optimizer, train_loader, target_loader, model_func
 def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_cfg,
                 start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, train_sampler=None,
                 lr_warmup_scheduler=None, ckpt_save_interval=1, max_ckpt_save_num=50,
-                merge_all_iters_to_one_epoch=False,
-                target_train_loader=None, val_loader=None, target_val_loader=None,
+                merge_all_iters_to_one_epoch=False, target_train_loader=None, val_loader=None, target_val_loader=None,
                 eval_output_dir=None, eval_target_output_dir=None, logger=None, cfg=None, eval_last_n_epochs=10):
     accumulated_iter = start_iter
     with tqdm.trange(start_epoch, total_epochs, desc='epochs', dynamic_ncols=True, leave=(rank == 0)) as tbar:

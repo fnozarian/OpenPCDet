@@ -10,7 +10,8 @@ import torch.distributed as dist
 import torch.nn as nn
 from tensorboardX import SummaryWriter
 
-from pcdet.config import cfg, cfg_from_list, cfg_from_yaml_file, log_config_to_file
+from pcdet.config import cfg, default_cfg, cfg_from_list, cfg_from_yaml_file, log_config_to_file, \
+    cmpr_conf_with_default, get_args_deltas
 from pcdet.datasets import build_dataloader
 from pcdet.models import build_network, model_fn_decorator, model_fn_decorator_da
 from pcdet.utils import common_utils
@@ -20,8 +21,10 @@ from train_utils.train_utils import train_model
 
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
-    parser.add_argument('--cfg_file', type=str, default=None, help='specify the config for training')
-
+    parser.add_argument('--cfg_file', type=str, default='./cfgs/carla_kitti_models/pointpillar_default.yaml',
+                        help='specify the config for training')
+    parser.add_argument('--default_cfg_file', type=str, default='./cfgs/carla_kitti_models/pointpillar_default.yaml',
+                        help='specify the config for training')
     parser.add_argument('--batch_size', type=int, default=None, required=False, help='batch size for training')
     parser.add_argument('--epochs', type=int, default=None, required=False, help='number of epochs to train for')
     parser.add_argument('--workers', type=int, default=8, help='number of workers for dataloader')
@@ -48,6 +51,10 @@ def parse_config():
     args = parser.parse_args()
 
     cfg_from_yaml_file(args.cfg_file, cfg)
+    cfg_from_yaml_file(args.default_cfg_file, default_cfg)
+    deltas_args = get_args_deltas(parser, args)
+    deltas_confs = cmpr_conf_with_default(cfg, default_cfg)
+    deltas = deltas_args + deltas_confs
     cfg.LAUNCHER = args.launcher
     cfg.TAG = Path(args.cfg_file).stem
     cfg.EXP_GROUP_PATH = '/'.join(args.cfg_file.split('/')[1:-1])  # remove 'cfgs' and 'xxxx.yaml'
@@ -55,11 +62,11 @@ def parse_config():
     if args.set_cfgs is not None:
         cfg_from_list(args.set_cfgs, cfg)
 
-    return args, cfg
+    return args, cfg, deltas
 
 
 def main():
-    args, cfg = parse_config()
+    args, cfg, deltas = parse_config()
     if args.launcher == 'none':
         dist_train = False
         total_gpus = 1
@@ -101,16 +108,10 @@ def main():
     log_config_to_file(cfg, logger=logger)
     if cfg.LOCAL_RANK == 0:
         os.system('cp %s %s' % (args.cfg_file, output_dir))
-
-    tb_log = SummaryWriter(log_dir=str(output_dir / 'tensorboard')) if cfg.LOCAL_RANK == 0 else None
-
-    # -------------------- create eval output dir -----------------------------------------
-    eval_output_dir = output_dir / 'eval'
-    eval_output_dir = eval_output_dir / cfg.DATA_CONFIG.DATA_SPLIT['test']
-    if args.eval_tag is not None:
-        eval_output_dir = eval_output_dir / args.eval_tag
-
-    eval_output_dir.mkdir(parents=True, exist_ok=True)
+    tb_name = 'tb_train_%s,' % datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+    tb_name += ','.join(deltas)
+    tb_name = tb_name.replace('/', '.')
+    tb_log = SummaryWriter(log_dir=str(output_dir / tb_name)) if cfg.LOCAL_RANK == 0 else None
 
     # -----------------------create dataloader & network & optimizer---------------------------
     train_set, train_loader, train_sampler = build_dataloader(
@@ -123,6 +124,14 @@ def main():
         merge_all_iters_to_one_epoch=args.merge_all_iters_to_one_epoch,
         total_epochs=args.epochs
     )
+
+    # -------------------- create eval output dir -----------------------------------------
+    eval_output_dir = output_dir / 'eval'
+    eval_output_dir = eval_output_dir / cfg.DATA_CONFIG.DATA_SPLIT['test']
+    if args.eval_tag is not None:
+        eval_output_dir = eval_output_dir / args.eval_tag
+
+    eval_output_dir.mkdir(parents=True, exist_ok=True)
 
     # ----------------------- create source val dataloader ---------------------------
     val_set, val_loader, sampler = build_dataloader(
