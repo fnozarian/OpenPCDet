@@ -21,9 +21,9 @@ from train_utils.train_utils import train_model
 
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
-    parser.add_argument('--cfg_file', type=str, default='./cfgs/carla_kitti_models/pointpillar_default.yaml',
+    parser.add_argument('--cfg_file', type=str, default='./cfgs/carla_kitti_to_kitti_models/pointrcnn_da_default.yaml',
                         help='specify the config for training')
-    parser.add_argument('--default_cfg_file', type=str, default='./cfgs/carla_kitti_models/pointpillar_default.yaml',
+    parser.add_argument('--default_cfg_file', type=str, default='./cfgs/carla_kitti_to_kitti_models/pointrcnn_da_default.yaml',
                         help='specify the config for training')
     parser.add_argument('--batch_size', type=int, default=None, required=False, help='batch size for training')
     parser.add_argument('--epochs', type=int, default=None, required=False, help='number of epochs to train for')
@@ -111,7 +111,18 @@ def main():
     tb_name = 'tb_train_%s,' % datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
     tb_name += ','.join(deltas)
     tb_name = tb_name.replace('/', '.')
-    tb_log = SummaryWriter(log_dir=str(output_dir / tb_name)) if cfg.LOCAL_RANK == 0 else None
+    try:
+        tb_log = SummaryWriter(log_dir=str(output_dir / tb_name)) if cfg.LOCAL_RANK == 0 else None
+    except OSError as exc:
+        if exc.errno != 36:
+            raise
+
+        # if fname is too long file name then we only maintain keys changed
+        tb_name = 'tb_train_%s,' % datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+        key_deltas = [delta.split(":")[0] for delta in deltas]
+        tb_name += ','.join(key_deltas)
+        tb_name = tb_name.replace('/', '.')
+        tb_log = SummaryWriter(log_dir=str(output_dir / tb_name)) if cfg.LOCAL_RANK == 0 else None
 
     # -----------------------create dataloader & network & optimizer---------------------------
     train_set, train_loader, train_sampler = build_dataloader(
