@@ -27,6 +27,9 @@ class CarlaKittiDataset(KittiDataset):
             fov_flag = self.get_fov_flag(pts_rect, img_shape, calib)
             points = points[fov_flag]
 
+        if self.dataset_cfg.get('ZERO_INTENSITY', False):
+            points[:, 3] = 0
+
         input_dict = {
             'points': points,
             'frame_id': sample_idx,

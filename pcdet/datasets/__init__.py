@@ -7,6 +7,7 @@ from pcdet.utils import common_utils
 from .dataset import DatasetTemplate
 from .kitti.kitti_dataset import KittiDataset
 from .carla_kitti.carla_kitti_dataset import CarlaKittiDataset
+from .carla_kitti.carla_kitti_dataset_da import CarlaKittiDatasetDA
 from .nuscenes.nuscenes_dataset import NuScenesDataset
 from .kitti.kitti_dataset_da import KittiDatasetDA
 from .waymo.waymo_dataset import WaymoDataset
@@ -17,7 +18,9 @@ __all__ = {
     'NuScenesDataset': NuScenesDataset,
     'WaymoDataset': WaymoDataset,
     'KittiDatasetDA': KittiDatasetDA,
-    'CarlaKittiDataset': CarlaKittiDataset
+    'CarlaKittiDataset': CarlaKittiDataset,
+    'CarlaKittiDatasetDA': CarlaKittiDatasetDA,
+
 }
 
 
