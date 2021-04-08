@@ -61,6 +61,17 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         pbar.close()
     return accumulated_iter
 
+def log_tb_hist(model, tb_log, step):
+    for module_name, module in model.named_modules():
+        if isinstance(module, torch.nn.Conv1d):
+            mname = module_name + "." + module._get_name()
+            for param_name, param in module.named_parameters():
+                hist_name = mname + '.' + param_name
+                tb_log.add_histogram(hist_name, param, step)
+                if param.grad is not None:
+                    tb_log.add_histogram(hist_name + '_grad', param.grad, step)
+
+
 def train_one_epoch_da(model, optimizer, train_loader, target_loader, model_func, lr_scheduler, accumulated_iter,
                        optim_cfg, rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False):
     if total_it_each_epoch == len(train_loader):
@@ -93,6 +104,7 @@ def train_one_epoch_da(model, optimizer, train_loader, target_loader, model_func
 
         if tb_log is not None:
             tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
+            log_tb_hist(model, tb_log, accumulated_iter)
 
         model.train()
         optimizer.zero_grad()
