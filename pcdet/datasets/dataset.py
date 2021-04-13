@@ -172,12 +172,6 @@ class DatasetTemplate(torch_data.Dataset):
                     for k in range(batch_size):
                         batch_gt_boxes3d[k, :val[k].__len__(), :] = val[k]
                     ret[key] = batch_gt_boxes3d
-                elif key in ['is_source']:
-                    max_gt = max([len(x) for x in val])
-                    batch_gt_domain_labels = np.ones((batch_size, max_gt), dtype=np.uint8) * -1
-                    for k in range(batch_size):
-                        batch_gt_domain_labels[k, :val[k].__len__()] = val[k]
-                    ret[key] = batch_gt_domain_labels
                 else:
                     ret[key] = np.stack(val, axis=0)
             except:

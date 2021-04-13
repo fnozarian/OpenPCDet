@@ -402,12 +402,7 @@ class KittiDatasetDA(DatasetTemplate):
             gt_boxes[np.isnan(gt_boxes)] = 0
             data_dict['gt_boxes'] = gt_boxes
 
-        if self.is_source:
-            domain_labels = np.ones(len(data_dict['gt_boxes']), dtype=np.uint8)
-        else:
-            domain_labels = np.zeros(len(data_dict['gt_boxes']), dtype=np.uint8)
-
-        data_dict['is_source'] = domain_labels
+        data_dict['is_source'] = self.is_source
         data_dict['image_shape'] = img_shape
         return data_dict
 

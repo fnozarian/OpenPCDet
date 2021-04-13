@@ -11,11 +11,6 @@ class CarlaKittiDatasetDA(CarlaKittiDataset):
 
     def __getitem__(self, index):
         data_dict = super(CarlaKittiDatasetDA, self).__getitem__(index)
+        data_dict['is_source'] = self.is_source
 
-        if self.is_source:
-            domain_labels = np.ones(len(data_dict['gt_boxes']), dtype=np.uint8)
-        else:
-            domain_labels = np.zeros(len(data_dict['gt_boxes']), dtype=np.uint8)
-
-        data_dict['is_source'] = domain_labels
         return data_dict

@@ -110,7 +110,7 @@ def train_one_epoch_da(model, optimizer, train_loader, target_loader, model_func
         optimizer.zero_grad()
 
         loss, tb_dict, disp_dict = model_func(model, batch)
-        loss_t, tb_dict_t, disp_dict_t = model_func(model, batch_t, target=True)
+        loss_t, tb_dict_t, disp_dict_t = model_func(model, batch_t)
 
         loss_total = loss + loss_t
 
@@ -119,8 +119,7 @@ def train_one_epoch_da(model, optimizer, train_loader, target_loader, model_func
         optimizer.step()
 
         accumulated_iter += 1
-        disp_dict.update({'loss': loss.item(), 'lr': cur_lr})
-        disp_dict_t.update({'loss_t': loss_t.item(), 'lr': cur_lr})
+        disp_dict.update({'loss': loss.item(), 'loss_t': loss_t.item(), 'lr': cur_lr})
 
         # log to console and tensorboard
         if rank == 0:
@@ -131,12 +130,12 @@ def train_one_epoch_da(model, optimizer, train_loader, target_loader, model_func
 
             if tb_log is not None:
                 tb_log.add_scalar('train/loss', loss, accumulated_iter)
+                tb_log.add_scalar('train/loss_t', loss_t, accumulated_iter)
                 tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
                 for key, val in tb_dict.items():
                     tb_log.add_scalar('train/' + key, val, accumulated_iter)
-                    if key in tb_dict_t.keys():
-                        tb_log.add_scalar('train/' + key + '_t', tb_dict_t[key], accumulated_iter)
-                tb_log.add_scalar('train/loss_t', loss_t, accumulated_iter)
+                for key in tb_dict_t.keys():
+                    tb_log.add_scalar('train/' + key + '_t', tb_dict_t[key], accumulated_iter)
     if rank == 0:
         pbar.close()
     return accumulated_iter
