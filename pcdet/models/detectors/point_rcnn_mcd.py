@@ -9,7 +9,7 @@ class PointRCNNMCD(PointRCNN):
     def forward(self, batch_dict):
         for cur_module in self.module_list:
             batch_dict = cur_module(batch_dict)
-        is_source = torch.all(batch_dict['is_source'])
+        is_source = torch.all(batch_dict['is_source'].bool())
         if self.training:
             if is_source:
                 loss, tb_dict, disp_dict = self.get_training_loss()

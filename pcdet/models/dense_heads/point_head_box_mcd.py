@@ -130,7 +130,7 @@ class PointHeadBoxMCD(PointHeadBox):
         else:
             point_features = batch_dict['point_features']
 
-        is_source = torch.all(batch_dict['is_source'])
+        is_source = torch.all(batch_dict['is_source'].bool())
         if not is_source:
             point_features = self.rev_grad(point_features)
 
