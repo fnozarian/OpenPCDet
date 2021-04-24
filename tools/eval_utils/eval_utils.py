@@ -39,14 +39,14 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
     det_annos = []
 
     logger.info('*************** EPOCH %s EVALUATION *****************' % epoch_id)
-    if dist_test:
-        num_gpus = torch.cuda.device_count()
-        local_rank = cfg.LOCAL_RANK % num_gpus
-        model = torch.nn.parallel.DistributedDataParallel(
-                model,
-                device_ids=[local_rank],
-                broadcast_buffers=False
-        )
+    # if dist_test:
+    #     num_gpus = torch.cuda.device_count()
+    #     local_rank = cfg.LOCAL_RANK % num_gpus
+    #     model = torch.nn.parallel.DistributedDataParallel(
+    #             model,
+    #             device_ids=[local_rank],
+    #             broadcast_buffers=False
+    #     )
     model.eval()
 
     if cfg.LOCAL_RANK == 0:
@@ -74,7 +74,7 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
     if dist_test:
         rank, world_size = common_utils.get_dist_info()
         det_annos = common_utils.merge_results_dist(det_annos, len(dataset), tmpdir=result_dir / 'tmpdir')
-        metric = common_utils.merge_results_dist([metric], world_size, tmpdir=result_dir / 'tmpdir')
+        metric = common_utils.merge_results_dist([metric], world_size, tmpdir=result_dir / 'tmpdir_metric')
 
     logger.info('*************** Performance of EPOCH %s *****************' % epoch_id)
     sec_per_example = (time.time() - start_time) / len(dataloader.dataset)
