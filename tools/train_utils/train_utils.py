@@ -104,13 +104,13 @@ def train_one_epoch_da(model, optimizer, train_loader, target_loader, model_func
 
         if tb_log is not None:
             tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
-            log_tb_hist(model, tb_log, accumulated_iter)
+            # log_tb_hist(model, tb_log, accumulated_iter)
 
         model.train()
         optimizer.zero_grad()
 
         loss, tb_dict, disp_dict = model_func(model, batch)
-        loss_t, tb_dict_t, disp_dict_t = model_func(model, batch_t)
+        loss_t, tb_dict_t, disp_dict_t = model_func(model, batch_t, target=True)
 
         loss_total = loss + loss_t
 
@@ -199,7 +199,7 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
                     checkpoint_state(model, optimizer, trained_epoch, accumulated_iter), filename=ckpt_name,
                 )
 
-            if trained_epoch >= max(total_epochs - eval_last_n_epochs, 0):
+            if ((trained_epoch >= 20) and (trained_epoch % 5 == 0)) or (trained_epoch >= max(total_epochs - eval_last_n_epochs, 0)):
                 if val_loader:
                     eval_output_dir_epoch = eval_output_dir / 'epoch_{}'.format(cur_epoch)
                     eval_output_dir_epoch.mkdir(parents=True, exist_ok=True)
