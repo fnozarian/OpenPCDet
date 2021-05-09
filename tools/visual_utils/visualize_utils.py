@@ -5,6 +5,7 @@ import open3d as o3d
 from matplotlib import cm
 import time
 
+from moviepy.video.VideoClip import VideoClip
 VIRIDIS = np.array(cm.get_cmap('plasma').colors)
 VID_RANGE = np.linspace(0.0, 1.0, VIRIDIS.shape[0])
 
@@ -83,16 +84,16 @@ def visualize_pts(pts, fig=None, bgcolor=(0, 0, 0), fgcolor=(1.0, 1.0, 1.0),
         fig = mlab.figure(figure=None, bgcolor=bgcolor, fgcolor=fgcolor, engine=None, size=size)
 
     if show_intensity:
-        G = mlab.points3d(pts[:, 0], pts[:, 1], pts[:, 2], pts[:, 3], mode='point',
-                          colormap='gnuplot', scale_factor=1, figure=fig)
+        G = mlab.points3d(pts[:, 0], pts[:, 1], pts[:, 2], pts[:, 3],
+                          colormap='gnuplot', scale_factor=0.1, figure=fig)
     else:
         G = mlab.points3d(pts[:, 0], pts[:, 1], pts[:, 2], mode='point',
                           colormap='gnuplot', scale_factor=1, figure=fig)
     if draw_origin:
-        mlab.points3d(0, 0, 0, color=(1, 1, 1), mode='cube', scale_factor=0.2)
-        mlab.plot3d([0, 3], [0, 0], [0, 0], color=(0, 0, 1), tube_radius=0.1)
-        mlab.plot3d([0, 0], [0, 3], [0, 0], color=(0, 1, 0), tube_radius=0.1)
-        mlab.plot3d([0, 0], [0, 0], [0, 3], color=(1, 0, 0), tube_radius=0.1)
+        mlab.points3d(0, 0, 0, color=(1, 1, 1), mode='cube', scale_factor=0.05)
+        mlab.plot3d([0, 3], [0, 0], [0, 0], color=(0, 0, 1), tube_radius=0.01)
+        mlab.plot3d([0, 0], [0, 3], [0, 0], color=(0, 1, 0), tube_radius=0.01)
+        mlab.plot3d([0, 0], [0, 0], [0, 3], color=(1, 0, 0), tube_radius=0.01)
 
     return fig
 
@@ -157,8 +158,8 @@ def draw_scenes(points, gt_boxes=None, ref_boxes=None, ref_scores=None, ref_labe
     if ref_labels is not None and not isinstance(ref_labels, np.ndarray):
         ref_labels = ref_labels.cpu().numpy()
 
-    fig = visualize_pts(points)
-    fig = draw_multi_grid_range(fig, bv_range=(0, -40, 80, 40))
+    fig = visualize_pts(points, show_intensity=True, fgcolor=(0.0, 0.0, 0.0), bgcolor=(1.0, 1.0, 1.0))
+    # fig = draw_multi_grid_range(fig, bv_range=(0, -40, 80, 40))
     if gt_boxes is not None:
         corners3d = boxes_to_corners_3d(gt_boxes)
         fig = draw_corners3d(corners3d, fig=fig, color=(0, 0, 1), max_num=100)
@@ -172,7 +173,7 @@ def draw_scenes(points, gt_boxes=None, ref_boxes=None, ref_scores=None, ref_labe
                 cur_color = tuple(box_colormap[k % len(box_colormap)])
                 mask = (ref_labels == k)
                 fig = draw_corners3d(ref_corners3d[mask], fig=fig, color=cur_color, cls=ref_scores[mask], max_num=100)
-    mlab.view(azimuth=-179, elevation=54.0, distance=104.0, roll=90.0)
+    mlab.view(azimuth=-179, elevation=70.0, distance=15.0, roll=90.0)
     return fig
 
 
@@ -280,3 +281,21 @@ def draw_scene_open3d(point_cloud_list, capture_screenshot=False, show_axis=True
         #     vis.capture_screen_image(f'pc_{i}.png')
 
         vis.destroy_window()
+
+
+def draw_scene_mlab(points, index, dir_name=None):
+    def make_frame(t):
+        # camera angle
+        # mlab.view(azimuth=-179, elevation=54.0, distance=104.0, focalpoint=[5.5, 5, 7.5])
+        mlab.view(azimuth=360 * t / duration, elevation=60.0, distance=5.0, focalpoint=[0, 0, 0])
+        return mlab.screenshot(antialiased=True)
+    draw_scenes(points)
+    mlab.show(stop=True)
+    duration = 4
+    animation = VideoClip(make_frame, duration=duration)
+    # # Video generation takes 10 seconds, GIF generation takes 25s
+    if dir_name:
+        animation.write_videofile(f"./{dir_name}/scene_{index}.mp4", fps=20)
+    else:
+        animation.write_videofile(f"./scene_{index}.mp4", fps=30)
+    # animation.write_gif(f"scene_{index}.gif", fps=20)
