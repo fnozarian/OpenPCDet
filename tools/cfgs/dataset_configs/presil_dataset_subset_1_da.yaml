@@ -1,10 +1,7 @@
-DATASET: 'CarlaKittiDatasetDA'
-DATA_PATH: '../data/carla-kitti_v0.4'
-REAL_NAME: 'carla-kitti'
+DATASET: 'KittiDatasetDA'
+DATA_PATH: '../data/presil/subset_1'
 
 POINT_CLOUD_RANGE: [0, -40, -3, 70.4, 40, 1]
-
-FILTER_MIN_POINTS_IN_GT: 0
 
 DATA_SPLIT: {
     'train': train,
@@ -23,7 +20,7 @@ DATA_AUGMENTOR:
     DISABLE_AUG_LIST: ['placeholder']
     AUG_CONFIG_LIST:
         - NAME: gt_sampling
-          USE_ROAD_PLANE: True
+          USE_ROAD_PLANE: False
           DB_INFO_PATH:
               - kitti_dbinfos_train.pkl
           PREPARE: {

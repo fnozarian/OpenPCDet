@@ -1,5 +1,5 @@
 DATASET: 'CarlaKittiDatasetDA'
-DATA_PATH: '../data/carla-kitti_v0.4'
+DATA_PATH: '../data/carla-kitti_v0.4_scaledto_kitti_pedestrian'
 REAL_NAME: 'carla-kitti'
 
 POINT_CLOUD_RANGE: [0, -40, -3, 70.4, 40, 1]
