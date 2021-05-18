@@ -51,6 +51,8 @@ class ProposalTargetLayer(nn.Module):
             batch_cls_labels = (fg_mask > 0).float()
             batch_cls_labels[interval_mask] = \
                 (batch_roi_ious[interval_mask] - iou_bg_thresh) / (iou_fg_thresh - iou_bg_thresh)
+        elif self.roi_sampler_cfg.CLS_SCORE_TYPE == 'raw_roi_iou':
+            batch_cls_labels = batch_roi_ious
         else:
             raise NotImplementedError
 

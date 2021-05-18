@@ -9,6 +9,21 @@ from pcdet.models import load_data_to_gpu
 from pcdet.utils import common_utils
 
 
+def visualize_boxes(pred_dicts, input_dict):
+    import visualize_utils as vis
+    import mayavi.mlab as mlab
+    for batch_idx in range(len(pred_dicts)):
+        if (pred_dicts[batch_idx]['label_preds'] == 3).sum() > 0:
+            gt_boxes_list = []
+            scores_list = []
+            for j in range(3):
+                mask = pred_dicts[batch_idx]['label_preds'] == (j + 1)
+                gt_boxes_list.append(pred_dicts[batch_idx]['box3d_lidar'][mask, :])
+                scores_list.append(pred_dicts[batch_idx]['scores'][mask])
+            vis.draw_scenes_by_class(input_dict['points'][:, 1:], gt_boxes_list, scores_list)
+            mlab.show(stop=True)
+
+
 def statistics_info(cfg, ret_dict, metric, disp_dict):
     for cur_thresh in cfg.MODEL.POST_PROCESSING.RECALL_THRESH_LIST:
         metric['recall_roi_%s' % str(cur_thresh)] += ret_dict.get('roi_%s' % str(cur_thresh), 0)
@@ -73,7 +88,7 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
     if dist_test:
         rank, world_size = common_utils.get_dist_info()
         det_annos = common_utils.merge_results_dist(det_annos, len(dataset), tmpdir=result_dir / 'tmpdir')
-        metric = common_utils.merge_results_dist([metric], world_size, tmpdir=result_dir / 'tmpdir')
+        metric = common_utils.merge_results_dist([metric], world_size, tmpdir=result_dir / 'tmpdir_metric')
 
     logger.info('*************** Performance of EPOCH %s *****************' % epoch_id)
     sec_per_example = (time.time() - start_time) / len(dataloader.dataset)
@@ -115,6 +130,9 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
 
     logger.info(result_str)
     ret_dict.update(result_dict)
+
+    # add avg predicted number of objects to tensorboard log
+    ret_dict['eval_avg_pred_bboxes'] = total_pred_objects / max(1, len(det_annos))
 
     logger.info('Result is save to %s' % result_dir)
     logger.info('****************Evaluation done.*****************')

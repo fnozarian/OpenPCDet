@@ -14,6 +14,8 @@ import torch.multiprocessing as mp
 def check_numpy_to_torch(x):
     if isinstance(x, np.ndarray):
         return torch.from_numpy(x).float(), True
+    if isinstance(x, np.float64) or isinstance(x, np.float32):
+        return torch.tensor([x]).float(), True
     return x, False
 
 
@@ -84,7 +86,8 @@ def get_voxel_centers(voxel_coords, downsample_times, voxel_size, point_cloud_ra
 def create_logger(log_file=None, rank=0, log_level=logging.INFO):
     logger = logging.getLogger(__name__)
     logger.setLevel(log_level if rank == 0 else 'ERROR')
-    formatter = logging.Formatter('%(asctime)s  %(levelname)5s  %(message)s')
+    formatter = logging.Formatter('[%(asctime)s  %(filename)s %(lineno)d '
+                                  '%(levelname)5s]  %(message)s')
     console = logging.StreamHandler()
     console.setLevel(log_level if rank == 0 else 'ERROR')
     console.setFormatter(formatter)
@@ -101,6 +104,8 @@ def set_random_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
@@ -121,20 +126,44 @@ def init_dist_slurm(tcp_port, local_rank, backend='nccl'):
     Returns:
 
     """
-    proc_id = int(os.environ['SLURM_PROCID'])
-    ntasks = int(os.environ['SLURM_NTASKS'])
-    node_list = os.environ['SLURM_NODELIST']
     num_gpus = torch.cuda.device_count()
-    torch.cuda.set_device(proc_id % num_gpus)
-    addr = subprocess.getoutput('scontrol show hostname {} | head -n1'.format(node_list))
-    os.environ['MASTER_PORT'] = str(tcp_port)
-    os.environ['MASTER_ADDR'] = addr
-    os.environ['WORLD_SIZE'] = str(ntasks)
-    os.environ['RANK'] = str(proc_id)
+    rank = int(os.environ['RANK'])
+    torch.cuda.set_device(rank % num_gpus)
     dist.init_process_group(backend=backend)
-
     total_gpus = dist.get_world_size()
-    rank = dist.get_rank()
+
+    dist_vars = """ SLURM_NODELIST: %s
+                    
+                    cuda.device_count: %s
+                    
+                    SLURM_NTASKS: %s
+                    WORLD_SIZE: %s
+                    dist.get_world_size: %s
+                    
+                    LOCAL_RANK: %s
+                    RANK remainder cuda.device_count: %s
+                    
+                    SLURM_PROCID: %s
+                    RANK: %s
+                    dist.get_rank: %s
+                    \n
+                    """ % (os.environ["SLURM_NODELIST"],
+
+                           str(torch.cuda.device_count()),
+
+                           os.environ["SLURM_NTASKS"],
+                           os.environ["WORLD_SIZE"],
+                           str(dist.get_world_size()),
+
+                           os.environ["LOCAL_RANK"],
+                           str(int(os.environ["RANK"]) % int(torch.cuda.device_count())),
+
+                           os.environ["SLURM_PROCID"],
+                           os.environ["RANK"],
+                           str(dist.get_rank())
+                           )
+    print(dist_vars)
+
     return total_gpus, rank
 
 
@@ -193,3 +222,63 @@ def merge_results_dist(result_part, size, tmpdir):
     ordered_results = ordered_results[:size]
     shutil.rmtree(tmpdir)
     return ordered_results
+
+
+def add_prefix_to_dict(dict, prefix):
+    for key in list(dict.keys()):
+        dict[prefix + key] = dict.pop(key)
+    return dict
+
+
+class DataReader(object):
+    def __init__(self, dataloader, sampler):
+        self.dataloader = dataloader
+        self.sampler = sampler
+
+    def construct_iter(self):
+        self.dataloader_iter = iter(self.dataloader)
+
+    def set_cur_epoch(self, cur_epoch):
+        self.cur_epoch = cur_epoch
+
+    def read_data(self):
+        try:
+            return self.dataloader_iter.next()
+        except:
+            if self.sampler is not None:
+                self.sampler.set_epoch(self.cur_epoch)
+            self.construct_iter()
+            return self.dataloader_iter.next()
+
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+
+def set_bn_train(m):
+    classname = m.__class__.__name__
+    if classname.find('BatchNorm') != -1:
+        m.train()
+
+
+def calculate_gradient_norm(model):
+    total_norm = 0
+    for p in model.parameters():
+        param_norm = p.grad.data.norm(2)
+        total_norm += param_norm.item() ** 2
+    total_norm = total_norm ** (1. / 2)
+    return total_norm

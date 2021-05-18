@@ -14,6 +14,8 @@ SAMPLED_INTERVAL: {
     'test': 5
 }
 
+INFO_WITH_FAKELIDAR: False
+
 DATA_AUGMENTOR:
     DISABLE_AUG_LIST: ['placeholder']
     AUG_CONFIG_LIST:
@@ -28,6 +30,7 @@ DATA_AUGMENTOR:
 
           SAMPLE_GROUPS: ['Vehicle:15', 'Pedestrian:10', 'Cyclist:10']
           NUM_POINT_FEATURES: 5
+          DATABASE_WITH_FAKELIDAR: False
           REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]
           LIMIT_WHOLE_SCENE: True
 

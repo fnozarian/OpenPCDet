@@ -6,6 +6,22 @@ import tqdm
 from torch.nn.utils import clip_grad_norm_
 
 
+def visualize_boxes_batch(batch):
+    import visualize_utils as vis
+    import mayavi.mlab as mlab
+    for b_idx in range(batch['batch_size']):
+        points = batch['points'][batch['points'][:, 0] == b_idx][:, 1:]
+
+        if 'debug' not in batch:
+            vis.draw_scenes(points, ref_boxes=batch['gt_boxes'][b_idx, :, :7],
+                            scores=batch['scores'][b_idx])
+        else:
+            vis.draw_scenes(points, ref_boxes=batch['gt_boxes'][b_idx, :, :7],
+                            gt_boxes=batch['debug'][b_idx]['gt_boxes_lidar'],
+                            scores=batch['scores'][b_idx])
+        mlab.show(stop=True)
+
+
 def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False):
     if total_it_each_epoch == len(train_loader):
@@ -61,10 +77,10 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
     return accumulated_iter
 
 
-def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_cfg,
-                start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, train_sampler=None,
-                lr_warmup_scheduler=None, ckpt_save_interval=1, max_ckpt_save_num=50,
-                merge_all_iters_to_one_epoch=False):
+def train_model(model, optimizer, train_loader, target_loader, model_func, lr_scheduler, optim_cfg,
+                start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, ps_label_dir,
+                source_sampler=None, target_sampler=None, lr_warmup_scheduler=None, ckpt_save_interval=1,
+                max_ckpt_save_num=50, merge_all_iters_to_one_epoch=False, logger=None, ema_model=None):
     accumulated_iter = start_iter
     with tqdm.trange(start_epoch, total_epochs, desc='epochs', dynamic_ncols=True, leave=(rank == 0)) as tbar:
         total_it_each_epoch = len(train_loader)
@@ -75,8 +91,8 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
 
         dataloader_iter = iter(train_loader)
         for cur_epoch in tbar:
-            if train_sampler is not None:
-                train_sampler.set_epoch(cur_epoch)
+            if source_sampler is not None:
+                source_sampler.set_epoch(cur_epoch)
 
             # train one epoch
             if lr_warmup_scheduler is not None and cur_epoch < optim_cfg.WARMUP_EPOCH:

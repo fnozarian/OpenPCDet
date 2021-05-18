@@ -60,9 +60,11 @@ class AxisAlignedTargetAssigner(object):
             target_list = []
             for anchor_class_name, anchors in zip(self.anchor_class_names, all_anchors):
                 if cur_gt_classes.shape[0] > 1:
-                    mask = torch.from_numpy(self.class_names[cur_gt_classes.cpu() - 1] == anchor_class_name)
+                    # TODO(farzad) can't get why should we have abs(c).
+                    #  if c=-1 then the class_names[0] is selected which is Car?
+                    mask = torch.from_numpy(self.class_names[cur_gt_classes.cpu().abs() - 1] == anchor_class_name)
                 else:
-                    mask = torch.tensor([self.class_names[c - 1] == anchor_class_name
+                    mask = torch.tensor([self.class_names[torch.abs(c) - 1] == anchor_class_name
                                          for c in cur_gt_classes], dtype=torch.bool)
 
                 if self.use_multihead:

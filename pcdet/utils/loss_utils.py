@@ -72,6 +72,18 @@ class SigmoidFocalClassificationLoss(nn.Module):
         return loss * weights
 
 
+def sigmoid_focal_cls_loss(input, target, gamma=2.0, alpha=0.25):
+    pred_sigmoid = torch.sigmoid(input)
+    alpha_weight = target * alpha + (1 - target) * (1 - alpha)
+    pt = target * (1.0 - pred_sigmoid) + (1.0 - target) * pred_sigmoid
+    focal_weight = alpha_weight * torch.pow(pt, gamma)
+
+    bce_loss = SigmoidFocalClassificationLoss.sigmoid_cross_entropy_with_logits(input, target)
+
+    loss = focal_weight * bce_loss
+    return loss
+
+
 class WeightedSmoothL1Loss(nn.Module):
     """
     Code-wise Weighted Smooth L1 Loss modified based on fvcore.nn.smooth_l1_loss

@@ -8,6 +8,7 @@ from .. import backbones_2d, backbones_3d, dense_heads, roi_heads
 from ..backbones_2d import map_to_bev
 from ..backbones_3d import pfe, vfe
 from ..model_utils import model_nms_utils
+from pcdet.config import cfg
 
 
 class Detector3DTemplate(nn.Module):
@@ -335,13 +336,16 @@ class Detector3DTemplate(nn.Module):
                 update_model_state[key] = val
                 # logger.info('Update weight %s: %s' % (key, str(val.shape)))
 
-        state_dict = self.state_dict()
-        state_dict.update(update_model_state)
-        self.load_state_dict(state_dict)
+        if cfg.get('SELF_TRAIN', None) and cfg.SELF_TRAIN.get('DSNORM', None):
+            self.load_state_dict(model_state_disk)
+        else:
+            state_dict = self.state_dict()
+            state_dict.update(update_model_state)
+            self.load_state_dict(state_dict)
 
-        for key in state_dict:
-            if key not in update_model_state:
-                logger.info('Not updated weight %s: %s' % (key, str(state_dict[key].shape)))
+            for key in state_dict:
+                if key not in update_model_state:
+                    logger.info('Not updated weight %s: %s' % (key, str(state_dict[key].shape)))
 
         logger.info('==> Done (loaded %d/%d)' % (len(update_model_state), len(self.state_dict())))
 

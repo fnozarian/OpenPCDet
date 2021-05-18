@@ -127,6 +127,7 @@ class WaymoDataset(DatasetTemplate):
         input_dict = {
             'points': points,
             'frame_id': info['frame_id'],
+            'sample_idx': sample_idx
         }
 
         if 'annos' in info:
@@ -143,6 +144,34 @@ class WaymoDataset(DatasetTemplate):
                 'gt_boxes': gt_boxes_lidar,
                 'num_points_in_gt': annos.get('num_points_in_gt', None)
             })
+
+            if self.dataset_cfg.get('USE_PSEUDO_LABEL', None) and self.training:
+                input_dict['gt_boxes'] = None
+
+            if self.dataset_cfg.get('USE_PSEUDO_LABEL', None) and self.training:
+                input_dict['gt_boxes'] = None
+
+            # for debug only
+            # gt_boxes_mask = np.array([n in self.class_names for n in input_dict['gt_names']], dtype=np.bool_)
+            # debug_dict = {'gt_boxes': copy.deepcopy(gt_boxes_lidar[gt_boxes_mask])}
+
+        if self.dataset_cfg.get('FOV_POINTS_ONLY', None):
+            input_dict['points'] = self.extract_fov_data(
+                input_dict['points'], self.dataset_cfg.FOV_DEGREE, self.dataset_cfg.FOV_ANGLE
+            )
+            if input_dict['gt_boxes'] is not None:
+                fov_gt_flag = self.extract_fov_gt(
+                    input_dict['gt_boxes'], self.dataset_cfg.FOV_DEGREE, self.dataset_cfg.FOV_ANGLE
+                )
+                input_dict.update({
+                    'gt_names': input_dict['gt_names'][fov_gt_flag],
+                    'gt_boxes': input_dict['gt_boxes'][fov_gt_flag],
+                    'num_points_in_gt': input_dict['num_points_in_gt'][fov_gt_flag] if input_dict['num_points_in_gt'] is not None else None
+                })
+
+        # load saved pseudo label for unlabeled data
+        if self.dataset_cfg.get('USE_PSEUDO_LABEL', None) and self.training:
+            self.fill_pseudo_labels(input_dict)
 
         data_dict = self.prepare_data(data_dict=input_dict)
         data_dict['metadata'] = info.get('metadata', info['frame_id'])
