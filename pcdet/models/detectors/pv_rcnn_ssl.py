@@ -7,7 +7,7 @@ from pcdet.datasets.augmentor.augmentor_utils import *
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 from .detector3d_template import Detector3DTemplate
 from.pv_rcnn import PVRCNN
-
+from collections import Counter
 
 class PVRCNN_SSL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -144,13 +144,26 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pseudo_ious = []
                 pseudo_accs = []
                 pseudo_fgs = []
+                pseudo_classes = []
+                org_classes = []
                 for i, ind in enumerate(unlabeled_mask):
                     # statistics
                     anchor_by_gt_overlap = iou3d_nms_utils.boxes_iou3d_gpu(
                         batch_dict['gt_boxes'][ind, ...][:, 0:7],
                         ori_unlabeled_boxes[i, :, 0:7])
                     cls_pseudo = batch_dict['gt_boxes'][ind, ...][:, 7]
+                    cls_org = ori_unlabeled_boxes[i, :, 7]
                     unzero_inds = torch.nonzero(cls_pseudo).squeeze(1).long()
+                    unzero_inds_org = torch.nonzero(cls_org).squeeze(1).long()
+                    if len(unzero_inds) > 0:
+                        pseudo_classes.extend(cls_pseudo[unzero_inds].int().cpu().numpy())
+                    else:
+                        pseudo_classes.append(-1)
+                    if len(unzero_inds_org) > 0:
+                        org_classes.extend(cls_org[unzero_inds_org].int().cpu().numpy())
+                    else:
+                        org_classes.append(-1)
+
                     cls_pseudo = cls_pseudo[unzero_inds]
                     if len(unzero_inds) > 0:
                         iou_max, asgn = anchor_by_gt_overlap[unzero_inds, :].max(dim=1)
@@ -229,6 +242,9 @@ class PVRCNN_SSL(Detector3DTemplate):
             tb_dict_['sem_score_fg'] = sem_score_fg.mean()
             tb_dict_['sem_score_bg'] = sem_score_bg.mean()
 
+            tb_dict_['pseudo_classes'] = Counter(pseudo_classes)
+            tb_dict_['org_classes'] = Counter(org_classes)
+
             tb_dict_['max_box_num'] = max_box_num
             tb_dict_['max_pseudo_box_num'] = max_pseudo_box_num
 
@@ -260,7 +276,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         # Use the true average until the exponential average is more correct
         alpha = min(1 - 1 / (self.global_step + 1), alpha)
         for ema_param, param in zip(self.pv_rcnn_ema.parameters(), self.pv_rcnn.parameters()):
-            ema_param.data.mul_(alpha).add_(1 - alpha, param.data)
+            ema_param.data.mul_(alpha).add_((1 - alpha) * param.data)
 
     def load_params_from_file(self, filename, logger, to_cpu=False):
         if not os.path.isfile(filename):

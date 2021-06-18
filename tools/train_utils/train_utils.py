@@ -7,6 +7,7 @@ import time
 from torch.nn.utils import clip_grad_norm_
 from pcdet.utils import common_utils, commu_utils
 
+kitti_class_map = {-1: 'no_fg', 1: 'Car', 2: 'Pedestrian', 3: 'Cyclist'}
 
 def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False):
@@ -19,6 +20,11 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         batch_time = common_utils.AverageMeter()
         forward_time = common_utils.AverageMeter()
 
+    # selected_label = torch.ones((len(train_loader.dataset.unlabeled_kitti_infos),), dtype=torch.long, ) * -1
+    # selected_label = selected_label.cuda()
+    # classwise_ps_counts = torch.zeros((3,)).cuda()
+    classwise_ps_counts = {}
+    classwise_label_counts = {}
     for cur_it in range(total_it_each_epoch):
         end = time.time()
         try:
@@ -54,6 +60,20 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         optimizer.step()
 
         accumulated_iter += 1
+        disp_dict.update({'loss': loss.item(), 'lr': cur_lr})
+
+        for k, v in tb_dict['pseudo_classes'].items():
+            cls_key = kitti_class_map[k]
+            if cls_key in classwise_ps_counts.keys():
+                classwise_ps_counts[cls_key] += v
+            else:
+                classwise_ps_counts[cls_key] = v
+        for k, v in tb_dict['org_classes'].items():
+            cls_key = kitti_class_map[k]
+            if cls_key in classwise_label_counts.keys():
+                classwise_label_counts[cls_key] += tb_dict['org_classes'][k]
+            else:
+                classwise_label_counts[cls_key] = tb_dict['org_classes'][k]
 
         cur_batch_time = time.time() - end
         # average reduce
@@ -61,6 +81,9 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         avg_forward_time = commu_utils.average_reduce_value(cur_forward_time)
         avg_batch_time = commu_utils.average_reduce_value(cur_batch_time)
 
+
+        tb_dict.pop('pseudo_classes')
+        tb_dict.pop('org_classes')
         # log to console and tensorboard
         if rank == 0:
             data_time.update(avg_data_time)
@@ -83,6 +106,11 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
                     # print(key, val)
                     tb_log.add_scalar('train/' + key, val, accumulated_iter)
     if rank == 0:
+        tb_log.add_scalars("pseudo_classes", classwise_ps_counts, accumulated_iter)
+        new_classwise = {}
+        for key, val in classwise_label_counts.items():
+            new_classwise[key + "_org"] = val
+        tb_log.add_scalars("pseudo_classes", new_classwise, accumulated_iter)
         pbar.close()
     return accumulated_iter
 
