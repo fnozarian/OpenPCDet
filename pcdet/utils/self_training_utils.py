@@ -173,7 +173,19 @@ def save_pseudo_label_batch(input_dict,
                 pred_cls_scores = pred_dicts[b_idx]['pred_cls_scores'].detach().cpu().numpy()
             if 'pred_iou_scores' in pred_dicts[b_idx]:
                 pred_iou_scores = pred_dicts[b_idx]['pred_iou_scores'].detach().cpu().numpy()
-            # TODO(farzad) info: pred_iou_scores == pred_scores since the Score_type for nmp is based on iou alone
+
+            # remove boxes under negative threshold
+            if cfg.SELF_TRAIN.get('NEG_THRESH', None):
+                labels_remove_scores = np.array(cfg.SELF_TRAIN.NEG_THRESH)[pred_labels - 1]
+                remain_mask = pred_scores >= labels_remove_scores
+                pred_labels = pred_labels[remain_mask]
+                pred_scores = pred_scores[remain_mask]
+                pred_boxes = pred_boxes[remain_mask]
+                if 'pred_cls_scores' in pred_dicts[b_idx]:
+                    pred_cls_scores = pred_cls_scores[remain_mask]
+                if 'pred_iou_scores' in pred_dicts[b_idx]:
+                    pred_iou_scores = pred_iou_scores[remain_mask]
+
             labels_ignore_scores = np.array(cfg.SELF_TRAIN.SCORE_THRESH)[pred_labels - 1]
             ignore_mask = pred_scores < labels_ignore_scores
             pred_labels[ignore_mask] = -1
