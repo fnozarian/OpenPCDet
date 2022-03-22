@@ -33,13 +33,19 @@ class DatasetTemplate(torch_data.Dataset):
             self.root_path, self.dataset_cfg.DATA_AUGMENTOR, self.class_names, logger=self.logger
         ) if self.training else None
         self.data_processor = DataProcessor(
-            self.dataset_cfg.DATA_PROCESSOR, point_cloud_range=self.point_cloud_range, training=self.training
+            self.dataset_cfg.DATA_PROCESSOR, point_cloud_range=self.point_cloud_range,
+            training=self.training, num_point_features=self.point_feature_encoder.num_point_features
         )
 
         self.grid_size = self.data_processor.grid_size
         self.voxel_size = self.data_processor.voxel_size
         self.total_epochs = 0
         self._merge_all_iters_to_one_epoch = False
+
+        if hasattr(self.data_processor, "depth_downsample_factor"):
+            self.depth_downsample_factor = self.data_processor.depth_downsample_factor
+        else:
+            self.depth_downsample_factor = None
 
     @property
     def mode(self):
@@ -188,7 +194,7 @@ class DatasetTemplate(torch_data.Dataset):
         """
         Args:
             data_dict:
-                points: (N, 3 + C_in)
+                points: optional, (N, 3 + C_in)
                 gt_boxes: optional, (N, 7 + C) [x, y, z, dx, dy, dz, heading, ...]
                 gt_names: optional, (N), string
                 ...
@@ -206,6 +212,7 @@ class DatasetTemplate(torch_data.Dataset):
                 ...
         """
         if self.training:
+            # TODO(farzad) why this filtering does not exist in openpcdet master branch?
             # filter gt_boxes without points
             num_points_in_gt = data_dict.get('num_points_in_gt', None)
             if num_points_in_gt is None:
@@ -246,11 +253,20 @@ class DatasetTemplate(torch_data.Dataset):
             gt_boxes = np.concatenate((data_dict['gt_boxes'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
             data_dict['gt_boxes'] = gt_boxes
 
-        data_dict = self.point_feature_encoder.forward(data_dict)
+            if data_dict.get('gt_boxes2d', None) is not None:
+                data_dict['gt_boxes2d'] = data_dict['gt_boxes2d'][selected]
+
+        if data_dict.get('points', None) is not None:
+            data_dict = self.point_feature_encoder.forward(data_dict)
 
         data_dict = self.data_processor.forward(
             data_dict=data_dict
         )
+        # TODO(farzad) this is only in openpcdet master but not in st3d. Should we keep it?
+        if self.training and len(data_dict['gt_boxes']) == 0:
+            new_index = np.random.randint(self.__len__())
+            return self.__getitem__(new_index)
+
         data_dict.pop('gt_names', None)
         data_dict.pop('gt_classes', None)
 
@@ -281,12 +297,43 @@ class DatasetTemplate(torch_data.Dataset):
                     for k in range(batch_size):
                         batch_gt_boxes3d[k, :val[k].__len__(), :] = val[k]
                     ret[key] = batch_gt_boxes3d
-                elif key in ['gt_scores']:
-                    max_gt = max([len(x) for x in val])
-                    batch_scores = np.zeros((batch_size, max_gt), dtype=np.float32)
+                elif key in ['gt_boxes2d']:
+                    max_boxes = 0
+                    max_boxes = max([len(x) for x in val])
+                    batch_boxes2d = np.zeros((batch_size, max_boxes, val[0].shape[-1]), dtype=np.float32)
                     for k in range(batch_size):
-                        batch_scores[k, :val[k].__len__()] = val[k]
-                    ret[key] = batch_scores
+                        if val[k].size > 0:
+                            batch_boxes2d[k, :val[k].__len__(), :] = val[k]
+                    ret[key] = batch_boxes2d
+                elif key in ["images", "depth_maps"]:
+                    # Get largest image size (H, W)
+                    max_h = 0
+                    max_w = 0
+                    for image in val:
+                        max_h = max(max_h, image.shape[0])
+                        max_w = max(max_w, image.shape[1])
+
+                    # Change size of images
+                    images = []
+                    for image in val:
+                        pad_h = common_utils.get_pad_params(desired_size=max_h, cur_size=image.shape[0])
+                        pad_w = common_utils.get_pad_params(desired_size=max_w, cur_size=image.shape[1])
+                        pad_width = (pad_h, pad_w)
+                        # Pad with nan, to be replaced later in the pipeline.
+                        pad_value = np.nan
+
+                        if key == "images":
+                            pad_width = (pad_h, pad_w, (0, 0))
+                        elif key == "depth_maps":
+                            pad_width = (pad_h, pad_w)
+
+                        image_pad = np.pad(image,
+                                           pad_width=pad_width,
+                                           mode='constant',
+                                           constant_values=pad_value)
+
+                        images.append(image_pad)
+                    ret[key] = np.stack(images, axis=0)
                 else:
                     ret[key] = np.stack(val, axis=0)
             except:

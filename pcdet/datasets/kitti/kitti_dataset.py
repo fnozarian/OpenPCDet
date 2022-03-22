@@ -4,6 +4,7 @@ import pickle
 import numpy as np
 from skimage import io
 
+from . import kitti_utils
 from ...ops.roiaware_pool3d import roiaware_pool3d_utils
 from ...utils import box_utils, calibration_kitti, common_utils, object3d_kitti
 from ..dataset import DatasetTemplate
@@ -64,6 +65,21 @@ class KittiDataset(DatasetTemplate):
         assert lidar_file.exists()
         return np.fromfile(str(lidar_file), dtype=np.float32).reshape(-1, 4)
 
+    def get_image(self, idx):
+        """
+        Loads image for a sample
+        Args:
+            idx: int, Sample index
+        Returns:
+            image: (H, W, 3), RGB Image
+        """
+        img_file = self.root_split_path / 'image_2' / ('%s.png' % idx)
+        assert img_file.exists()
+        image = io.imread(img_file)
+        image = image.astype(np.float32)
+        image /= 255.0
+        return image
+
     def get_image_shape(self, idx):
         img_file = self.root_split_path / 'image_2' / ('%s.png' % idx)
         assert img_file.exists()
@@ -73,6 +89,21 @@ class KittiDataset(DatasetTemplate):
         label_file = self.root_split_path / 'label_2' / ('%s.txt' % idx)
         assert label_file.exists()
         return object3d_kitti.get_objects_from_label(label_file)
+
+    def get_depth_map(self, idx):
+        """
+        Loads depth map for a sample
+        Args:
+            idx: str, Sample index
+        Returns:
+            depth: (H, W), Depth map
+        """
+        depth_file = self.root_split_path / 'depth_2' / ('%s.png' % idx)
+        assert depth_file.exists()
+        depth = io.imread(depth_file)
+        depth = depth.astype(np.float32)
+        depth /= 256.0
+        return depth
 
     def get_calib(self, idx):
         calib_file = self.root_split_path / 'calib' / ('%s.txt' % idx)
@@ -277,6 +308,7 @@ class KittiDataset(DatasetTemplate):
                 return pred_dict
 
             calib = batch_dict['calib'][batch_index]
+            image_shape = batch_dict['image_shape'][batch_index].cpu().numpy()
             image_shape = batch_dict['image_shape'][batch_index]
 
             if cfg.get('SHIFT_COOR', None):
@@ -358,21 +390,11 @@ class KittiDataset(DatasetTemplate):
         info = copy.deepcopy(self.kitti_infos[index])
 
         sample_idx = info['point_cloud']['lidar_idx']
-
-        points = self.get_lidar(sample_idx)
-        calib = self.get_calib(sample_idx)
-
         img_shape = info['image']['image_shape']
-        if self.dataset_cfg.FOV_POINTS_ONLY:
-            pts_rect = calib.lidar_to_rect(points[:, 0:3])
-            fov_flag = self.get_fov_flag(pts_rect, img_shape, calib)
-            points = points[fov_flag]
-
-        if self.dataset_cfg.get('SHIFT_COOR', None):
-            points[:, 0:3] += np.array(self.dataset_cfg.SHIFT_COOR, dtype=np.float32)
+        calib = self.get_calib(sample_idx)
+        get_item_list = self.dataset_cfg.get('GET_ITEM_LIST', ['points'])
 
         input_dict = {
-            'points': points,
             'frame_id': sample_idx,
             'calib': calib,
             'image_shape': img_shape
@@ -393,9 +415,14 @@ class KittiDataset(DatasetTemplate):
                 'gt_names': gt_names,
                 'gt_boxes': gt_boxes_lidar
             })
+            if "gt_boxes2d" in get_item_list:
+                input_dict['gt_boxes2d'] = annos["bbox"]
+
+            road_plane = self.get_road_plane(sample_idx)
+            if road_plane is not None:
+                input_dict['road_plane'] = road_plane
 
             if self.dataset_cfg.get('REMOVE_ORIGIN_GTS', None) and self.training:
-                input_dict['points'] = box_utils.remove_points_in_boxes3d(input_dict['points'], input_dict['gt_boxes'])
                 mask = np.zeros(gt_boxes_lidar.shape[0], dtype=np.bool_)
                 input_dict['gt_boxes'] = input_dict['gt_boxes'][mask]
                 input_dict['gt_names'] = input_dict['gt_names'][mask]
@@ -407,9 +434,27 @@ class KittiDataset(DatasetTemplate):
             # gt_boxes_mask = np.array([n in self.class_names for n in input_dict['gt_names']], dtype=np.bool_)
             # debug_dict = {'gt_boxes': copy.deepcopy(gt_boxes_lidar[gt_boxes_mask])}
 
-            road_plane = self.get_road_plane(sample_idx)
-            if road_plane is not None:
-                input_dict['road_plane'] = road_plane
+        if "points" in get_item_list:
+            points = self.get_lidar(sample_idx)
+            if self.dataset_cfg.FOV_POINTS_ONLY:
+                pts_rect = calib.lidar_to_rect(points[:, 0:3])
+                fov_flag = self.get_fov_flag(pts_rect, img_shape, calib)
+                points = points[fov_flag]
+            if self.dataset_cfg.get('SHIFT_COOR', None):
+                points[:, 0:3] += np.array(self.dataset_cfg.SHIFT_COOR, dtype=np.float32)
+            if self.dataset_cfg.get('REMOVE_ORIGIN_GTS', None) and self.training:
+                points = box_utils.remove_points_in_boxes3d(points, input_dict['gt_boxes'])
+
+            input_dict['points'] = points
+
+        if "images" in get_item_list:
+            input_dict['images'] = self.get_image(sample_idx)
+
+        if "depth_maps" in get_item_list:
+            input_dict['depth_maps'] = self.get_depth_map(sample_idx)
+
+        if "calib_matricies" in get_item_list:
+            input_dict["trans_lidar_to_cam"], input_dict["trans_cam_to_img"] = kitti_utils.calib_to_matricies(calib)
 
         # load saved pseudo label for unlabel data
         if self.dataset_cfg.get('USE_PSEUDO_LABEL', None) and self.training:
@@ -417,6 +462,7 @@ class KittiDataset(DatasetTemplate):
 
         data_dict = self.prepare_data(data_dict=input_dict)
 
+        data_dict['image_shape'] = img_shape
         return data_dict
 
 
@@ -466,7 +512,7 @@ if __name__ == '__main__':
         import yaml
         from pathlib import Path
         from easydict import EasyDict
-        dataset_cfg = EasyDict(yaml.load(open(sys.argv[2])))
+        dataset_cfg = EasyDict(yaml.safe_load(open(sys.argv[2])))
         ROOT_DIR = (Path(__file__).resolve().parent / '../../../').resolve()
         create_kitti_infos(
             dataset_cfg=dataset_cfg,
