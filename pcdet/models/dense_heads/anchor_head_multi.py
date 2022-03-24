@@ -126,6 +126,8 @@ class SingleHead(BaseBEVBackbone):
             cls_preds = cls_preds.view(-1, self.num_anchors_per_location,
                                        self.num_class, H, W).permute(0, 1, 3, 4, 2).contiguous()
             box_preds = box_preds.view(batch_size, -1, self.code_size)
+            # TODO(farzad) which one? the commented one is from st3d
+            # cls_preds = cls_preds.view(batch_size, -1, self.num_class).unsqueeze(-1)
             cls_preds = cls_preds.view(batch_size, -1, self.num_class)
 
         if self.conv_dir_cls is not None:

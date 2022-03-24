@@ -48,7 +48,7 @@ class KittiDataset(DatasetTemplate):
         self.kitti_infos.extend(kitti_infos)
 
         if self.logger is not None:
-            self.logger.info('Total samples for KITTI dataset: %d' % (len(kitti_infos)))
+            self.logger.info('Total samples for KITTI dataset: %d' % (len(self.kitti_infos)))
 
     def set_split(self, split):
         super().__init__(
@@ -300,9 +300,9 @@ class KittiDataset(DatasetTemplate):
             return ret_dict
 
         def generate_single_sample_dict(batch_index, box_dict):
-            pred_scores = box_dict['pred_scores'].cpu().numpy()
-            pred_boxes = box_dict['pred_boxes'].cpu().numpy()
-            pred_labels = box_dict['pred_labels'].cpu().numpy()
+            pred_scores = box_dict['pred_scores'].detach().cpu().numpy()
+            pred_boxes = box_dict['pred_boxes'].detach().cpu().numpy()
+            pred_labels = box_dict['pred_labels'].detach().cpu().numpy()
             pred_dict = get_template_prediction(pred_scores.shape[0])
             if pred_scores.shape[0] == 0:
                 return pred_dict
