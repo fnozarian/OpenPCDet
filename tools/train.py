@@ -25,7 +25,7 @@ def parse_config():
 
     parser.add_argument('--batch_size', type=int, default=16, required=False, help='batch size for training')
     parser.add_argument('--epochs', type=int, default=None, required=False, help='number of epochs to train for')
-    parser.add_argument('--workers', type=int, default=4, help='number of workers for dataloader')
+    parser.add_argument('--workers', type=int, default=8, help='number of workers for dataloader')
     parser.add_argument('--extra_tag', type=str, default='default', help='extra tag for this experiment')
     parser.add_argument('--ckpt', type=str, default=None, help='checkpoint to start from')
     parser.add_argument('--pretrained_model', type=str, default=None, help='pretrained_model')
@@ -199,8 +199,8 @@ def main():
         ema_model=None
     )
 
-    if hasattr(train_set, 'use_shared_memory') and train_set.use_shared_memory:
-        train_set.clean_shared_memory()
+    if hasattr(source_set, 'use_shared_memory') and source_set.use_shared_memory:
+        source_set.clean_shared_memory()
 
     logger.info('**********************End training %s/%s(%s)**********************\n\n\n'
                 % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))

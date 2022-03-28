@@ -8,7 +8,6 @@ from . import kitti_utils
 from ...ops.roiaware_pool3d import roiaware_pool3d_utils
 from ...utils import box_utils, calibration_kitti, common_utils, object3d_kitti
 from ..dataset import DatasetTemplate
-from ...config import cfg
 
 class KittiDataset(DatasetTemplate):
     def __init__(self, dataset_cfg, class_names, training=True, root_path=None, logger=None):
@@ -273,8 +272,7 @@ class KittiDataset(DatasetTemplate):
         with open(db_info_save_path, 'wb') as f:
             pickle.dump(all_db_infos, f)
 
-    @staticmethod
-    def generate_prediction_dicts(batch_dict, pred_dicts, class_names, output_path=None):
+    def generate_prediction_dicts(self, batch_dict, pred_dicts, class_names, output_path=None):
         """
         Args:
             batch_dict:
@@ -309,13 +307,12 @@ class KittiDataset(DatasetTemplate):
 
             calib = batch_dict['calib'][batch_index]
             image_shape = batch_dict['image_shape'][batch_index].cpu().numpy()
-            image_shape = batch_dict['image_shape'][batch_index]
 
-            if cfg.get('SHIFT_COOR', None):
-                pred_boxes[:, 0:3] -= cfg.SHIFT_COOR
+            if self.dataset_cfg.get('SHIFT_COOR', None):
+                pred_boxes[:, 0:3] -= self.dataset_cfg.SHIFT_COOR
 
             # BOX FILTER
-            if cfg.get('TEST', None) and cfg.TEST.BOX_FILTER['FOV_FILTER']:
+            if self.dataset_cfg.get('TEST', None) and self.dataset_cfg.TEST.BOX_FILTER['FOV_FILTER']:
                 box_preds_lidar_center = pred_boxes[:, 0:3]
                 pts_rect = calib.lidar_to_rect(box_preds_lidar_center)
                 fov_flag = KittiDataset.get_fov_flag(pts_rect, image_shape, calib, margin=5)

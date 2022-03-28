@@ -2,7 +2,7 @@ import time
 
 import fire
 
-import .kitti_common as kitti
+from .kitti_common import get_label_annos, filter_annos_low_score
 from .eval import get_coco_eval_result, get_official_eval_result
 
 
@@ -18,11 +18,11 @@ def evaluate(label_path,
              current_class=0,
              coco=False,
              score_thresh=-1):
-    dt_annos = kitti.get_label_annos(result_path)
+    dt_annos = get_label_annos(result_path)
     if score_thresh > 0:
-        dt_annos = kitti.filter_annos_low_score(dt_annos, score_thresh)
+        dt_annos = filter_annos_low_score(dt_annos, score_thresh)
     val_image_ids = _read_imageset_file(label_split_file)
-    gt_annos = kitti.get_label_annos(label_path, val_image_ids)
+    gt_annos = get_label_annos(label_path, val_image_ids)
     if coco:
         return get_coco_eval_result(gt_annos, dt_annos, current_class)
     else:
