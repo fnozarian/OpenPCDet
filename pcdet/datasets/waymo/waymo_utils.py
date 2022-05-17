@@ -158,7 +158,7 @@ def convert_range_image_to_point_cloud(frame, range_images, camera_projections, 
 
 
 def save_lidar_points(frame, cur_save_path, use_two_returns=True):
-    range_images, camera_projections, range_image_top_pose = \
+    range_images, camera_projections, _, range_image_top_pose = \
         frame_utils.parse_range_image_and_camera_projection(frame)
 
     points, cp_points, points_in_NLZ_flag, points_intensity, points_elongation = convert_range_image_to_point_cloud(
