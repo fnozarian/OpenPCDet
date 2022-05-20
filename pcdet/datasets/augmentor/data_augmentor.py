@@ -57,6 +57,7 @@ class DataAugmentor(object):
             gt_boxes, points, enable = getattr(augmentor_utils, 'random_flip_along_%s' % cur_axis)(
                 gt_boxes, points,
             )
+            data_dict['flip_' + cur_axis] = enable
 
         data_dict['gt_boxes'] = gt_boxes
         data_dict['points'] = points
@@ -83,7 +84,6 @@ class DataAugmentor(object):
         gt_boxes, points, noise_scale = augmentor_utils.global_scaling(
             data_dict['gt_boxes'], data_dict['points'], config['WORLD_SCALE_RANGE']
         )
-
         data_dict['gt_boxes'] = gt_boxes
         data_dict['points'] = points
         data_dict['scale'] = noise_scale
