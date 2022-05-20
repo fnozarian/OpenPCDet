@@ -4,7 +4,7 @@ import numpy as np
 
 from ...utils import common_utils
 from . import augmentor_utils, database_sampler
-
+from .part_aware_augmentation import PartAwareAugmentation
 
 class DataAugmentor(object):
     def __init__(self, root_path, augmentor_configs, class_names, logger=None):
@@ -223,6 +223,22 @@ class DataAugmentor(object):
                                                                  pyramids)
         data_dict['gt_boxes'] = gt_boxes
         data_dict['points'] = points
+        return data_dict
+
+    def pa_aug(self, data_dict=None, config=None):
+        """
+        Refer to the paper:
+            Part-Aware Data Augmentation for 3D Object Detection in Point Cloud
+        """
+        if data_dict is None:
+            return partial(self.pa_aug, config=config)
+        pa_aug = PartAwareAugmentation(data_dict['points'], data_dict['gt_boxes'], data_dict['gt_names'],
+                                           class_names=self.class_names)
+        data_dict['points'], gt_boxes_mask = pa_aug.augment(pa_aug_param=config["EXP_NAME"])
+        data_dict['gt_boxes'] = data_dict['gt_boxes'][gt_boxes_mask]
+        data_dict['gt_names'] = data_dict['gt_names'][gt_boxes_mask]
+        if 'gt_boxes_mask' in data_dict:
+            data_dict['gt_boxes_mask'] = data_dict['gt_boxes_mask'][gt_boxes_mask]
         return data_dict
     
     def forward(self, data_dict):
