@@ -235,7 +235,7 @@ class DataAugmentor(object):
         data_dict['points'] = points
         return data_dict
 
-    def forward(self, data_dict):
+    def forward(self, data_dict, no_db_sample=False):
         """
         Args:
             data_dict:
