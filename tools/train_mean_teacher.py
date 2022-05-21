@@ -3,20 +3,21 @@ import datetime
 import glob
 import os
 from pathlib import Path
-from test import repeat_eval_ckpt
-
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 from tensorboardX import SummaryWriter
 
 from pcdet.config import cfg, cfg_from_list, cfg_from_yaml_file, log_config_to_file
-from pcdet.datasets import build_dataloader
-from pcdet.models import build_network, model_fn_decorator
+from pcdet.datasets import build_dataloader_mt
+from pcdet.models import build_network, model_fn_decorator_for_mt, model_fn_decorator_for_mt_merge_source_target, model_fn_decorator_for_mt_merge_both_models
 from pcdet.utils import common_utils
 from train_utils.optimization import build_optimizer, build_scheduler
 from train_utils.train_utils import train_model
+from pcdet.utils.custom_batchnorm import BatchNorm1d, BatchNorm2d
 
+setattr(torch.nn, 'BatchNorm1d', BatchNorm1d)
+setattr(torch.nn, 'BatchNorm2d', BatchNorm2d)
 
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
@@ -24,17 +25,17 @@ def parse_config():
 
     parser.add_argument('--batch_size', type=int, default=None, required=False, help='batch size for training')
     parser.add_argument('--epochs', type=int, default=None, required=False, help='number of epochs to train for')
-    parser.add_argument('--workers', type=int, default=8, help='number of workers for dataloader')
+    parser.add_argument('--workers', type=int, default=4, help='number of workers for dataloader')
     parser.add_argument('--extra_tag', type=str, default='default', help='extra tag for this experiment')
     parser.add_argument('--ckpt', type=str, default=None, help='checkpoint to start from')
     parser.add_argument('--pretrained_model', type=str, default=None, help='pretrained_model')
     parser.add_argument('--launcher', choices=['none', 'pytorch', 'slurm'], default='none')
     parser.add_argument('--tcp_port', type=int, default=18888, help='tcp port for distrbuted training')
-    parser.add_argument('--sync_bn', action='store_true', default=False, help='whether to use sync bn')
+    parser.add_argument('--sync_bn', action='store_true', default=True, help='whether to use sync bn')
     parser.add_argument('--fix_random_seed', action='store_true', default=False, help='')
     parser.add_argument('--ckpt_save_interval', type=int, default=1, help='number of training epochs')
     parser.add_argument('--local_rank', type=int, default=0, help='local rank for distributed training')
-    parser.add_argument('--max_ckpt_save_num', type=int, default=30, help='max number of saved checkpoint')
+    parser.add_argument('--max_ckpt_save_num', type=int, default=80, help='max number of saved checkpoint')
     parser.add_argument('--merge_all_iters_to_one_epoch', action='store_true', default=False, help='')
     parser.add_argument('--set', dest='set_cfgs', default=None, nargs=argparse.REMAINDER,
                         help='set extra config keys if needed')
@@ -102,9 +103,11 @@ def main():
     tb_log = SummaryWriter(log_dir=str(output_dir / 'tensorboard')) if cfg.LOCAL_RANK == 0 else None
 
     # -----------------------create dataloader & network & optimizer---------------------------
-    train_set, train_loader, train_sampler = build_dataloader(
+    train_set, train_loader, train_sampler, train_loader_target, train_sampler_target = build_dataloader_mt(
         dataset_cfg=cfg.DATA_CONFIG,
+        dataset_cfg_target=cfg.DATA_CONFIG_TARGET,
         class_names=cfg.CLASS_NAMES,
+        class_names_target=cfg.CLASS_NAMES_TARGET,
         batch_size=args.batch_size,
         dist=dist_train, workers=args.workers,
         logger=logger,
@@ -113,10 +116,23 @@ def main():
         total_epochs=args.epochs
     )
 
+    '''build model and ema_model'''
     model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=train_set)
+    ema_model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=train_set)
+
+    if ema_model.model_cfg.get('BN_WARM_UP', False):
+        model.set_momemtum_value_for_bn(momemtum=0.1)
+    else:
+        model.set_momemtum_value_for_bn(momemtum=(1-model.model_cfg.get('BN_EMA', 0.9)))
+
+    for param in ema_model.parameters():
+        param.detach_()
+
     if args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        ema_model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(ema_model)
     model.cuda()
+    ema_model.cuda()
 
     optimizer = build_optimizer(model, cfg.OPTIMIZATION)
 
@@ -125,20 +141,29 @@ def main():
     last_epoch = -1
     if args.pretrained_model is not None:
         model.load_params_from_file(filename=args.pretrained_model, to_cpu=dist, logger=logger)
+        ema_model.load_params_from_file(filename=args.pretrained_model, to_cpu=dist, logger=logger)
 
     if args.ckpt is not None:
-        it, start_epoch = model.load_params_with_optimizer(args.ckpt, to_cpu=dist, optimizer=optimizer, logger=logger)
-        last_epoch = start_epoch + 1
+        _, _ = ema_model.load_params_with_optimizer(args.ckpt, to_cpu=dist, optimizer=optimizer, logger=logger)
+        _, _ = model.load_params_with_optimizer(args.ckpt, to_cpu=dist, optimizer=optimizer, logger=logger)
     else:
         ckpt_list = glob.glob(str(ckpt_dir / '*checkpoint_epoch_*.pth'))
         if len(ckpt_list) > 0:
             ckpt_list.sort(key=os.path.getmtime)
+            _, _ = ema_model.load_params_with_optimizer(
+                ckpt_list[-1], to_cpu=dist, optimizer=optimizer, logger=logger
+            )
             it, start_epoch = model.load_params_with_optimizer(
                 ckpt_list[-1], to_cpu=dist, optimizer=optimizer, logger=logger
             )
             last_epoch = start_epoch + 1
 
     model.train()  # before wrap to DistributedDataParallel to support fixed some parameters
+    if ema_model.model_cfg.get('COPY_BN_STATS_TO_TEACHER', False):
+        ema_model.eval()
+    else:
+        ema_model.train()
+
     if dist_train:
         model = nn.parallel.DistributedDataParallel(model, device_ids=[cfg.LOCAL_RANK % torch.cuda.device_count()])
     logger.info(model)
@@ -148,6 +173,13 @@ def main():
         last_epoch=last_epoch, optim_cfg=cfg.OPTIMIZATION
     )
 
+    if ema_model.model_cfg.get('MERGE_SOURCE_TARGET', False):
+        model_function = model_fn_decorator_for_mt_merge_source_target
+    elif ema_model.model_cfg.get('MERGE_SOURCE_TARGET_FOR_BOTH', False):
+        model_function = model_fn_decorator_for_mt_merge_both_models
+    else:
+        model_function = model_fn_decorator_for_mt
+
     # -----------------------start training---------------------------
     logger.info('**********************Start training %s/%s(%s)**********************'
                 % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
@@ -155,7 +187,7 @@ def main():
         model,
         optimizer,
         train_loader,
-        model_func=model_fn_decorator(),
+        model_func=model_function(),
         lr_scheduler=lr_scheduler,
         optim_cfg=cfg.OPTIMIZATION,
         start_epoch=start_epoch,
@@ -168,31 +200,14 @@ def main():
         lr_warmup_scheduler=lr_warmup_scheduler,
         ckpt_save_interval=args.ckpt_save_interval,
         max_ckpt_save_num=args.max_ckpt_save_num,
-        merge_all_iters_to_one_epoch=args.merge_all_iters_to_one_epoch
+        merge_all_iters_to_one_epoch=args.merge_all_iters_to_one_epoch,
+        train_loader_target=train_loader_target, 
+        train_sampler_target=train_sampler_target,
+        ema_model=ema_model
     )
 
     logger.info('**********************End training %s/%s(%s)**********************\n\n\n'
                 % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
-
-    logger.info('**********************Start evaluation %s/%s(%s)**********************' %
-                (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
-    test_set, test_loader, sampler = build_dataloader(
-        dataset_cfg=cfg.DATA_CONFIG,
-        class_names=cfg.CLASS_NAMES,
-        batch_size=args.batch_size,
-        dist=dist_train, workers=args.workers, logger=logger, training=False
-    )
-    eval_output_dir = output_dir / 'eval' / 'eval_with_train'
-    eval_output_dir.mkdir(parents=True, exist_ok=True)
-    args.start_epoch = max(args.epochs - 10, 0)  # Only evaluate the last 10 epochs
-
-    repeat_eval_ckpt(
-        model.module if dist_train else model,
-        test_loader, args, eval_output_dir, logger, ckpt_dir,
-        dist_test=dist_train
-    )
-    logger.info('**********************End evaluation %s/%s(%s)**********************' %
-                (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
 
 
 if __name__ == '__main__':

@@ -95,6 +95,8 @@ class WeightedSmoothL1Loss(nn.Module):
         if code_weights is not None:
             self.code_weights = np.array(code_weights, dtype=np.float32)
             self.code_weights = torch.from_numpy(self.code_weights).cuda()
+        else:
+            self.code_weights = None
 
     @staticmethod
     def smooth_l1_loss(diff, beta):

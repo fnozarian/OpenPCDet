@@ -1,13 +1,16 @@
-CLASS_NAMES: ['Car']
-
-TAG: 'pointrcnn'
+CLASS_NAMES: ['Vehicle']
 
 DATA_CONFIG:
-    _BASE_CONFIG_: cfgs/dataset_configs/kitti_dataset.yaml
+    _BASE_CONFIG_: cfgs/dataset_configs/waymo_dataset_kitti_range.yaml
+    FILTER_GT_FOR_EVAL_BY_RANGE: True # filter by range
+    FILTER_GT_FOR_EVAL_BY_KITTI_FOV: True # match the fov of KITTI
 
     DATA_PROCESSOR:
         -   NAME: mask_points_and_boxes_outside_range
             REMOVE_OUTSIDE_BOXES: True
+
+        -   NAME: filter_points_and_boxes_by_kitti_fov
+            TAN_THRESHOLD: 1.1615 # around 49 degrees
 
         -   NAME: sample_points
             NUM_POINTS: {
@@ -67,7 +70,6 @@ MODEL:
         CLASS_AGNOSTIC: True
 
         ROI_POINT_POOL:
-            # POOL_EXTRA_WIDTH: [0.0, 0.0, 0.0]
             POOL_EXTRA_WIDTH: [1.0, 1.0, 1.0]
             NUM_SAMPLED_POINTS: 512
             DEPTH_NORMALIZER: 70.0
@@ -131,7 +133,7 @@ MODEL:
         SCORE_THRESH: 0.1
         OUTPUT_RAW_SCORE: False
 
-        EVAL_METRIC: kitti
+        EVAL_METRIC: waymo
 
         NMS_CONFIG:
             MULTI_CLASSES_NMS: False
@@ -140,9 +142,12 @@ MODEL:
             NMS_PRE_MAXSIZE: 4096
             NMS_POST_MAXSIZE: 500
 
+        OUTPUT_TRANSFORM: False
+        TARNSFORM_OFFSET: [0.8, 0.5, 0.14]
+
 
 OPTIMIZATION:
-    BATCH_SIZE_PER_GPU: 4
+    BATCH_SIZE_PER_GPU: 8
     NUM_EPOCHS: 80
 
     OPTIMIZER: adam_onecycle

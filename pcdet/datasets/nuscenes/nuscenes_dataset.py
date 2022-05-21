@@ -1,12 +1,12 @@
 import copy
 import pickle
 from pathlib import Path
-
+import random
 import numpy as np
 from tqdm import tqdm
 
 from ...ops.roiaware_pool3d import roiaware_pool3d_utils
-from ...utils import common_utils
+from ...utils import common_utils, box_utils
 from ..dataset import DatasetTemplate
 
 
@@ -20,6 +20,11 @@ class NuScenesDataset(DatasetTemplate):
         self.include_nuscenes_data(self.mode)
         if self.training and self.dataset_cfg.get('BALANCED_RESAMPLING', False):
             self.infos = self.balanced_infos_resampling(self.infos)
+
+        # if self.training and self.dataset_cfg.get('SAMPLE_FREQUENCY', 1) > 1:
+        if self.dataset_cfg.get('SAMPLE_FREQUENCY', 1) > 1:
+            self.infos = [x for index, x in enumerate(self.infos) if index%self.dataset_cfg.SAMPLE_FREQUENCY==0]
+            print('after frequency sampling:', len(self.infos))
 
     def include_nuscenes_data(self, mode):
         self.logger.info('Loading NuScenes dataset')
@@ -195,10 +200,70 @@ class NuScenesDataset(DatasetTemplate):
 
         return annos
 
+    def filter_eval_gt_by_range(self, eval_gt_annos):
+        filtered_annos = []
+        for anno in eval_gt_annos:
+            gt_boxes = anno['gt_boxes_lidar']
+            if gt_boxes.shape[0] > 0:
+                # mask = common_utils.mask_points_by_range(location, self.dataset_cfg.POINT_CLOUD_RANGE)
+                mask = box_utils.mask_boxes_outside_range_numpy(gt_boxes, self.point_cloud_range, min_num_corners=1)
+                filtered = {k:v[mask] for k,v in anno.items()}
+                filtered_annos.append(filtered)
+            else:
+                filtered_annos.append(anno)
+        return filtered_annos
+
+    def filter_eval_gt_by_kitti_fov(self, eval_gt_annos):
+        filtered_annos = []
+        for anno in eval_gt_annos:
+            boxes = anno['gt_boxes_lidar']
+            if boxes.shape[0] > 0:
+                corners = box_utils.boxes_to_corners_3d(boxes)  # (N, 8, 3)
+                # corners_tan = np.abs(corners[...,0]) / np.abs(corners[...,1])
+                corners_tan = np.abs(corners[...,1]) / np.abs(corners[...,0])
+                mask = corners_tan > 1.1615
+                mask = mask.sum(axis=1) >= 1
+                filtered = {k:v[mask] for k,v in anno.items()}
+                filtered_annos.append(filtered)
+            else:
+                filtered_annos.append(anno)
+        return filtered_annos
+
     def evaluation(self, det_annos, class_names, **kwargs):
         import json
         from nuscenes.nuscenes import NuScenes
         from . import nuscenes_utils
+
+        # kitti eval
+        if kwargs['eval_metric'] == 'kitti':
+            from ..kitti import kitti_utils
+            from ..kitti.kitti_object_eval_python import eval as kitti_eval
+            map_name_to_kitti = {
+                'car': 'Car',
+            }
+            kitti_utils.transform_annotations_to_kitti_format(det_annos, map_name_to_kitti=map_name_to_kitti)
+            # pdb.set_trace()
+            gt_annos = []
+            for info in self.infos:
+                gt_anno = {
+                    'name': info['gt_names'].copy(),
+                    'gt_boxes_lidar': info['gt_boxes'].copy()
+                }
+                gt_annos.append(gt_anno)
+
+            if self.dataset_cfg.get('FILTER_GT_FOR_EVAL_BY_RANGE', False):
+                gt_annos = self.filter_eval_gt_by_range(gt_annos)
+            if self.dataset_cfg.get('FILTER_GT_FOR_EVAL_BY_KITTI_FOV', False):
+                gt_annos = self.filter_eval_gt_by_kitti_fov(gt_annos)
+
+            # kitti_utils.transform_annotations_to_kitti_format_for_nuscenes(gt_annos, map_name_to_kitti=map_name_to_kitti)
+            kitti_utils.transform_annotations_to_kitti_format(gt_annos, map_name_to_kitti=map_name_to_kitti)
+            kitti_class_names = [map_name_to_kitti[x] for x in class_names]
+            ap_result_str, ap_dict = kitti_eval.get_official_eval_result(
+                gt_annos=gt_annos, dt_annos=det_annos, current_classes=kitti_class_names
+            )
+            return ap_result_str, ap_dict
+
         nusc = NuScenes(version=self.dataset_cfg.VERSION, dataroot=str(self.root_path), verbose=True)
         nusc_annos = nuscenes_utils.transform_det_annos_to_nusc_annos(det_annos, nusc)
         nusc_annos['meta'] = {
@@ -210,6 +275,9 @@ class NuScenesDataset(DatasetTemplate):
         }
 
         output_path = Path(kwargs['output_path'])
+        # avoid collision
+        output_path = output_path / str(random.choice(range(100)))
+
         output_path.mkdir(exist_ok=True, parents=True)
         res_path = str(output_path / 'results_nusc.json')
         with open(res_path, 'w') as f:

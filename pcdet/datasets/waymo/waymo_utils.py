@@ -151,13 +151,29 @@ def save_lidar_points(frame, cur_save_path):
         frame_utils.parse_range_image_and_camera_projection(frame)
 
     points, cp_points, points_in_NLZ_flag, points_intensity, points_elongation = \
-        convert_range_image_to_point_cloud(frame, range_images, camera_projections, range_image_top_pose)
+        convert_range_image_to_point_cloud(frame, range_images,
+            camera_projections, range_image_top_pose, ri_index=0)
 
     # 3d points in vehicle frame.
     points_all = np.concatenate(points, axis=0)
     points_in_NLZ_flag = np.concatenate(points_in_NLZ_flag, axis=0).reshape(-1, 1)
     points_intensity = np.concatenate(points_intensity, axis=0).reshape(-1, 1)
     points_elongation = np.concatenate(points_elongation, axis=0).reshape(-1, 1)
+
+    # Second return
+    points_1, cp_points_1, points_1_in_NLZ_flag, intensity_1, elongation_1 = \
+        convert_range_image_to_point_cloud(frame, range_images,
+            camera_projections, range_image_top_pose, ri_index=1)
+    # 3d points in vehicle frame.
+    points1_all = np.concatenate(points_1, axis=0)
+    points1_in_NLZ_flag = np.concatenate(points_1_in_NLZ_flag, axis=0).reshape(-1, 1)
+    points1_intensity = np.concatenate(intensity_1, axis=0).reshape(-1, 1)
+    points1_elongation = np.concatenate(elongation_1, axis=0).reshape(-1, 1)
+
+    points_all = np.concatenate([points_all, points1_all], axis=0)
+    points_intensity = np.concatenate([points_intensity, points1_intensity], axis=0)
+    points_elongation = np.concatenate([points_elongation, points1_elongation], axis=0)
+    points_in_NLZ_flag = np.concatenate([points_in_NLZ_flag, points1_in_NLZ_flag], axis=0)
 
     num_points_of_each_lidar = [point.shape[0] for point in points]
     save_points = np.concatenate([

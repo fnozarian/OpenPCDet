@@ -41,12 +41,12 @@ DATA_AUGMENTOR:
           WORLD_ROT_ANGLE: [-0.78539816, 0.78539816]
 
         - NAME: random_world_scaling
-          WORLD_SCALE_RANGE: [0.95, 1.05]
+          WORLD_SCALE_RANGE: [0.7, 1.3]
 
 
 POINT_FEATURE_ENCODING: {
     encoding_type: absolute_coordinates_encoding,
-    used_feature_list: ['x', 'y', 'z', 'intensity'],
+    used_feature_list: ['x', 'y', 'z'],
     src_feature_list: ['x', 'y', 'z', 'intensity'],
 }
 

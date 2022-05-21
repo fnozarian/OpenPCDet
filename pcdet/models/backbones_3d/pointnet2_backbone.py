@@ -83,6 +83,9 @@ class PointNet2MSG(nn.Module):
             l_xyz.append(li_xyz)
             l_features.append(li_features)
 
+        if self.model_cfg.get('KEEP_BOTTOM_FEATURE', False):
+            batch_dict['bottom_features'] = l_features[-1]
+
         for i in range(-1, -(len(self.FP_modules) + 1), -1):
             l_features[i - 1] = self.FP_modules[i](
                 l_xyz[i - 1], l_xyz[i], l_features[i - 1], l_features[i]

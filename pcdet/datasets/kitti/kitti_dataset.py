@@ -49,6 +49,12 @@ class KittiDataset(DatasetTemplate):
         if self.logger is not None:
             self.logger.info('Total samples for KITTI dataset: %d' % (len(kitti_infos)))
 
+        if self.dataset_cfg.get('FINETUNE', False):
+            import random
+            random.seed(0)
+            self.kitti_infos = random.sample(self.kitti_infos, 10)
+            self.logger.info('Only use 10 samples for finetuning.')
+
     def set_split(self, split):
         super().__init__(
             dataset_cfg=self.dataset_cfg, class_names=self.class_names, training=self.training, root_path=self.root_path, logger=self.logger

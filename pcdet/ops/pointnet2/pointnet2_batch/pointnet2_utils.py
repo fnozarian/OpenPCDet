@@ -252,6 +252,7 @@ class QueryAndGroup(nn.Module):
         grouped_xyz -= new_xyz.transpose(1, 2).unsqueeze(-1)
 
         if features is not None:
+            features = features.contiguous()
             grouped_features = grouping_operation(features, idx)
             if self.use_xyz:
                 new_features = torch.cat([grouped_xyz, grouped_features], dim=1)  # (B, C + 3, npoint, nsample)

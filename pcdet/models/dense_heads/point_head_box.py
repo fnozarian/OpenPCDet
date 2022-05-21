@@ -83,6 +83,9 @@ class PointHeadBox(PointHeadTemplate):
                 point_cls_scores: (N1 + N2 + N3 + ..., 1)
                 point_part_offset: (N1 + N2 + N3 + ..., 3)
         """
+
+        is_target_domain = True if 'is_target_domain' in batch_dict else False
+
         if self.model_cfg.get('USE_POINT_FEATURES_BEFORE_FUSION', False):
             point_features = batch_dict['point_features_before_fusion']
         else:
@@ -95,7 +98,11 @@ class PointHeadBox(PointHeadTemplate):
 
         ret_dict = {'point_cls_preds': point_cls_preds,
                     'point_box_preds': point_box_preds}
-        if self.training:
+
+        if is_target_domain:
+            batch_dict['point_box_preds_encoded'] = point_box_preds
+
+        if self.training and (not is_target_domain):
             targets_dict = self.assign_targets(batch_dict)
             ret_dict['point_cls_labels'] = targets_dict['point_cls_labels']
             ret_dict['point_box_labels'] = targets_dict['point_box_labels']
@@ -105,11 +112,16 @@ class PointHeadBox(PointHeadTemplate):
                 points=batch_dict['point_coords'][:, 1:4],
                 point_cls_preds=point_cls_preds, point_box_preds=point_box_preds
             )
+            if is_target_domain:
+                batch_dict['batch_cls_preds_roi'] = point_cls_preds
+                batch_dict['batch_box_preds_roi'] = point_box_preds
             batch_dict['batch_cls_preds'] = point_cls_preds
             batch_dict['batch_box_preds'] = point_box_preds
             batch_dict['batch_index'] = batch_dict['point_coords'][:, 0]
             batch_dict['cls_preds_normalized'] = False
 
-        self.forward_ret_dict = ret_dict
+        # if target domain, do not update forward_ret_dict for loss compuatation
+        if not is_target_domain:
+            self.forward_ret_dict = ret_dict
 
         return batch_dict

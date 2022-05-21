@@ -13,7 +13,10 @@ def transform_annotations_to_kitti_format(annos, map_name_to_kitti=None, info_wi
     """
     for anno in annos:
         for k in range(anno['name'].shape[0]):
-            anno['name'][k] = map_name_to_kitti[anno['name'][k]]
+            if anno['name'][k] in map_name_to_kitti:
+                anno['name'][k] = map_name_to_kitti[anno['name'][k]]
+            else:
+                anno['name'][k] = 'other'
 
         anno['bbox'] = np.zeros((len(anno['name']), 4))
         anno['bbox'][:, 2:4] = 50  # [0, 0, 50, 50]

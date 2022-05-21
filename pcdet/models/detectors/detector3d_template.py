@@ -264,6 +264,16 @@ class Detector3DTemplate(nn.Module):
                 thresh_list=post_process_cfg.RECALL_THRESH_LIST
             )
 
+            if post_process_cfg.get('REMOVE_PREDICTION_AT_ORIGIN', False):
+                not_origin_mask = torch.abs(final_boxes[:,:2]).sum(dim=1) > 1
+                final_scores = final_scores[not_origin_mask]
+                final_labels = final_labels[not_origin_mask]
+                final_boxes = final_boxes[not_origin_mask]
+
+            if post_process_cfg.get('OUTPUT_TRANSFORM', False):
+                transform_offset = post_process_cfg.TARNSFORM_OFFSET
+                final_boxes[:, 3:6] += torch.tensor(transform_offset).cuda()
+
             record_dict = {
                 'pred_boxes': final_boxes,
                 'pred_scores': final_scores,
@@ -342,6 +352,8 @@ class Detector3DTemplate(nn.Module):
         for key in state_dict:
             if key not in update_model_state:
                 logger.info('Not updated weight %s: %s' % (key, str(state_dict[key].shape)))
+                if key in model_state_disk:
+                    print('loaded checkpoint shape:', model_state_disk[key].shape)
 
         logger.info('==> Done (loaded %d/%d)' % (len(update_model_state), len(self.state_dict())))
 

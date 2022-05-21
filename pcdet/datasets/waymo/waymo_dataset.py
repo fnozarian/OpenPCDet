@@ -8,6 +8,7 @@ import pickle
 import copy
 import numpy as np
 import torch
+import random
 import multiprocessing
 from tqdm import tqdm
 from pathlib import Path
@@ -67,10 +68,18 @@ class WaymoDataset(DatasetTemplate):
             self.infos = sampled_waymo_infos
             self.logger.info('Total sampled samples for Waymo dataset: %d' % len(self.infos))
 
+        if self.dataset_cfg.get('FINETUNE', False):
+            # self.infos = self.infos[:10]
+            random.seed(0)
+            self.infos = random.sample(self.infos, 10)
+            self.logger.info('Only use 10 samples for finetuning.')
+
+
     @staticmethod
     def check_sequence_name_with_all_version(sequence_file):
         if '_with_camera_labels' not in str(sequence_file) and not sequence_file.exists():
-            sequence_file = Path(str(sequence_file[:-9]) + '_with_camera_labels.tfrecord')
+            sequence_file = Path(str(sequence_file)[:-9] + '_with_camera_labels.tfrecord')
+            # sequence_file = Path(str(sequence_file[:-9]) + '_with_camera_labels.tfrecord')
         if '_with_camera_labels' in str(sequence_file) and not sequence_file.exists():
             sequence_file = Path(str(sequence_file).replace('_with_camera_labels', ''))
 
@@ -240,6 +249,13 @@ class WaymoDataset(DatasetTemplate):
         eval_det_annos = copy.deepcopy(det_annos)
         eval_gt_annos = [copy.deepcopy(info['annos']) for info in self.infos]
 
+        # pdb.set_trace()
+        # filter by range and kitti fov
+        if self.dataset_cfg.get('FILTER_GT_FOR_EVAL_BY_RANGE', False):
+            eval_gt_annos = self.filter_eval_gt_by_range(eval_gt_annos)
+        if self.dataset_cfg.get('FILTER_GT_FOR_EVAL_BY_KITTI_FOV', False):
+            eval_gt_annos = self.filter_eval_gt_by_kitti_fov(eval_gt_annos)
+
         if kwargs['eval_metric'] == 'kitti':
             ap_result_str, ap_dict = kitti_eval(eval_det_annos, eval_gt_annos)
         elif kwargs['eval_metric'] == 'waymo':
@@ -248,6 +264,34 @@ class WaymoDataset(DatasetTemplate):
             raise NotImplementedError
 
         return ap_result_str, ap_dict
+
+    def filter_eval_gt_by_range(self, eval_gt_annos):
+        filtered_annos = []
+        for anno in eval_gt_annos:
+            gt_boxes = anno['gt_boxes_lidar']
+            if gt_boxes.shape[0] > 0:
+                # mask = common_utils.mask_points_by_range(location, self.dataset_cfg.POINT_CLOUD_RANGE)
+                mask = box_utils.mask_boxes_outside_range_numpy(gt_boxes, self.point_cloud_range, min_num_corners=1)
+                filtered = {k:v[mask] for k,v in anno.items()}
+                filtered_annos.append(filtered)
+            else:
+                filtered_annos.append(anno)
+        return filtered_annos
+
+    def filter_eval_gt_by_kitti_fov(self, eval_gt_annos):
+        filtered_annos = []
+        for anno in eval_gt_annos:
+            boxes = anno['gt_boxes_lidar']
+            if boxes.shape[0] > 0:
+                corners = box_utils.boxes_to_corners_3d(boxes)  # (N, 8, 3)
+                corners_tan = np.abs(corners[...,0]) / np.abs(corners[...,1])
+                mask = corners_tan > 1.1615
+                mask = mask.sum(axis=1) >= 1
+                filtered = {k:v[mask] for k,v in anno.items()}
+                filtered_annos.append(filtered)
+            else:
+                filtered_annos.append(anno)
+        return filtered_annos
 
     def create_groundtruth_database(self, info_path, save_path, used_classes=None, split='train', sampled_interval=10,
                                     processed_data_tag=None):

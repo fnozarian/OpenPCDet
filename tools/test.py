@@ -16,6 +16,11 @@ from pcdet.datasets import build_dataloader
 from pcdet.models import build_network
 from pcdet.utils import common_utils
 
+from pcdet.utils.custom_batchnorm import BatchNorm1d, BatchNorm2d
+
+setattr(torch.nn, 'BatchNorm1d', BatchNorm1d)
+setattr(torch.nn, 'BatchNorm2d', BatchNorm2d)
+
 
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
@@ -84,7 +89,16 @@ def get_no_evaluated_ckpt(ckpt_dir, ckpt_record_file, args):
 
 def repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir, dist_test=False):
     # evaluated ckpt record
-    ckpt_record_file = eval_output_dir / ('eval_list_%s.txt' % cfg.DATA_CONFIG.DATA_SPLIT['test'])
+    # ckpt_record_file = eval_output_dir / ('eval_list_%s.txt' % cfg.DATA_CONFIG.DATA_SPLIT['test'])
+    try:
+        prefix = args.ckpt_dir.split('/')[-3]
+    except:
+        prefix = 'eval'
+    ckpt_record_file = eval_output_dir / (prefix + '_eval_list_%s.txt' % cfg.DATA_CONFIG.DATA_SPLIT['test'])
+    # remove eval ckpt record file if exist
+    if os.path.exists(ckpt_record_file):
+        os.remove(ckpt_record_file)
+
     with open(ckpt_record_file, 'a'):
         pass
 

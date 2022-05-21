@@ -51,6 +51,8 @@ def rotate_points_along_z(points, angle):
         -sina, cosa, zeros,
         zeros, zeros, ones
     ), dim=1).view(-1, 3, 3).float()
+    if points.is_cuda:
+        rot_matrix = rot_matrix.cuda()
     points_rot = torch.matmul(points[:, :, 0:3], rot_matrix)
     points_rot = torch.cat((points_rot, points[:, :, 3:]), dim=-1)
     return points_rot.numpy() if is_numpy else points_rot
@@ -193,3 +195,98 @@ def merge_results_dist(result_part, size, tmpdir):
     ordered_results = ordered_results[:size]
     shutil.rmtree(tmpdir)
     return ordered_results
+
+def reverse_augmentation(rois, batch_dict, is_points=False):
+    '''
+    Args:
+        rois: (B, roi_num, 7)
+    '''
+    flip_flag, rotate_flag, scale_flag = False, False, False
+    if 'world_flip_enabled' in batch_dict:
+        flip_flag = True
+        world_flip_enabled = batch_dict['world_flip_enabled']
+    if 'world_rotation' in batch_dict:
+        rotate_flag = True
+        world_rotation = batch_dict['world_rotation']
+    if 'world_scaling' in batch_dict:
+        scale_flag = True
+        world_scaling = batch_dict['world_scaling']
+    if 'world_shifts' in batch_dict:
+        shift_flag = True
+        raise NotImplementedError
+    if 'world_scaling_xyz' in batch_dict:
+        raise NotImplementedError
+
+    batch_size = rois.shape[0]
+
+    if is_points:
+        if scale_flag:
+            scale_factor = 1.0 / world_scaling
+            scale_factor = scale_factor.view(scale_factor.shape[0], 1, 1)
+            rois *= scale_factor
+    else:
+        assert len(rois.shape) == 3
+
+        for index in range(batch_size):
+            # flip
+            if flip_flag and world_flip_enabled[index] == 1:
+                rois[index, :, 1] = -rois[index, :, 1]
+                rois[index, :, 6] = -rois[index, :, 6]
+            # rotation
+            if rotate_flag:
+                rotation_angle = - world_rotation[index].item()
+                cur_rois = rois[index]
+                rois[index, :, 0:3] = rotate_points_along_z(cur_rois[np.newaxis, :, 0:3], np.array([rotation_angle]))[0]
+                rois[index, :, 6] += rotation_angle
+        # scale
+        if scale_flag:
+            scale_factor = 1.0 / world_scaling
+            scale_factor = scale_factor.view(scale_factor.shape[0], 1, 1)
+            rois[...,0:6] *= scale_factor
+
+    return rois
+
+def forward_augmentation(rois, batch_dict, is_points=False):
+    '''
+    Args:
+        rois: (B, roi_num, 7)
+    '''
+    flip_flag, rotate_flag, scale_flag = False, False, False
+    if 'world_flip_enabled' in batch_dict:
+        flip_flag = True
+        world_flip_enabled = batch_dict['world_flip_enabled']
+    if 'world_rotation' in batch_dict:
+        rotate_flag = True
+        world_rotation = batch_dict['world_rotation']
+    if 'world_scaling' in batch_dict:
+        scale_flag = True
+        world_scaling = batch_dict['world_scaling']
+    batch_size = rois.shape[0]
+
+    if is_points:
+        if is_points:
+            if scale_flag:
+                scale_factor = world_scaling
+                scale_factor = scale_factor.view(scale_factor.shape[0], 1, 1)
+                rois *= scale_factor
+    else:
+        assert len(rois.shape) == 3
+
+        for index in range(batch_size):
+            # flip
+            if flip_flag and world_flip_enabled[index] == 1:
+                rois[index, :, 1] = -rois[index, :, 1]
+                rois[index, :, 6] = -rois[index, :, 6]
+            # rotation
+            if rotate_flag:
+                rotation_angle = world_rotation[index].item()
+                cur_rois = rois[index]
+                rois[index, :, 0:3] = rotate_points_along_z(cur_rois[np.newaxis, :, 0:3], np.array([rotation_angle]))[0]
+                rois[index, :, 6] += rotation_angle
+        # scale
+        if scale_flag:
+            scale_factor = world_scaling
+            scale_factor = scale_factor.view(scale_factor.shape[0], 1, 1)
+            rois[...,0:6] *= scale_factor
+
+    return rois

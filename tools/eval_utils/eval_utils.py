@@ -4,6 +4,7 @@ import time
 import numpy as np
 import torch
 import tqdm
+import torch.nn as nn
 
 from pcdet.models import load_data_to_gpu
 from pcdet.utils import common_utils
@@ -47,6 +48,13 @@ def eval_one_epoch(cfg, model, dataloader, epoch_id, logger, dist_test=False, sa
                 broadcast_buffers=False
         )
     model.eval()
+
+    def set_bn_as_train(m):
+        if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+            m.train()
+
+    # model.apply(set_bn_as_train)
+
 
     if cfg.LOCAL_RANK == 0:
         progress_bar = tqdm.tqdm(total=len(dataloader), leave=True, desc='eval', dynamic_ncols=True)
