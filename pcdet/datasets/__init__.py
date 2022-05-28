@@ -5,15 +5,21 @@ from torch.utils.data import DistributedSampler as _DistributedSampler
 from pcdet.utils import common_utils
 
 from .dataset import DatasetTemplate
+
 from .kitti.kitti_dataset import KittiDataset
 from .nuscenes.nuscenes_dataset import NuScenesDataset
 from .waymo.waymo_dataset import WaymoDataset
+
+from .kitti.kitti_dataset_mean_teacher import KittiDatasetMeanTeacher
+from .nuscenes.nuscenes_dataset_mean_teacher import NuScenesDatasetMeanTeacher
 from .waymo.waymo_dataset_mean_teacher import WaymoDatasetMeanTeacher
 
 __all__ = {
     'DatasetTemplate': DatasetTemplate,
     'KittiDataset': KittiDataset,
+    'KittiDatasetMeanTeacher': KittiDatasetMeanTeacher,
     'NuScenesDataset': NuScenesDataset,
+    'NuScenesDatasetMeanTeacher': NuScenesDatasetMeanTeacher,
     'WaymoDataset': WaymoDataset,
     'WaymoDatasetMeanTeacher': WaymoDatasetMeanTeacher,
 }

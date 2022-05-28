@@ -1,0 +1,32 @@
+DATASET: 'KittiDatasetMeanTeacher'
+DATA_PATH: '../data/kitti'
+
+POINT_CLOUD_RANGE: [0, -40, -3, 70.4, 40, 1]
+
+
+DATA_SPLIT: {
+    'train': train,
+    'test': val
+}
+
+PROVIDE_GT: False
+
+SAMPLED_INTERVAL: {
+    'train': 10,
+    'test': 10
+}
+
+DATA_AUGMENTOR:
+    DISABLE_AUG_LIST: ['placeholder']
+    AUG_CONFIG_LIST:
+
+        - NAME: random_world_scaling
+          WORLD_SCALE_RANGE: [0.95, 1.05]
+
+
+POINT_FEATURE_ENCODING: {
+    encoding_type: absolute_coordinates_encoding,
+    src_feature_list: ['x', 'y', 'z', 'intensity'],
+    used_feature_list: ['x', 'y', 'z','intensity'],
+}
+
