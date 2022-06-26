@@ -175,7 +175,8 @@ class NuScenesDataset(DatasetTemplate):
 
         # TODO(farzad) Warning! What's the last index (-1) added for gt_boxes? Not added in st3d.
         if not self.dataset_cfg.PRED_VELOCITY and 'gt_boxes' in input_dict and not self.dataset_cfg.get('USE_PSEUDO_LABEL', None):
-            input_dict['gt_boxes'] = input_dict['gt_boxes'][:, [0, 1, 2, 3, 4, 5, 6, -1]]
+            #input_dict['gt_boxes'] = input_dict['gt_boxes'][:, [0, 1, 2, 3, 4, 5, 6, -1]]
+            input_dict['gt_boxes'] = input_dict['gt_boxes'][:, [0, 1, 2, 3, 4, 5, 6]]
 
         data_dict = self.prepare_data(data_dict=input_dict)
 
