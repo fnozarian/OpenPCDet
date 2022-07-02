@@ -76,10 +76,8 @@ def calc_mean_mAP():
 
         for file_ in text_files:# traverse all file to find evaluation results
             selected_file=os.path.join(curr_res_dir, file_)
-            print("\nScanning {} for evaluated results\n".format(selected_file))# can be filtered based on date-time
+            #print("\nScanning {} for evaluated results\n".format(selected_file))# can be filtered based on date-time
 
-            
-            
             line_numbers=[]
             linenum = 0
             res_=[]
@@ -103,15 +101,18 @@ def calc_mean_mAP():
         # reshape records based on eval_list
         eval_results=np.array(eval_results).reshape(len(eval_list),-1)
         all_eval_results.append(eval_results)
-        print("\nmAP(s)")
-        print(*[str(np.round_(i, decimals=2)) for i in eval_results], sep="\n")
+        #print("\nmAP(s)")
+        #print(*[str(np.round_(i, decimals=2)) for i in eval_results], sep="\n")
 
 
         current_max=np.max(eval_results, axis=0)
         max_results.append(current_max)
-        print("\nMax mAP")
+
+        print("\n" + curr_res_dir)
+        print("Max mAP")
         print(*[str(np.round_(i, decimals=2)) for i in current_max], sep=", ")
-        print("\nBest Epoch (with moderate scroe): " + str(eval_list[np.where(max_results[0][4] == eval_results[:,4])[0][0]]))
+        #import pdb; pdb.set_trace()
+        print("Best Epoch (with moderate scroe): " + str(eval_list[np.where(current_max[4] == eval_results[:,4])[0][0]]))
         
 
     print("\n\n----------------Final Results----------------\n\n")
