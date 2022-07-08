@@ -98,7 +98,11 @@ class AnchorHeadTemplate(nn.Module):
         )
         return targets_dict
 
+
     def get_cls_layer_loss(self, scalar=True):
+        
+        
+        
         cls_preds = self.forward_ret_dict['cls_preds']
         box_cls_labels = self.forward_ret_dict['box_cls_labels']
         batch_size = int(cls_preds.shape[0])
@@ -127,6 +131,21 @@ class AnchorHeadTemplate(nn.Module):
         cls_preds = cls_preds.view(batch_size, -1, self.num_class)
         one_hot_targets = one_hot_targets[..., 1:]
         cls_loss_src = self.cls_loss_func(cls_preds, one_hot_targets, weights=cls_weights)  # [N, M]
+
+
+        # cls consistency loss
+        cls_consistency_loss=0
+        if "batch_cls_preds_teacher" in self.forward_ret_dict:
+            cls_preds_teacher=self.forward_ret_dict['batch_cls_preds_teacher']
+                
+            prob1 = torch.sigmoid(cls_preds_teacher).view(batch_size, 1)
+            prob2 = torch.sigmoid(cls_preds).view(batch_size, 1)
+            prob1 = prob1.clamp(1e-4, 1-1e-4)
+            prob2 = prob2.clamp(1e-4, 1-1e-4)
+            prob1 = torch.cat([1-prob1, prob1], dim=-1)
+            prob2 = torch.cat([1-prob2, prob2], dim=-1)
+            cls_consistency_loss = nn.kl_div(torch.log(prob1), prob2)
+
         if scalar:
             cls_loss = cls_loss_src.sum() / batch_size
             rpn_acc_cls = ((cls_preds.max(-1)[1] + 1) == cls_targets.long()).sum().float() / \
@@ -136,7 +155,7 @@ class AnchorHeadTemplate(nn.Module):
             rpn_acc_cls = ((cls_preds.max(-1)[1] + 1) == cls_targets.long()).view(batch_size, -1).sum(-1).float() / \
                           torch.clamp((cls_targets > 0).view(batch_size, -1).sum(-1).float(), min=1.0)
 
-        cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
+        cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight'] + cls_consistency_loss
 
         tb_dict = {
             'rpn_loss_cls': cls_loss.item() if scalar else cls_loss,

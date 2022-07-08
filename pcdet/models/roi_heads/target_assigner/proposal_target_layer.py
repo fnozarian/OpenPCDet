@@ -29,27 +29,143 @@ class ProposalTargetLayer(nn.Module):
                 reg_valid_mask: (B, M)
                 rcnn_cls_labels: (B, M)
         """
-        batch_rois, batch_gt_of_rois, batch_roi_ious, batch_roi_scores, batch_roi_labels = self.sample_rois_for_rcnn(
+
+        
+        (batch_rois, 
+            batch_gt_of_rois, 
+                batch_roi_ious, batch_roi_scores, batch_roi_labels) = self.sample_rois_for_rcnn(
             batch_dict=batch_dict
         )
+        if "rois_teacher" in batch_dict:
+            # TODO:OPTION1:
+            # find overlap b/w student and teacher's proposals
+            # find overlap b/w matched and GT
+            # Apply sampling
+
+            # OPTION2:
+            # find the overlaped proosals b/w student vs GT and perform sampling
+            # find the overlaped proosals b/w teacher vs GT anb perform sampling
+            # find overlap b/w match1 and match2
+            keep_rois = batch_dict['rois'].data.clone()
+            keep_roi_scores = batch_dict['roi_scores'].data.clone()
+            keep_roi_labels = batch_dict['roi_labels'].data.clone()
+
+            batch_dict['rois'] = batch_dict['rois_teacher']
+            batch_dict['roi_scores'] = batch_dict['roi_scores_teacher']
+            batch_dict['roi_labels'] = batch_dict['roi_labels_teacher']
+
+            (batch_rois_teacher, 
+                batch_gt_of_rois_teacher, 
+                batch_roi_ious_teacher, batch_roi_scores_teacher, batch_roi_labels_teacher) = self.sample_rois_for_rcnn(
+                batch_dict=batch_dict
+            )
+            batch_dict['rois'] = keep_rois
+            batch_dict['roi_scores'] = keep_roi_scores
+            batch_dict['roi_labels'] = keep_roi_labels
+
+
+
+            # find overlap b/w student and teacher's proposals
+            for index in range(batch_dict['batch_size']):
+
+                (cur_roi, cur_roi_teacher,
+                cur_gt, cur_gt_teacher, 
+                cur_roi_labels, cur_roi_labels_teacher, 
+                cur_roi_scores, cur_roi_scores_teacher) = \
+                (batch_rois[index],  batch_rois_teacher[index],
+                batch_gt_of_rois[index], batch_gt_of_rois_teacher[index],
+                batch_roi_labels[index], batch_roi_labels_teacher[index],
+                batch_roi_scores[index], batch_roi_scores_teacher[index])
+
+                k = cur_roi_teacher.__len__() - 1
+                while k >= 0 and cur_roi_teacher[k].sum() == 0:
+                    k -= 1
+                cur_roi_teacher = cur_roi_teacher[:k + 1]
+                cur_roi_teacher = cur_roi_teacher.new_zeros((1, cur_roi_teacher.shape[1])) if len(cur_roi_teacher) == 0 else cur_roi_teacher
+
+                
+                if self.roi_sampler_cfg.get('SAMPLE_ROI_BY_EACH_CLASS', False):
+                    max_overlaps, t_assignment = self.get_max_iou_with_same_class(
+                        rois=cur_roi, roi_labels=cur_roi_labels,
+                        gt_boxes=cur_roi_teacher[:, 0:7], gt_labels=cur_roi_labels_teacher
+                    )
+                else:
+                    iou3d = iou3d_nms_utils.boxes_iou3d_gpu(cur_roi, cur_roi_teacher[:, 0:7])  # (M, N)
+                    max_overlaps, t_assignment = torch.max(iou3d, dim=1)
+                
+                sampled_inds = max_overlaps>0.1 # add into config
+                # TODO if the size of the box is lower than a threshold, we will simply throw them away.
+                
+                batch_rois[index] = cur_roi[sampled_inds]
+                batch_rois_teacher[index] = cur_roi_teacher[t_assignment[sampled_inds]]
+
+                batch_gt_of_rois[index] = cur_gt[sampled_inds]
+                batch_gt_of_rois_teacher[index] = cur_gt_teacher[t_assignment[sampled_inds]]
+                
+                batch_roi_labels[index] = cur_roi_labels[sampled_inds]
+                batch_roi_labels_teacher[index] = cur_roi_labels_teacher[t_assignment[sampled_inds]]
+                
+                batch_roi_ious[index] = max_overlaps[sampled_inds]
+                batch_roi_ious_teacher[index] = max_overlaps[t_assignment[sampled_inds]]
+                
+                batch_roi_scores[index] = cur_roi_scores[sampled_inds]
+                batch_roi_scores_teacher[index] = cur_roi_scores_teacher[t_assignment[sampled_inds]]
+                
+        # unsupervised R-CNN classification loss
         # regression valid mask
         reg_valid_mask = (batch_roi_ious > self.roi_sampler_cfg.REG_FG_THRESH).long()
-        interval_mask = None
+        #TODO reg_valid_mask for teacher proposals
         # classification label
         if self.roi_sampler_cfg.CLS_SCORE_TYPE == 'cls':
+
             batch_cls_labels = (batch_roi_ious > self.roi_sampler_cfg.CLS_FG_THRESH).long()
             ignore_mask = (batch_roi_ious > self.roi_sampler_cfg.CLS_BG_THRESH) & \
                           (batch_roi_ious < self.roi_sampler_cfg.CLS_FG_THRESH)
-            batch_cls_labels[ignore_mask > 0] = -1
-        elif self.roi_sampler_cfg.CLS_SCORE_TYPE == 'roi_iou':
-            iou_bg_thresh = self.roi_sampler_cfg.CLS_BG_THRESH
+            batch_cls_labels[ignore_mask > 0] = -1  # all preds inside middle-region (0.25-0.75) are considered ignored.
+
+        elif self.roi_sampler_cfg.CLS_SCORE_TYPE == 'roi_iou': #or 'soft_teacher':
+            
+            iou_bg_thresh = self.roi_sampler_cfg.CLS_BG_THRESH 
             iou_fg_thresh = self.roi_sampler_cfg.CLS_FG_THRESH
-            fg_mask = batch_roi_ious > iou_fg_thresh
-            bg_mask = batch_roi_ious < iou_bg_thresh
-            interval_mask = (fg_mask == 0) & (bg_mask == 0)
-            batch_cls_labels = (fg_mask > 0).float()
-            batch_cls_labels[interval_mask] = \
+            fg_mask = batch_roi_ious > iou_fg_thresh # >0.75
+            bg_mask = batch_roi_ious < iou_bg_thresh # <0.25
+            interval_mask = (fg_mask == 0) & (bg_mask == 0) 
+            batch_cls_labels = (fg_mask > 0).float() # 1 or zero
+            
+
+            #! @Farzad: rcnn cls labels are created here. The inverval mask or hard bgs are weighted (linearly) according to
+            # their iou-score with pseudo-labels (becasue of batch_roi_ious in nominator)
+            
+            if "rois_teacher" in batch_dict:
+                
+
+                #! @Farzad: it can be combination of student roi_iou  and teacher roi_iou
+                if self.roi_sampler_cfg.ENABLE_HYBRID:
+                    
+                    roi_iou_score = \
+                        (batch_roi_ious - iou_bg_thresh) / (iou_fg_thresh-iou_bg_thresh)
+                    roi_iou_score_teacher = \
+                        (batch_roi_ious_teacher - iou_bg_thresh) / (iou_fg_thresh-iou_bg_thresh)
+                    
+                    batch_cls_labels[interval_mask]= \
+                        (
+                            (self.roi_sampler_cfg.CLS_WEIGHT*roi_iou_score_teacher) + 
+                            ((1-self.roi_sampler_cfg.CLS_WEIGHT)*roi_iou_score)
+
+                        )[interval_mask]
+                    
+                else:
+                    batch_cls_labels[interval_mask] = batch_roi_ious_teacher[interval_mask]
+
+
+            else:
+                
+                batch_cls_labels[interval_mask] = \
                 (batch_roi_ious[interval_mask] - iou_bg_thresh) / (iou_fg_thresh - iou_bg_thresh)
+        
+        elif self.roi_sampler_cfg.CLS_SCORE_TYPE == 'raw_roi_iou': # st3d settings
+            batch_cls_labels = batch_roi_ious
+        
         else:
             raise NotImplementedError
 
@@ -57,7 +173,10 @@ class ProposalTargetLayer(nn.Module):
                         'roi_scores': batch_roi_scores, 'roi_labels': batch_roi_labels,
                         'reg_valid_mask': reg_valid_mask,
                         'rcnn_cls_labels': batch_cls_labels,
-                        'interval_mask': interval_mask}
+                        'rois_teacher': batch_rois_teacher, 'gt_of_rois_teacher': batch_gt_of_rois_teacher, 
+                        'gt_iou_of_rois_teacher': batch_roi_ious_teacher,
+                        'roi_scores_teacher': batch_roi_scores_teacher, 'roi_labels_teacher': batch_roi_labels_teacher,
+                        }
 
         return targets_dict
 
@@ -103,6 +222,7 @@ class ProposalTargetLayer(nn.Module):
             else:
                 iou3d = iou3d_nms_utils.boxes_iou3d_gpu(cur_roi, cur_gt[:, 0:7])  # (M, N)
                 max_overlaps, gt_assignment = torch.max(iou3d, dim=1)
+
 
             sampled_inds = self.subsample_rois(max_overlaps=max_overlaps)
 

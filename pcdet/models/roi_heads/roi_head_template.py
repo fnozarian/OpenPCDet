@@ -69,10 +69,19 @@ class RoIHeadTemplate(nn.Module):
 
         batch_box_preds = batch_dict['batch_box_preds']
         batch_cls_preds = batch_dict['batch_cls_preds']
-
+        
         rois = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_box_preds.shape[-1]))
         roi_scores = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
         roi_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
+
+        if "batch_box_preds_teacher" in batch_dict:
+            batch_box_preds_teacher = batch_dict['batch_box_preds_teacher']
+            batch_cls_preds_teacher = batch_dict['batch_cls_preds_teacher']
+
+            rois_teacher = batch_box_preds_teacher.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_box_preds_teacher.shape[-1]))
+            roi_scores_teacher = batch_box_preds_teacher.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
+            roi_labels_teacher = batch_box_preds_teacher.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
+            
 
         for index in range(batch_size):
             if batch_dict.get('batch_index', None) is not None:
@@ -83,9 +92,7 @@ class RoIHeadTemplate(nn.Module):
                 batch_mask = index
             box_preds = batch_box_preds[batch_mask]
             cls_preds = batch_cls_preds[batch_mask]
-
             cur_roi_scores, cur_roi_labels = torch.max(cls_preds, dim=1)
-
             if nms_config.MULTI_CLASSES_NMS:
                 raise NotImplementedError
             else:
@@ -96,11 +103,33 @@ class RoIHeadTemplate(nn.Module):
             rois[index, :len(selected), :] = box_preds[selected]
             roi_scores[index, :len(selected)] = cur_roi_scores[selected]
             roi_labels[index, :len(selected)] = cur_roi_labels[selected]
+            
+            if "batch_box_preds_teacher" in batch_dict:
+                box_preds_teacher = batch_box_preds_teacher[batch_mask]
+                cls_preds_teacher = batch_cls_preds_teacher[batch_mask]
+                cur_roi_scores_teacher, cur_roi_labels_teacher = torch.max(cls_preds_teacher, dim=1)
+
+                if nms_config.MULTI_CLASSES_NMS:
+                    raise NotImplementedError
+                else:
+                    selected, selected_scores = class_agnostic_nms(
+                        box_scores=cur_roi_scores_teacher, box_preds=box_preds_teacher, nms_config=nms_config
+                    )
+
+                rois_teacher[index, :len(selected), :] = box_preds_teacher[selected]
+                roi_scores_teacher[index, :len(selected)] = cur_roi_scores_teacher[selected]
+                roi_labels_teacher[index, :len(selected)] = cur_roi_labels_teacher[selected]
 
         batch_dict['rois'] = rois
         batch_dict['roi_scores'] = roi_scores
         batch_dict['roi_labels'] = roi_labels + 1
         batch_dict['has_class_labels'] = True if batch_cls_preds.shape[-1] > 1 else False
+        
+        if "batch_box_preds_teacher" in batch_dict:
+            batch_dict['rois_teacher'] = rois_teacher
+            batch_dict['roi_scores_teacher'] = roi_scores_teacher
+            batch_dict['roi_labels_teacher'] = roi_labels_teacher + 1
+            batch_dict['has_class_labels_teacher'] = True if batch_cls_preds_teacher.shape[-1] > 1 else False
         batch_dict.pop('batch_index', None)
         return batch_dict
 
