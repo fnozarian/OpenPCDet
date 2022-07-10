@@ -63,9 +63,9 @@ class ProposalTargetLayer(nn.Module):
             batch_dict['roi_scores'] = keep_roi_scores
             batch_dict['roi_labels'] = keep_roi_labels
 
-
-
             # find overlap b/w student and teacher's proposals
+            # Note: Student and teachers ROIs have already been filtered out once and reduced to 128 till now using sample_rois_for_rcnn(). 
+            # Filtering them further based on overlap b/w student and teacher's proposals will further reduce the count. Need to set a lower limit on this. 
             for index in range(batch_dict['batch_size']):
 
                 (cur_roi, cur_roi_teacher,
@@ -87,13 +87,13 @@ class ProposalTargetLayer(nn.Module):
                 if self.roi_sampler_cfg.get('SAMPLE_ROI_BY_EACH_CLASS', False):
                     max_overlaps, t_assignment = self.get_max_iou_with_same_class(
                         rois=cur_roi, roi_labels=cur_roi_labels,
-                        gt_boxes=cur_roi_teacher[:, 0:7], gt_labels=cur_roi_labels_teacher
+                        gt_boxes=cur_roi_teacher, gt_labels=cur_roi_labels_teacher
                     )
                 else:
-                    iou3d = iou3d_nms_utils.boxes_iou3d_gpu(cur_roi, cur_roi_teacher[:, 0:7])  # (M, N)
+                    iou3d = iou3d_nms_utils.boxes_iou3d_gpu(cur_roi, cur_roi_teacher)  # (M, N)
                     max_overlaps, t_assignment = torch.max(iou3d, dim=1)
                 
-                sampled_inds = max_overlaps>0.1 # add into config
+                sampled_inds = (max_overlaps > self.roi_sampler_cfg.STUDENT_TEACHER_ROI_OVERLAP_THRESH).nonzero()[:, 0]
                 # TODO if the size of the box is lower than a threshold, we will simply throw them away.
                 
                 batch_rois[index] = cur_roi[sampled_inds]
