@@ -42,6 +42,10 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
 
+        self.enable_two_stage_filter = model_cfg.TWO_STAGE_FILTER.ENABLE
+        self.init_score_thresh = model_cfg.TWO_STAGE_FILTER.INIT_SCORE_THRESH
+        self.max_vol_prop = model_cfg.TWO_STAGE_FILTER.MAX_VOL_PROP
+
     def forward(self, batch_dict):
         if self.training:
             labeled_mask = batch_dict['labeled_mask'].view(-1)
@@ -95,6 +99,21 @@ class PVRCNN_SSL(Detector3DTemplate):
                     pseudo_box = pseudo_box[valid_inds]
                     pseudo_label = pseudo_label[valid_inds]
                     pseudo_score = pseudo_score[valid_inds]
+
+                    if self.enable_two_stage_filter :
+                        # Below two filtering ops are based on filter_invalid() of soft-teacher
+                        # Pseudo labels/boxes Filtering 1: Based on initial small threshold filtering
+                        valid_inds = pseudo_score > self.init_score_thresh 
+                        vol_boxes = (pseudo_box[:, 3] * pseudo_box[:, 4] * pseudo_box[:, 5]).view(-1, 1)     
+                        # Set volume threshold to 10% of the maximum volume of the boxes
+                        vol_thresh = self.max_vol_prop * torch.max(vol_boxes) 
+                        valid_inds = valid_inds * (vol_boxes > vol_thresh).squeeze()
+                        valid_inds = torch.nonzero(valid_inds).squeeze()
+                        
+                        pseudo_box = pseudo_box[valid_inds]
+                        pseudo_label = pseudo_label[valid_inds]
+                        pseudo_sem_score = pseudo_sem_score[valid_inds]
+                        pseudo_score = pseudo_score[valid_inds]
 
                     pseudo_boxes.append(torch.cat([pseudo_box, pseudo_label.view(-1, 1).float()], dim=1))
                     pseudo_sem_scores.append(pseudo_sem_score)
@@ -216,13 +235,16 @@ class PVRCNN_SSL(Detector3DTemplate):
                     # TODO : add into student loss
                     self.pv_rcnn.dense_head.forward_ret_dict['batch_cls_preds_teacher'] = batch_dict_std['batch_cls_preds'].data.clone()
                     self.pv_rcnn.dense_head.forward_ret_dict['batch_box_preds_teacher'] = batch_dict_std['batch_box_preds'].data.clone()
-                    
+                    self.pv_rcnn.dense_head.forward_ret_dict['unlabeled_mask'] = unlabeled_inds
+
                     batch_dict['batch_cls_preds_teacher'] = batch_dict_std['batch_cls_preds'].data.clone()
                     batch_dict['batch_box_preds_teacher'] = batch_dict_std['batch_box_preds'].data.clone()
                     #batch_dict  add batch_cls_preds_teacher
                      
-                    # Run RCNN of student using updated batch_dict containing student proposals using teacher's RPN head
+                    # Run RCNN of student using updated batch_dict containing student proposals generated using teacher's RPN head
                     batch_dict  = self.pv_rcnn.module_list[-1](batch_dict)
+
+                    # TODO (shashank) : We can check if theres a need to apply postproc for student and if we need to modify it for teacher proposals?
                         
                     if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False):
                         batch_dict_std['rois'] = batch_dict['rois'].data.clone()
