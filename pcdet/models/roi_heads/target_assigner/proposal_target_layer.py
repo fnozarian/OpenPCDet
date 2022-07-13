@@ -63,10 +63,10 @@ class ProposalTargetLayer(nn.Module):
             batch_dict['roi_scores'] = keep_roi_scores
             batch_dict['roi_labels'] = keep_roi_labels
 
-            # find overlap b/w student and teacher's proposals
-            # Note: Student and teachers ROIs have already been filtered out once and reduced to 128 till now using sample_rois_for_rcnn(). 
-            # Filtering them further based on overlap b/w student and teacher's proposals will further reduce the count. Need to set a lower limit on this. 
-            for index in range(batch_dict['batch_size']):
+            # Find overlap b/w student and teacher's proposals, but only for unlabeled inds
+            labeled_mask = batch_dict['labeled_mask'].view(-1)
+            unlabeled_inds = torch.nonzero(1-labeled_mask).squeeze(1).long()
+            for index in unlabeled_inds:
 
                 (cur_roi, cur_roi_teacher,
                 cur_gt, cur_gt_teacher, 
