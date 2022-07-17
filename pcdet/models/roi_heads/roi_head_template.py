@@ -70,6 +70,15 @@ class RoIHeadTemplate(nn.Module):
         batch_box_preds = batch_dict['batch_box_preds']
         batch_cls_preds = batch_dict['batch_cls_preds']
 
+        rois = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_box_preds.shape[-1]))
+        roi_scores = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
+        roi_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
+        
+        if "batch_box_preds_teacher" in batch_dict:
+            rois_teacher = batch_dict['batch_box_preds_teacher'].new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_dict['batch_box_preds_teacher'].shape[-1]))
+            roi_scores_teacher = batch_dict['batch_box_preds_teacher'].new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
+            roi_labels_teacher = batch_dict['batch_box_preds_teacher'].new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
+        
         for index in range(batch_size):
             if batch_dict.get('batch_index', None) is not None:
                 assert batch_cls_preds.shape.__len__() == 2
@@ -80,6 +89,8 @@ class RoIHeadTemplate(nn.Module):
             box_preds = batch_box_preds[batch_mask]
             cls_preds = batch_cls_preds[batch_mask]
             
+            
+
             if "batch_box_preds_teacher" in batch_dict:
                 box_preds_teacher = batch_dict['batch_box_preds_teacher'][batch_mask]
                 cls_preds_teacher = batch_dict['batch_cls_preds_teacher'][batch_mask]
@@ -103,7 +114,8 @@ class RoIHeadTemplate(nn.Module):
                         topk_selected_teacher = nms_config.NMS_POST_MAXSIZE
                 
                 # Else, keep all the proposals at this stage 
-                # TODO: Apply soft-teacher 2 stage filtering 
+                #! TODO: Apply soft-teacher 2 stage filtering, 
+                # discuss with FARZAD how to use augmented spatial_features_2d to generate good semantic cls score
                 else:
                     # Below two filtering ops are based on filter_invalid() of soft-teacher
                     # Pseudo labels/boxes Filtering 1: Based on initial small threshold filtering
@@ -112,24 +124,27 @@ class RoIHeadTemplate(nn.Module):
                     vol_boxes = ((box_preds[:, 3] * box_preds[:, 4] * box_preds[:, 5])/torch.abs(box_preds[:,2][0])).view(-1)# weighted by depth
                     vol_boxes, indices = torch.sort(vol_boxes, descending=True)
                     # Set volume threshold to 10% of the maximum volume of the boxes
-                    keepl_val = vol_boxes[int(indices[int(self.model_cfg.ROI_TWO_STAGE_FILTER.MAX_VOL_PROP * len(vol_boxes))])]
-                    selected = selected * (vol_boxes > keepl_val).squeeze()
-                    selected = torch.nonzero(selected).squeeze()
+                    kep_ind = int(self.model_cfg.ROI_TWO_STAGE_FILTER.MAX_VOL_PROP * len(vol_boxes))
+                    keepl_val = vol_boxes[kep_ind]
+                    selected =  torch.nonzero(selected * (vol_boxes > keepl_val))
+                    
 
                     # Apply same filtering for teacher proposals
-                    selected_teacher = cur_roi_scores_teacher > self.model_cfg.ROI_TWO_STAGE_FILTER.THRESH  
-                    vol_boxes_teacher = (box_preds_teacher[:, 3] * box_preds_teacher[:, 4] * box_preds_teacher[:, 5]).view(-1, 1)
+                    selected = cur_roi_scores_teacher > self.model_cfg.ROI_TWO_STAGE_FILTER.THRESH      
+                    vol_boxes = ((box_preds_teacher[:, 3] * box_preds_teacher[:, 4] * box_preds_teacher[:, 5])/torch.abs(box_preds_teacher[:,2][0])).view(-1)# weighted by depth
+                    vol_boxes, indices = torch.sort(vol_boxes, descending=True)
                     # Set volume threshold to 10% of the maximum volume of the boxes
-                    vol_thresh_teacher = self.model_cfg.ROI_TWO_STAGE_FILTER.MAX_VOL_PROP * torch.max(vol_boxes_teacher)           
-                    selected_teacher = selected_teacher * (vol_boxes_teacher > vol_thresh_teacher).squeeze()
-                    selected_teacher = torch.nonzero(selected_teacher).squeeze()
+                    kep_ind = int(self.model_cfg.ROI_TWO_STAGE_FILTER.MAX_VOL_PROP * len(vol_boxes))
+                    keepl_val = vol_boxes[kep_ind]
+                    selected_teacher =  torch.nonzero(selected * (vol_boxes > keepl_val))
+
 
                     topk_selected = len(selected)
                     topk_selected_teacher = len(selected_teacher)
                 
-                rois_teacher = batch_dict['batch_box_preds_teacher'].new_zeros((batch_size, topk_selected_teacher, batch_dict['batch_box_preds_teacher'].shape[-1]))
+                """ rois_teacher = batch_dict['batch_box_preds_teacher'].new_zeros((batch_size, topk_selected_teacher, batch_dict['batch_box_preds_teacher'].shape[-1]))
                 roi_scores_teacher = batch_dict['batch_box_preds_teacher'].new_zeros((batch_size, topk_selected_teacher))
-                roi_labels_teacher = batch_dict['batch_box_preds_teacher'].new_zeros((batch_size, topk_selected_teacher), dtype=torch.long)
+                roi_labels_teacher = batch_dict['batch_box_preds_teacher'].new_zeros((batch_size, topk_selected_teacher), dtype=torch.long) """
 
                 rois_teacher[index, :len(selected_teacher), :] = box_preds_teacher[selected_teacher]
                 roi_scores_teacher[index, :len(selected_teacher)] = cur_roi_scores_teacher[selected_teacher]
@@ -149,14 +164,15 @@ class RoIHeadTemplate(nn.Module):
                         box_scores=cur_roi_scores, box_preds=box_preds, nms_config=nms_config
                     )
                 topk_selected = nms_config.NMS_POST_MAXSIZE
-
-        rois = batch_box_preds.new_zeros((batch_size, topk_selected, batch_box_preds.shape[-1]))
-        roi_scores = batch_box_preds.new_zeros((batch_size, topk_selected))
-        roi_labels = batch_box_preds.new_zeros((batch_size, topk_selected), dtype=torch.long)
-        
-        rois[index, :len(selected), :] = box_preds[selected]
-        roi_scores[index, :len(selected)] = cur_roi_scores[selected]
-        roi_labels[index, :len(selected)] = cur_roi_labels[selected]
+            # TODO: missmatch topk for labeled and unlabeled indexes
+            
+            """ rois = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_box_preds.shape[-1]))
+            roi_scores = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
+            roi_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
+            """
+            rois[index, :len(selected), :] = box_preds[selected]
+            roi_scores[index, :len(selected)] = cur_roi_scores[selected]
+            roi_labels[index, :len(selected)] = cur_roi_labels[selected]
 
         batch_dict['rois'] = rois
         batch_dict['roi_scores'] = roi_scores

@@ -166,11 +166,11 @@ MODEL:
         DP_RATIO: 0.3
 
         # Performing NMS as per the DISABLE_EARLY_NON_NMS flag
-        DISABLE_EARLY_NON_NMS: True
+        DISABLE_EARLY_NON_NMS: False
 
         ROI_TWO_STAGE_FILTER:
-            THRESH: 0.2
-            MAX_VOL_PROP: 0.1
+            THRESH: 0.05
+            MAX_VOL_PROP: 0.9
 
         NMS_CONFIG:
             TRAIN:
