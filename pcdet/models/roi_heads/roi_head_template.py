@@ -109,10 +109,11 @@ class RoIHeadTemplate(nn.Module):
                     # Pseudo labels/boxes Filtering 1: Based on initial small threshold filtering
                     # Pseudo labels/boxes Filtering 2: Based on bbox volume (which is independent of orientation)
                     selected = cur_roi_scores > self.model_cfg.ROI_TWO_STAGE_FILTER.THRESH      
-                    vol_boxes = (box_preds[:, 3] * box_preds[:, 4] * box_preds[:, 5]).view(-1, 1)
+                    vol_boxes = ((box_preds[:, 3] * box_preds[:, 4] * box_preds[:, 5])/torch.abs(box_preds[:,2][0])).view(-1)# weighted by depth
+                    vol_boxes, indices = torch.sort(vol_boxes, descending=True)
                     # Set volume threshold to 10% of the maximum volume of the boxes
-                    vol_thresh = self.model_cfg.ROI_TWO_STAGE_FILTER.MAX_VOL_PROP * torch.max(vol_boxes) 
-                    selected = selected * (vol_boxes > vol_thresh).squeeze()
+                    keepl_val = vol_boxes[int(indices[int(self.model_cfg.ROI_TWO_STAGE_FILTER.MAX_VOL_PROP * len(vol_boxes))])]
+                    selected = selected * (vol_boxes > keepl_val).squeeze()
                     selected = torch.nonzero(selected).squeeze()
 
                     # Apply same filtering for teacher proposals
