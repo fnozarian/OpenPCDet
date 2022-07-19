@@ -100,6 +100,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                     pseudo_label = pseudo_label[valid_inds]
                     pseudo_score = pseudo_score[valid_inds]
 
+                    # TODO : By default it has been set to False, need to check with the thresh value and keep it True
+                    # Note : Currently the two stages work parallely and then combined. Should be in sequence instead.
                     if self.enable_two_stage_filter :
                         # Below two filtering ops are based on filter_invalid() of soft-teacher
                         # Pseudo labels/boxes Filtering 1: Based on initial small threshold filtering

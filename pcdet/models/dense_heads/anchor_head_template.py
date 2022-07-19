@@ -136,6 +136,7 @@ class AnchorHeadTemplate(nn.Module):
             
             cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight'] 
         else:
+            # NOTE : Need to discuss further on this with FARZAD. (Consistency is in contradiction with unlabeled_bg_mask)
             if self.model_cfg.ENABLE_SOFT_TEACHER:
                 if "batch_cls_preds_teacher" in self.forward_ret_dict:
                     rpn_cls_score_teacher=self.forward_ret_dict['batch_cls_preds_teacher']

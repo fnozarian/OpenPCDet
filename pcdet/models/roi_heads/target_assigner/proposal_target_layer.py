@@ -64,19 +64,6 @@ class ProposalTargetLayer(nn.Module):
             batch_dict['roi_scores'] = keep_roi_scores
             batch_dict['roi_labels'] = keep_roi_labels
 
-            code_size = batch_dict['rois'].shape[-1]
-            sampled_batch_rois = batch_dict['rois'].new_zeros(batch_dict['batch_size'], self.sample_num_rois, code_size)
-            sampled_batch_gt_of_rois = batch_dict['rois'].new_zeros(batch_dict['batch_size'], self.sample_num_rois, code_size + 1)
-            sampled_batch_roi_ious = batch_dict['rois'].new_zeros(batch_dict['batch_size'], self.sample_num_rois)
-            sampled_batch_roi_scores = batch_dict['rois'].new_zeros(batch_dict['batch_size'], self.sample_num_rois)
-            sampled_batch_roi_labels = batch_dict['rois'].new_zeros((batch_dict['batch_size'], self.sample_num_rois), dtype=torch.long)
-
-            sampled_batch_rois_teacher = batch_dict['rois_teacher'].new_zeros(batch_dict['batch_size'], self.sample_num_rois, code_size)
-            sampled_batch_gt_of_rois_teacher = batch_dict['rois_teacher'].new_zeros(batch_dict['batch_size'], self.sample_num_rois, code_size + 1)
-            sampled_batch_roi_ious_teacher = batch_dict['rois_teacher'].new_zeros(batch_dict['batch_size'], self.sample_num_rois)
-            sampled_batch_roi_scores_teacher = batch_dict['rois_teacher'].new_zeros(batch_dict['batch_size'], self.sample_num_rois)
-            sampled_batch_roi_labels_teacher = batch_dict['rois_teacher'].new_zeros((batch_dict['batch_size'], self.sample_num_rois), dtype=torch.long)
-
             # Find overlap b/w student and teacher's proposals
             for index in range(batch_dict['batch_size']):
                 (cur_roi, cur_roi_teacher,
@@ -104,52 +91,46 @@ class ProposalTargetLayer(nn.Module):
                     iou3d = iou3d_nms_utils.boxes_iou3d_gpu(cur_roi, cur_roi_teacher)  # (M, N)
                     max_overlaps, t_assignment = torch.max(iou3d, dim=1)
                 
-                # Sort max_overlaps and sample the top 64 (NUM_ROI_OVERLAP_STUDENT_TEACHER) rois.
-                sorted_max_overlap, inds_max_overlap = torch.sort(max_overlaps)
-                sampled_inds = inds_max_overlap[:self.sample_num_rois] 
-                
-                # We can also try to sample the rois based on an overlap threshold instead of selecting the top 64. But, dim mismatch occurs.
-                # sampled_inds = (max_overlaps > self.roi_sampler_cfg.STUDENT_TEACHER_ROI_OVERLAP_THRESH).nonzero()[:, 0]
-                
-                sampled_batch_rois[index] = cur_roi[sampled_inds]
-                sampled_batch_rois_teacher[index] = cur_roi_teacher[t_assignment[sampled_inds]]
+                batch_rois[index] = cur_roi
+                batch_rois_teacher[index] = cur_roi_teacher[t_assignment]
 
-                sampled_batch_gt_of_rois[index] = cur_gt[sampled_inds]
-                sampled_batch_gt_of_rois_teacher[index] = cur_gt_teacher[t_assignment[sampled_inds]]
+                batch_gt_of_rois[index] = cur_gt
+                batch_gt_of_rois_teacher[index] = cur_gt_teacher[t_assignment]
                 
-                sampled_batch_roi_labels[index] = cur_roi_labels[sampled_inds]
-                sampled_batch_roi_labels_teacher[index] = cur_roi_labels_teacher[t_assignment[sampled_inds]]
+                batch_roi_labels[index] = cur_roi_labels
+                batch_roi_labels_teacher[index] = cur_roi_labels_teacher[t_assignment]
                 
-                sampled_batch_roi_ious[index] = max_overlaps[sampled_inds]
-                sampled_batch_roi_ious_teacher[index] = max_overlaps[t_assignment[sampled_inds]]
+                batch_roi_ious[index] = max_overlaps
+                batch_roi_ious_teacher[index] = max_overlaps[t_assignment]
                 
-                sampled_batch_roi_scores[index] = cur_roi_scores[sampled_inds]
-                sampled_batch_roi_scores_teacher[index] = cur_roi_scores_teacher[t_assignment[sampled_inds]]
+                batch_roi_scores[index] = cur_roi_scores
+                batch_roi_scores_teacher[index] = cur_roi_scores_teacher[t_assignment]
                 
         # unsupervised R-CNN classification loss
         # regression valid mask
-        reg_valid_mask = (sampled_batch_roi_ious > self.roi_sampler_cfg.REG_FG_THRESH).long()
+        reg_valid_mask = (batch_roi_ious > self.roi_sampler_cfg.REG_FG_THRESH).long()
+        reg_valid_mask_teacher = (batch_roi_ious_teacher > self.roi_sampler_cfg.REG_FG_THRESH).long()
         #TODO reg_valid_mask for teacher proposals
         # classification label
         if self.roi_sampler_cfg.CLS_SCORE_TYPE == 'cls':
 
-            batch_cls_labels = (sampled_batch_roi_ious > self.roi_sampler_cfg.CLS_FG_THRESH).long()
-            ignore_mask = (sampled_batch_roi_ious > self.roi_sampler_cfg.CLS_BG_THRESH) & \
-                          (sampled_batch_roi_ious < self.roi_sampler_cfg.CLS_FG_THRESH)
+            batch_cls_labels = (batch_roi_ious > self.roi_sampler_cfg.CLS_FG_THRESH).long()
+            ignore_mask = (batch_roi_ious > self.roi_sampler_cfg.CLS_BG_THRESH) & \
+                          (batch_roi_ious < self.roi_sampler_cfg.CLS_FG_THRESH)
             batch_cls_labels[ignore_mask > 0] = -1  # all preds inside middle-region (0.25-0.75) are considered ignored.
 
         elif self.roi_sampler_cfg.CLS_SCORE_TYPE == 'roi_iou': #or 'soft_teacher':
             
             iou_bg_thresh = self.roi_sampler_cfg.CLS_BG_THRESH 
             iou_fg_thresh = self.roi_sampler_cfg.CLS_FG_THRESH
-            fg_mask = sampled_batch_roi_ious > iou_fg_thresh # >0.75
-            bg_mask = sampled_batch_roi_ious < iou_bg_thresh # <0.25
+            fg_mask = batch_roi_ious > iou_fg_thresh # >0.75
+            bg_mask = batch_roi_ious < iou_bg_thresh # <0.25
             interval_mask = (fg_mask == 0) & (bg_mask == 0) 
             batch_cls_labels = (fg_mask > 0).float() # 1 or zero
             
 
             #! @Farzad: rcnn cls labels are created here. The inverval mask or hard bgs are weighted (linearly) according to
-            # their iou-score with pseudo-labels (becasue of sampled_batch_roi_ious in nominator)
+            # their iou-score with pseudo-labels (becasue of batch_roi_ious in nominator)
             
             if "rois_teacher" in batch_dict:
                 
@@ -158,9 +139,9 @@ class ProposalTargetLayer(nn.Module):
                 if self.roi_sampler_cfg.ENABLE_HYBRID:
                     
                     roi_iou_score = \
-                        (sampled_batch_roi_ious - iou_bg_thresh) / (iou_fg_thresh-iou_bg_thresh)
+                        (batch_roi_ious - iou_bg_thresh) / (iou_fg_thresh-iou_bg_thresh)
                     roi_iou_score_teacher = \
-                        (sampled_batch_roi_ious_teacher - iou_bg_thresh) / (iou_fg_thresh-iou_bg_thresh)
+                        (batch_roi_ious_teacher - iou_bg_thresh) / (iou_fg_thresh-iou_bg_thresh)
                     
                     batch_cls_labels[interval_mask]= \
                         (
@@ -170,27 +151,27 @@ class ProposalTargetLayer(nn.Module):
                         )[interval_mask]
                     
                 else:
-                    batch_cls_labels[interval_mask] = sampled_batch_roi_ious_teacher[interval_mask]
+                    batch_cls_labels[interval_mask] = batch_roi_ious_teacher[interval_mask]
 
 
             else:
                 
                 batch_cls_labels[interval_mask] = \
-                (sampled_batch_roi_ious[interval_mask] - iou_bg_thresh) / (iou_fg_thresh - iou_bg_thresh)
+                (batch_roi_ious[interval_mask] - iou_bg_thresh) / (iou_fg_thresh - iou_bg_thresh)
         
         elif self.roi_sampler_cfg.CLS_SCORE_TYPE == 'raw_roi_iou': # st3d settings
-            batch_cls_labels = sampled_batch_roi_ious
+            batch_cls_labels = batch_roi_ious
         
         else:
             raise NotImplementedError
 
-        targets_dict = {'rois': sampled_batch_rois, 'gt_of_rois': sampled_batch_gt_of_rois, 'gt_iou_of_rois': sampled_batch_roi_ious,
-                        'roi_scores': sampled_batch_roi_scores, 'roi_labels': sampled_batch_roi_labels,
+        targets_dict = {'rois': batch_rois, 'gt_of_rois': batch_gt_of_rois, 'gt_iou_of_rois': batch_roi_ious,
+                        'roi_scores': batch_roi_scores, 'roi_labels': batch_roi_labels,
                         'reg_valid_mask': reg_valid_mask,
                         'rcnn_cls_labels': batch_cls_labels,
-                        'rois_teacher': sampled_batch_rois_teacher, 'gt_of_rois_teacher': sampled_batch_gt_of_rois_teacher, 
-                        'gt_iou_of_rois_teacher': sampled_batch_roi_ious_teacher,
-                        'roi_scores_teacher': sampled_batch_roi_scores_teacher, 'roi_labels_teacher': sampled_batch_roi_labels_teacher,
+                        'rois_teacher': batch_rois_teacher, 'gt_of_rois_teacher': batch_gt_of_rois_teacher, 
+                        'gt_iou_of_rois_teacher': batch_roi_ious_teacher,
+                        'roi_scores_teacher': batch_roi_scores_teacher, 'roi_labels_teacher': batch_roi_labels_teacher,
                         }
 
         return targets_dict
