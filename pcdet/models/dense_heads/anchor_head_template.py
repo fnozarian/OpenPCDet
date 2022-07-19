@@ -100,9 +100,6 @@ class AnchorHeadTemplate(nn.Module):
 
 
     def get_cls_layer_loss(self, scalar=True):
-        
-        
-        
         cls_preds = self.forward_ret_dict['cls_preds']
         box_cls_labels = self.forward_ret_dict['box_cls_labels']
         batch_size = int(cls_preds.shape[0])
@@ -131,31 +128,44 @@ class AnchorHeadTemplate(nn.Module):
         cls_preds = cls_preds.view(batch_size, -1, self.num_class)
         one_hot_targets = one_hot_targets[..., 1:]
         cls_loss_src = self.cls_loss_func(cls_preds, one_hot_targets, weights=cls_weights)  # [N, M]
-
-
-        # cls consistency loss
-        cls_consistency_loss=0
-        if "batch_cls_preds_teacher" in self.forward_ret_dict:
-            cls_preds_teacher=self.forward_ret_dict['batch_cls_preds_teacher']
-                
-            prob1 = torch.sigmoid(cls_preds_teacher).view(batch_size, 1)
-            prob2 = torch.sigmoid(cls_preds).view(batch_size, 1)
-            prob1 = prob1.clamp(1e-4, 1-1e-4)
-            prob2 = prob2.clamp(1e-4, 1-1e-4)
-            prob1 = torch.cat([1-prob1, prob1], dim=-1)
-            prob2 = torch.cat([1-prob2, prob2], dim=-1)
-            cls_consistency_loss = nn.kl_div(torch.log(prob1), prob2)
-
+        
         if scalar:
             cls_loss = cls_loss_src.sum() / batch_size
             rpn_acc_cls = ((cls_preds.max(-1)[1] + 1) == cls_targets.long()).sum().float() / \
-                          torch.clamp((cls_targets > 0).sum().float(), min=1.0)
+                        torch.clamp((cls_targets > 0).sum().float(), min=1.0)
+            
+            cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight'] 
         else:
-            cls_loss = cls_loss_src.reshape(batch_size, -1).sum(-1)
-            rpn_acc_cls = ((cls_preds.max(-1)[1] + 1) == cls_targets.long()).view(batch_size, -1).sum(-1).float() / \
-                          torch.clamp((cls_targets > 0).view(batch_size, -1).sum(-1).float(), min=1.0)
+            if self.model_cfg.ENABLE_SOFT_TEACHER:
+                if "batch_cls_preds_teacher" in self.forward_ret_dict:
+                    rpn_cls_score_teacher=self.forward_ret_dict['batch_cls_preds_teacher']
 
-        cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight'] + cls_consistency_loss
+                    # cls consistency loss
+                    prob1 = torch.sigmoid(rpn_cls_score_teacher)
+                    prob2 = torch.sigmoid(cls_preds)
+                    prob1 = prob1.clamp(1e-4, 1-1e-4)
+                    prob2 = prob2.clamp(1e-4, 1-1e-4)
+                    prob1 = torch.cat([1-prob1, prob1], dim=-1)
+                    prob2 = torch.cat([1-prob2, prob2], dim=-1)
+                    cls_consistency_loss = nn.functional.kl_div(torch.log(prob1), prob2)
+
+                    # generate unlabeled bg and labeled masks for assigning the weights on student's RPN
+                    unlabeled_inds = self.forward_ret_dict['unlabeled_mask']
+                    unlabeled_mask = torch.zeros_like(negatives).index_fill_(0, unlabeled_inds, 1)
+                    labeled_mask = ~unlabeled_mask
+                    unlabeled_bg_mask = unlabeled_mask * negatives
+
+                    # Assign teacher's rpn cls weight to the rpn's of the student (only on unlabaled data)
+                    # This provides supervision from rpns of unlabeled samples + labeled data.
+                    weight = labeled_mask.float() + (unlabeled_bg_mask.float() * rpn_cls_score_teacher)
+                    cls_loss = cls_loss_src.reshape(batch_size, -1).sum(-1)
+                    cls_loss = cls_loss * weight + cls_consistency_loss
+            else:
+                cls_loss = cls_loss_src.reshape(batch_size, -1).sum(-1)
+                cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
+            
+            rpn_acc_cls = ((cls_preds.max(-1)[1] + 1) == cls_targets.long()).view(batch_size, -1).sum(-1).float() / \
+                            torch.clamp((cls_targets > 0).view(batch_size, -1).sum(-1).float(), min=1.0)
 
         tb_dict = {
             'rpn_loss_cls': cls_loss.item() if scalar else cls_loss,
