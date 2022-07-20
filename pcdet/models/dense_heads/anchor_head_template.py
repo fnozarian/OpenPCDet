@@ -137,6 +137,7 @@ class AnchorHeadTemplate(nn.Module):
             cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight'] 
         else:
             # NOTE : Need to discuss further on this with FARZAD. (Consistency is in contradiction with unlabeled_bg_mask)
+            # we can add this part inside rcnn where we have clear distinction b/w fg and bg
             if self.model_cfg.ENABLE_SOFT_TEACHER:
                 if "batch_cls_preds_teacher" in self.forward_ret_dict:
                     rpn_cls_score_teacher=self.forward_ret_dict['batch_cls_preds_teacher']
@@ -158,9 +159,9 @@ class AnchorHeadTemplate(nn.Module):
 
                     # Assign teacher's rpn cls weight to the rpn's of the student (only on unlabaled data)
                     # This provides supervision from rpns of unlabeled samples + labeled data.
-                    weight = labeled_mask.float() + (unlabeled_bg_mask.float() * rpn_cls_score_teacher)
+                    weight = labeled_mask.float() + (rpn_cls_score_teacher * unlabeled_bg_mask.float()[...,None]).sum(-1)
                     cls_loss = cls_loss_src.reshape(batch_size, -1).sum(-1)
-                    cls_loss = cls_loss * weight + cls_consistency_loss
+                    cls_loss =  weight.t() * cls_loss + cls_consistency_loss
             else:
                 cls_loss = cls_loss_src.reshape(batch_size, -1).sum(-1)
                 cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']

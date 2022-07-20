@@ -167,7 +167,7 @@ MODEL:
 
         # Performing NMS as per the DISABLE_EARLY_NON_NMS flag
         DISABLE_EARLY_NON_NMS: False
-
+        
         ROI_TWO_STAGE_FILTER:
             THRESH: 0.05
             MAX_VOL_PROP: 0.9
@@ -197,7 +197,7 @@ MODEL:
             BOX_CODER: ResidualCoder
             ROI_PER_IMAGE: 128
             FG_RATIO: 0.5
-
+            NUM_ROI_OVERLAP_STUDENT_TEACHER: 64
             SAMPLE_ROI_BY_EACH_CLASS: True
             CLS_SCORE_TYPE: roi_iou
             ENABLE_HYBRID: True

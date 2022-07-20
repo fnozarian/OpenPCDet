@@ -14,4 +14,5 @@ venv/
 *.zip
 *.bin
 output
-version.py
+pcdet/version.py
+.vscode/launch.json

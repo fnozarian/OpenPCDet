@@ -9,11 +9,12 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "env": {"name":"CUDA_VISIBLE_DEVICES", "value":"0"},
-            "args": ["--cfg_file=/mnt/data/dash01/soft-teacher_exp/tools/cfgs/kitti_models/pv_rcnn_ssl_60.yaml",
+            "args": ["--cfg_file=/mnt/disk2/thesis_work/soft_teacher_rpn_exp/tools/cfgs/kitti_models/pv_rcnn_ssl_60.yaml",
                 "--extra_tag=rpn_test",
-                "--pretrained_model=/mnt/data/dash01/soft-teacher_exp/output/cfgs/kitti_models/pv_rcnn/split_0.01_1/ckpt/checkpoint_epoch_80.pth",
+                "--pretrained_model=/mnt/disk2/thesis_work/soft_teacher_rpn_exp/output/cfgs/kitti_models/pv_rcnn/split_0.01_1/ckpt/checkpoint_epoch_80.pth",
                 "--dbinfos=kitti_dbinfos_train_0.01_1_37.pkl",
-                "--split=train_0.01_1"],
+                "--split=train_0.01_1",
+                "--batch_size=1"],
             "cwd": "${workspaceFolder}/tools",
             
 
