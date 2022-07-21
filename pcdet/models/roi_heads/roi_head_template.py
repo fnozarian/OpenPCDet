@@ -86,99 +86,77 @@ class RoIHeadTemplate(nn.Module):
             else:
                 assert batch_dict['batch_cls_preds'].shape.__len__() == 3
                 batch_mask = index
+            
+            # filtering of student's proposals 
             box_preds = batch_box_preds[batch_mask]
             cls_preds = batch_cls_preds[batch_mask]
-            
-            
+            cur_roi_scores, cur_roi_labels = torch.max(cls_preds, dim=1)
+            # Performing NMS only when DISABLE_EARLY_NON_NMS flag is False
+            if not self.model_cfg.DISABLE_EARLY_NON_NMS:
+                if nms_config.MULTI_CLASSES_NMS:
+                    raise NotImplementedError
+                else:
+                    selected, _ = class_agnostic_nms(
+                        box_scores=cur_roi_scores, box_preds=box_preds, nms_config=nms_config
+                    )
+            else:
+                selected = cur_roi_scores > self.model_cfg.ROI_TWO_STAGE_FILTER.THRESH      
+                vol_boxes = ((box_preds[:, 3] * box_preds[:, 4] * box_preds[:, 5])/torch.abs(box_preds[:,2][0])).view(-1)
+                vol_boxes, indices = torch.sort(vol_boxes, descending=True)
+                # Set volume threshold to 10% of the maximum volume of the boxes
+                kep_ind = int(self.model_cfg.ROI_TWO_STAGE_FILTER.MAX_VOL_PROP * len(vol_boxes))
+                keepl_val = vol_boxes[kep_ind]
+                selected =  torch.nonzero(selected * (vol_boxes > keepl_val))
 
+            rois[index, :len(selected), :] = box_preds[selected]
+            roi_scores[index, :len(selected)] = cur_roi_scores[selected]
+            roi_labels[index, :len(selected)] = cur_roi_labels[selected]
+            
+            # filtering of teacher's proposals 
             if "batch_box_preds_teacher" in batch_dict:
                 box_preds_teacher = batch_dict['batch_box_preds_teacher'][batch_mask]
                 cls_preds_teacher = batch_dict['batch_cls_preds_teacher'][batch_mask]
-                
-                cur_roi_scores, cur_roi_labels = torch.max(cls_preds, dim=1)
                 cur_roi_scores_teacher, cur_roi_labels_teacher = torch.max(cls_preds_teacher, dim=1)
-
-                # Performing NMS only when DISABLE_EARLY_NON_NMS flag is False
                 if not self.model_cfg.DISABLE_EARLY_NON_NMS:
-                   
                     if nms_config.MULTI_CLASSES_NMS:
                         raise NotImplementedError
                     else:
-                        selected, selected_scores = class_agnostic_nms(
-                            box_scores=cur_roi_scores, box_preds=box_preds, nms_config=nms_config
-                        )
-                        selected_teacher, selected_scores_teacher = class_agnostic_nms(
+                        selected, _ = class_agnostic_nms(
                             box_scores=cur_roi_scores_teacher, box_preds=box_preds_teacher, nms_config=nms_config
                         ) 
-                        topk_selected = nms_config.NMS_POST_MAXSIZE
-                        topk_selected_teacher = nms_config.NMS_POST_MAXSIZE
-                
-                # Else, keep all the proposals at this stage 
-                #! TODO: Apply soft-teacher 2 stage filtering, 
-                # discuss with FARZAD how to use augmented spatial_features_2d to generate good semantic cls score
                 else:
-                    # Below two filtering ops are based on filter_invalid() of soft-teacher
-                    # Pseudo labels/boxes Filtering 1: Based on initial small threshold filtering
-                    # Pseudo labels/boxes Filtering 2: Based on bbox volume (which is independent of orientation)
-                    selected = cur_roi_scores > self.model_cfg.ROI_TWO_STAGE_FILTER.THRESH      
-                    vol_boxes = ((box_preds[:, 3] * box_preds[:, 4] * box_preds[:, 5])/torch.abs(box_preds[:,2][0])).view(-1)# weighted by depth
+
+                    selected = cur_roi_scores_teacher > self.model_cfg.ROI_TWO_STAGE_FILTER.THRESH
+                    #! cur_roi_scores_teacher is from teacher's rpn head as teacher has not seen any augmentations these
+                    # scores are not valid (might be the case in initaial training). If we filter based on the score many proposals 
+                    # get rejected unlike filtering cur_roi_scores. This raises an issue of dimension mismatch.
+                    # discuss with FARZAD how to use augmented spatial_features_2d to generate good semantic cls score
+                    vol_boxes = ((box_preds_teacher[:, 3] * box_preds_teacher[:, 4] * box_preds_teacher[:, 5])/torch.abs(box_preds_teacher[:,2][0])).view(-1)
                     vol_boxes, indices = torch.sort(vol_boxes, descending=True)
                     # Set volume threshold to 10% of the maximum volume of the boxes
                     kep_ind = int(self.model_cfg.ROI_TWO_STAGE_FILTER.MAX_VOL_PROP * len(vol_boxes))
                     keepl_val = vol_boxes[kep_ind]
                     selected =  torch.nonzero(selected * (vol_boxes > keepl_val))
-                    
-
-                    # Apply same filtering for teacher proposals
-                    selected = cur_roi_scores_teacher > self.model_cfg.ROI_TWO_STAGE_FILTER.THRESH      
-                    vol_boxes = ((box_preds_teacher[:, 3] * box_preds_teacher[:, 4] * box_preds_teacher[:, 5])/torch.abs(box_preds_teacher[:,2][0])).view(-1)# weighted by depth
-                    vol_boxes, indices = torch.sort(vol_boxes, descending=True)
-                    # Set volume threshold to 10% of the maximum volume of the boxes
-                    kep_ind = int(self.model_cfg.ROI_TWO_STAGE_FILTER.MAX_VOL_PROP * len(vol_boxes))
-                    keepl_val = vol_boxes[kep_ind]
-                    selected_teacher =  torch.nonzero(selected * (vol_boxes > keepl_val))
-
-
-                    topk_selected = len(selected)
-                    topk_selected_teacher = len(selected_teacher)
                 
-                """ rois_teacher = batch_dict['batch_box_preds_teacher'].new_zeros((batch_size, topk_selected_teacher, batch_dict['batch_box_preds_teacher'].shape[-1]))
-                roi_scores_teacher = batch_dict['batch_box_preds_teacher'].new_zeros((batch_size, topk_selected_teacher))
-                roi_labels_teacher = batch_dict['batch_box_preds_teacher'].new_zeros((batch_size, topk_selected_teacher), dtype=torch.long) """
 
-                rois_teacher[index, :len(selected_teacher), :] = box_preds_teacher[selected_teacher]
-                roi_scores_teacher[index, :len(selected_teacher)] = cur_roi_scores_teacher[selected_teacher]
-                roi_labels_teacher[index, :len(selected_teacher)] = cur_roi_labels_teacher[selected_teacher]
 
-                batch_dict['rois_teacher'] = rois_teacher
-                batch_dict['roi_scores_teacher'] = roi_scores_teacher
-                batch_dict['roi_labels_teacher'] = roi_labels_teacher + 1
-                batch_dict['has_class_labels_teacher'] = True if batch_dict['batch_box_preds_teacher'].shape[-1] > 1 else False
-                
-            else:
-                cur_roi_scores, cur_roi_labels = torch.max(cls_preds, dim=1)
-                if nms_config.MULTI_CLASSES_NMS:
-                        raise NotImplementedError
-                else:
-                    selected, selected_scores = class_agnostic_nms(
-                        box_scores=cur_roi_scores, box_preds=box_preds, nms_config=nms_config
-                    )
-                topk_selected = nms_config.NMS_POST_MAXSIZE
-            # TODO: missmatch topk for labeled and unlabeled indexes
-            
-            """ rois = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_box_preds.shape[-1]))
-            roi_scores = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
-            roi_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
-            """
-            rois[index, :len(selected), :] = box_preds[selected]
-            roi_scores[index, :len(selected)] = cur_roi_scores[selected]
-            roi_labels[index, :len(selected)] = cur_roi_labels[selected]
+                rois_teacher[index, :len(selected), :] = box_preds_teacher[selected]
+                roi_scores_teacher[index, :len(selected)] = cur_roi_scores_teacher[selected]
+                roi_labels_teacher[index, :len(selected)] = cur_roi_labels_teacher[selected]
 
         batch_dict['rois'] = rois
         batch_dict['roi_scores'] = roi_scores
         batch_dict['roi_labels'] = roi_labels + 1
         batch_dict['has_class_labels'] = True if batch_cls_preds.shape[-1] > 1 else False
         batch_dict.pop('batch_index', None)
+
+        if "batch_box_preds_teacher" in batch_dict:
+            batch_dict['rois_teacher'] = rois_teacher
+            batch_dict['roi_scores_teacher'] = roi_scores_teacher
+            batch_dict['roi_labels_teacher'] = roi_labels_teacher + 1
+            batch_dict['has_class_labels_teacher'] = True if batch_dict['batch_box_preds_teacher'].shape[-1] > 1 else False
+
+        
         return batch_dict
 
     def assign_targets(self, batch_dict):

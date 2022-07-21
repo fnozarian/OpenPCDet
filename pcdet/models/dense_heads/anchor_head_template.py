@@ -138,6 +138,7 @@ class AnchorHeadTemplate(nn.Module):
         else:
             # NOTE : Need to discuss further on this with FARZAD. (Consistency is in contradiction with unlabeled_bg_mask)
             # we can add this part inside rcnn where we have clear distinction b/w fg and bg
+            cls_consistency_loss=0
             if self.model_cfg.ENABLE_SOFT_TEACHER:
                 if "batch_cls_preds_teacher" in self.forward_ret_dict:
                     rpn_cls_score_teacher=self.forward_ret_dict['batch_cls_preds_teacher']
@@ -151,7 +152,7 @@ class AnchorHeadTemplate(nn.Module):
                     prob2 = torch.cat([1-prob2, prob2], dim=-1)
                     cls_consistency_loss = nn.functional.kl_div(torch.log(prob1), prob2)
 
-                    # generate unlabeled bg and labeled masks for assigning the weights on student's RPN
+                    """ # generate unlabeled bg and labeled masks for assigning the weights on student's RPN
                     unlabeled_inds = self.forward_ret_dict['unlabeled_mask']
                     unlabeled_mask = torch.zeros_like(negatives).index_fill_(0, unlabeled_inds, 1)
                     labeled_mask = ~unlabeled_mask
@@ -159,12 +160,13 @@ class AnchorHeadTemplate(nn.Module):
 
                     # Assign teacher's rpn cls weight to the rpn's of the student (only on unlabaled data)
                     # This provides supervision from rpns of unlabeled samples + labeled data.
-                    weight = labeled_mask.float() + (rpn_cls_score_teacher * unlabeled_bg_mask.float()[...,None]).sum(-1)
+                    weight = (labeled_mask.float() + (rpn_cls_score_teacher * unlabeled_bg_mask.float()[...,None]).sum(-1)).reshape(batch_size, -1).sum(-1)
                     cls_loss = cls_loss_src.reshape(batch_size, -1).sum(-1)
-                    cls_loss =  weight.t() * cls_loss + cls_consistency_loss
-            else:
-                cls_loss = cls_loss_src.reshape(batch_size, -1).sum(-1)
-                cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
+                    cls_loss =  weight * cls_loss + cls_consistency_loss """
+
+            
+            cls_loss = cls_loss_src.reshape(batch_size, -1).sum(-1)
+            cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight'] + cls_consistency_loss
             
             rpn_acc_cls = ((cls_preds.max(-1)[1] + 1) == cls_targets.long()).view(batch_size, -1).sum(-1).float() / \
                             torch.clamp((cls_targets > 0).view(batch_size, -1).sum(-1).float(), min=1.0)
