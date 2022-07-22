@@ -111,6 +111,8 @@ class ProposalTargetLayer(nn.Module):
         reg_valid_mask = (batch_roi_ious > self.roi_sampler_cfg.REG_FG_THRESH).long()
         reg_valid_mask_teacher = (batch_roi_ious_teacher > self.roi_sampler_cfg.REG_FG_THRESH).long()
         #TODO reg_valid_mask for teacher proposals
+        
+        interval_mask = None
         # classification label
         if self.roi_sampler_cfg.CLS_SCORE_TYPE == 'cls':
 
@@ -172,6 +174,7 @@ class ProposalTargetLayer(nn.Module):
                         'rois_teacher': batch_rois_teacher, 'gt_of_rois_teacher': batch_gt_of_rois_teacher, 
                         'gt_iou_of_rois_teacher': batch_roi_ious_teacher,
                         'roi_scores_teacher': batch_roi_scores_teacher, 'roi_labels_teacher': batch_roi_labels_teacher,
+                        'interval_mask': interval_mask
                         }
 
         return targets_dict
