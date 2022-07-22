@@ -109,7 +109,8 @@ class ProposalTargetLayer(nn.Module):
         # unsupervised R-CNN classification loss
         # regression valid mask
         reg_valid_mask = (batch_roi_ious > self.roi_sampler_cfg.REG_FG_THRESH).long()
-        reg_valid_mask_teacher = (batch_roi_ious_teacher > self.roi_sampler_cfg.REG_FG_THRESH).long()
+        if "rois_teacher" in batch_dict:
+            reg_valid_mask_teacher = (batch_roi_ious_teacher > self.roi_sampler_cfg.REG_FG_THRESH).long()
         #TODO reg_valid_mask for teacher proposals
         
         interval_mask = None
@@ -171,11 +172,15 @@ class ProposalTargetLayer(nn.Module):
                         'roi_scores': batch_roi_scores, 'roi_labels': batch_roi_labels,
                         'reg_valid_mask': reg_valid_mask,
                         'rcnn_cls_labels': batch_cls_labels,
-                        'rois_teacher': batch_rois_teacher, 'gt_of_rois_teacher': batch_gt_of_rois_teacher, 
-                        'gt_iou_of_rois_teacher': batch_roi_ious_teacher,
-                        'roi_scores_teacher': batch_roi_scores_teacher, 'roi_labels_teacher': batch_roi_labels_teacher,
-                        'interval_mask': interval_mask
+                        'interval_mask': interval_mask,
+
                         }
+        if "rois_teacher" in batch_dict:
+            targets_dict.update({'rois_teacher': batch_rois_teacher, 'gt_of_rois_teacher': batch_gt_of_rois_teacher, 
+                            'gt_iou_of_rois_teacher': batch_roi_ious_teacher,
+                            'roi_scores_teacher': batch_roi_scores_teacher, 'roi_labels_teacher': batch_roi_labels_teacher,
+                            'reg_valid_mask_teacher': reg_valid_mask_teacher,
+                            })
 
         return targets_dict
 
