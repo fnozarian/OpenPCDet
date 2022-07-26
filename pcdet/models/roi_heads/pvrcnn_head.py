@@ -3,6 +3,7 @@ import torch.nn as nn
 from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
+from pcdet.datasets.augmentor.augmentor_utils import *
 
 
 class PVRCNNHead(RoIHeadTemplate):
@@ -150,9 +151,33 @@ class PVRCNNHead(RoIHeadTemplate):
         # should not use gt_roi for pseudo label generation
         if (self.training or self.print_loss_when_eval) and not disable_gt_roi_when_pseudo_labeling:
             targets_dict = self.assign_targets(batch_dict)
-            batch_dict['rois'] = targets_dict['rois']
-            batch_dict['roi_scores'] = targets_dict['roi_scores']
-            batch_dict['roi_labels'] = targets_dict['roi_labels']
+            # Use teacher's proposals in student's rcnn head
+            if 'rois_teacher' in targets_dict :
+                batch_dict['rois'] = targets_dict['rois_teacher']
+                batch_dict['roi_scores'] = targets_dict['roi_scores_teacher']
+                batch_dict['roi_labels'] = targets_dict['roi_labels_teacher']
+
+                # TODO : Apply consistency loss here  b/w teacher's vs student's RPN head proposals 
+                # Alternatively, it can be applied in pvrcnn_ssl just after teacher model generated batch_box_preds.
+                # Applying it here restricts the loss computation only for the filtered proposals.
+
+                #! Do we need to apply student's augmentation on teacher's proposals before pooling using student's model?
+                labeled_mask = batch_dict['labeled_mask'].view(-1)
+                unlabeled_inds = torch.nonzero(1-labeled_mask).squeeze(1).long()
+
+                batch_dict['rois'][unlabeled_inds] = random_flip_along_x_bbox(
+                    batch_dict['rois'][unlabeled_inds], batch_dict['flip_x'][unlabeled_inds])
+                batch_dict['rois'][unlabeled_inds] = random_flip_along_y_bbox(
+                    batch_dict['rois'][unlabeled_inds], batch_dict['flip_y'][unlabeled_inds])
+                batch_dict['rois'][unlabeled_inds] = global_rotation_bbox(
+                    batch_dict['rois'][unlabeled_inds], batch_dict['rot_angle'][unlabeled_inds])
+                batch_dict['rois'][unlabeled_inds] = global_scaling_bbox(
+                    batch_dict['rois'][unlabeled_inds], batch_dict['scale'][unlabeled_inds])
+
+            else :
+                batch_dict['rois'] = targets_dict['rois']
+                batch_dict['roi_scores'] = targets_dict['roi_scores']
+                batch_dict['roi_labels'] = targets_dict['roi_labels']
 
         # RoI aware pooling
         pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
