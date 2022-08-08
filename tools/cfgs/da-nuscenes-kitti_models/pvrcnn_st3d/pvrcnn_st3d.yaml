@@ -235,8 +235,8 @@ OPTIMIZATION:
 
 SELF_TRAIN:
     SRC:
-        USE_DATA: False
-        USE_GRAD: False
+        USE_DATA: True
+        USE_GRAD: True
         LOSS_WEIGHT: 1.0
     TAR:
         USE_DATA: True
@@ -247,6 +247,7 @@ SELF_TRAIN:
     UPDATE_PSEUDO_LABEL: [0]
     UPDATE_PSEUDO_LABEL_INTERVAL: 4
     INIT_PS: None
+    DSNORM: True
 
     PROG_AUG:
         ENABLED: True
