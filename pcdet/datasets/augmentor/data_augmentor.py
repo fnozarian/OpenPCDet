@@ -11,6 +11,7 @@ class DataAugmentor(object):
         self.root_path = root_path
         self.class_names = class_names
         self.logger = logger
+        self.augmentor_configs = augmentor_configs
 
         self.data_augmentor_queue = []
         aug_config_list = augmentor_configs if isinstance(augmentor_configs, list) \
@@ -56,6 +57,28 @@ class DataAugmentor(object):
             assert cur_axis in ['x', 'y']
             gt_boxes, points, enable = getattr(augmentor_utils, 'random_flip_along_%s' % cur_axis)(
                 gt_boxes, points,
+            )
+            data_dict['flip_' + cur_axis] = enable
+
+        data_dict['gt_boxes'] = gt_boxes
+        data_dict['points'] = points
+        return data_dict
+    
+    # TODO(shashank) : Need to refactor and avoid using this seperate function
+    '''
+    In order to apply augmentation on all the data for EMA model, we need to keep enable_ = TRUE
+    (Adapted from random_world_flip and added enable_=True in random_flip_along_%s() call)
+    '''
+    def random_world_flip_ema(self, data_dict=None, config=None):
+        if data_dict is None:
+            return partial(self.random_world_flip_ema, config=config)
+        gt_boxes, points = data_dict['gt_boxes'], data_dict['points']
+        data_dict['flip_x'] = False
+        data_dict['flip_y'] = False
+        for cur_axis in config['ALONG_AXIS_LIST']:
+            assert cur_axis in ['x', 'y']
+            gt_boxes, points, enable = getattr(augmentor_utils, 'random_flip_along_%s' % cur_axis)(
+                gt_boxes, points, enable_=True
             )
             data_dict['flip_' + cur_axis] = enable
 
@@ -275,7 +298,64 @@ class DataAugmentor(object):
         data_dict['points'] = points
         return data_dict
 
+    '''
+    Prepare augmentation queues for each network to be used based on their augmentation list in config (.yaml) file
+        Args:
+        Returns:
+                data_augmentor_queue
+    ( Adapted from __init__() ) 
+    '''
+    def prepare_aug_queue(self):
+        # list containing all the augs to be applied on the stud/teacher n/w based on config file
+        data_augmentor_list = {'stud': self.augmentor_configs.STUD_AUG_LIST, 
+                            'ema': self.augmentor_configs.TEACH_AUG_LIST}
+        # aug queues for each n/w 
+        data_augmentor_queue = {'stud': [], 'ema': []}
+        # only for debugging purpose 
+        cur_cfg_names = {'stud': [], 'ema': []}
 
+        # fill the aug list and queues for teacher ensemble networks here
+        for cur_ema_model in range(self.augmentor_configs.NUM_TEACH_ENSEMBLE):
+            data_augmentor_list['ema_' + str(cur_ema_model+1)] = self.augmentor_configs.TEACH_ENS_AUG_LIST[cur_ema_model]
+            data_augmentor_queue['ema_' + str(cur_ema_model+1)] = []
+            cur_cfg_names['ema_' + str(cur_ema_model+1)] = []
+
+        aug_config_list = self.augmentor_configs if isinstance(self.augmentor_configs, list) \
+            else self.augmentor_configs.AUG_CONFIG_LIST
+
+        for cur_cfg in aug_config_list:
+            # ignore gt_sampling from aug list (if present), as already performed before 
+            if cur_cfg['NAME'] == 'gt_sampling':
+                continue
+            cur_augmentor = getattr(self, cur_cfg.NAME)(config=cur_cfg)
+            for key in data_augmentor_list:
+                if cur_cfg.NAME in data_augmentor_list[key]:
+                    data_augmentor_queue[key].append(cur_augmentor)
+                    cur_cfg_names[key].append(cur_cfg.NAME)
+        # print(cur_cfg_names)
+        return data_augmentor_queue
+    
+    '''
+    Perform augmentation for every network to be used based on their indivisual augmentation queues
+    Note : GT-Sampling has already been performed so no need to perform it again
+        Args:
+            data_dict:
+                points: (N, 3 + C_in)
+                gt_boxes: optional, (N, 7) [x, y, z, dx, dy, dz, heading]
+
+        Returns:
+                points: (N, 3 + C_in)
+                gt_boxes: optional, (N, 7) [x, y, z, dx, dy, dz, heading]
+    '''
+    def perform_augmentation(self, data_dict, data_augmentor_queue):
+        for cur_augmentor in data_augmentor_queue:
+                data_dict = cur_augmentor(data_dict=data_dict)
+
+        # TODO (shashank): Need to check if this is required. Adapted from forward()
+        data_dict['gt_boxes'][:, 6] = common_utils.limit_period(
+            data_dict['gt_boxes'][:, 6], offset=0.5, period=2 * np.pi
+        )
+        return data_dict['points'], data_dict['gt_boxes']
 
     def forward(self, data_dict, no_db_sample=False):
         """

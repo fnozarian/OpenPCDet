@@ -414,6 +414,7 @@ class KittiDatasetSSL(DatasetTemplate):
             batch_size = len(batch_list)
         ret = {}
 
+        # TODO (shashank): need to make this generic in case of larger teacher ensemble
         for key, val in data_dict.items():
             try:
                 if key in ['voxels', 'voxel_num_points', 'voxels_ema', 'voxel_num_points_ema', 'voxels_ema_wa', 'voxel_num_points_ema_wa']:
@@ -513,29 +514,27 @@ class KittiDatasetSSL(DatasetTemplate):
                 },
                 no_db_sample=no_db_sample
             )
-            # print(data_dict)
-            points_ema = data_dict['points'].copy()
-            gt_boxes_ema = data_dict['gt_boxes'].copy()
-            # Reverses the student's augmentations applied on points/gt_boxes. Thus, teacher's input has no augs.
-            gt_boxes_ema, points_ema, _ = global_scaling(gt_boxes_ema, points_ema, [0, 2],
-                                                         scale_=1/data_dict['scale'])
-            gt_boxes_ema, points_ema, _ = global_rotation(gt_boxes_ema, points_ema, [-1, 1],
-                                                          rot_angle_=-data_dict['rot_angle'])
+            # store gt-sampled points and gt_boxes and use it for student-teacher augs
+            points = data_dict['points'].copy()
+            gt_boxes = data_dict['gt_boxes'].copy()
             
-            # Weakly augment the data for teacher ensemble 
-            points_ema_wa = points_ema.copy()
-            gt_boxes_ema_wa = gt_boxes_ema.copy()
-            # Apply random-flip-along-x on samples where it was not applied previously
-            rem_samples = ~data_dict['flip_x']
-            gt_boxes_ema_wa, points_ema_wa, _ = random_flip_along_x(gt_boxes_ema_wa, points_ema_wa, enable_=rem_samples)
-            data_dict['points_ema_wa'] = points_ema_wa
-            data_dict['gt_boxes_ema_wa'] = gt_boxes_ema_wa
-
-            gt_boxes_ema, points_ema, _ = random_flip_along_x(gt_boxes_ema, points_ema, enable_=data_dict['flip_x'])
-            gt_boxes_ema, points_ema, _ = random_flip_along_y(gt_boxes_ema, points_ema, enable_=data_dict['flip_y'])
-            # Store this for original dataset for teacher ensemble
-            data_dict['points_ema'] = points_ema
-            data_dict['gt_boxes_ema'] = gt_boxes_ema
+            # fetch data augmentations for every network 
+            # NOTE : these augs exclude gt-sampling as it is alreay done before
+            data_augmentor_queue = self.data_augmentor.prepare_aug_queue()
+            
+            # perform data aug for each network 
+            for key in data_augmentor_queue:
+                data_dict['points'] = points.copy()
+                data_dict['gt_boxes'] = gt_boxes.copy()
+                data_dict['points_'+key], data_dict['gt_boxes_'+key] = self.data_augmentor.perform_augmentation(data_dict,
+                                                                                                                data_augmentor_queue[key])
+            data_dict['points'] = data_dict.pop('points_stud')
+            data_dict['gt_boxes'] = data_dict.pop('gt_boxes_stud')
+            
+            #! TODO (shashank): NEED TO AVOID THIS (when using larger teacher ensemble)!!
+            # Might need changes in pv_rcnn_ssl.py too
+            data_dict['points_ema_wa'] = data_dict.pop('points_ema_1')
+            data_dict['gt_boxes_ema_wa'] = data_dict.pop('gt_boxes_ema_1')
 
         if data_dict.get('gt_boxes', None) is not None:
             selected = common_utils.keep_arrays_by_name(data_dict['gt_names'], self.class_names)
@@ -597,7 +596,9 @@ class KittiDatasetSSL(DatasetTemplate):
             data_dict = self.data_processor.forward(
                 data_dict=data_dict
             )
-
+            
+            # might be needed later on
+            data_dict['num_teach_ensemble'] = self.data_augmentor.augmentor_configs.NUM_TEACH_ENSEMBLE
         '''if self.training:
             if no_db_sample:
                 data_dict['gt_boxes_ema'].fill(0)
