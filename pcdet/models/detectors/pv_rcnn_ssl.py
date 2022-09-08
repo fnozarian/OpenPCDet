@@ -320,18 +320,18 @@ class PVRCNN_SSL(Detector3DTemplate):
     # TODO(farzad) Warning: this method has two types of stats: one maintaining their stats over batches, e.g., TP, FP
     #  and two reset state after each batch. Use update_metrics flag if you want call the method twice in different
     #  places during a batch.
-    def calc_statistics(self, pred_boxes, gt_boxes, update_metrics=True, tag=None, **kwargs):
-        assert len(pred_boxes) == len(gt_boxes)
-
+    def calc_statistics(self, pred_boxes_org, gt_boxes_org, update_metrics=True, tag=None, **kwargs):
+        assert len(pred_boxes_org) == len(gt_boxes_org)
+        
         statistics = defaultdict(list)
-        for i in range(len(pred_boxes)):
-            valid_preds_mask = pred_boxes[i].sum(dim=-1) > 0
-            valid_gts_mask = gt_boxes[i].sum(dim=-1) > 0
+        for i in range(len(pred_boxes_org)):
+            valid_preds_mask = pred_boxes_org[i].sum(dim=-1) > 0
+            valid_gts_mask = gt_boxes_org[i].sum(dim=-1) > 0
             num_gts = valid_gts_mask.sum()
             num_preds = valid_preds_mask.sum()
             if num_gts > 0 and num_preds > 0:
-                gt_boxes = gt_boxes[i, valid_gts_mask]
-                pred_boxes = pred_boxes[i, valid_preds_mask]
+                gt_boxes = gt_boxes_org[i, valid_gts_mask]
+                pred_boxes = pred_boxes_org[i, valid_preds_mask]
                 pred_by_gt_overlap = iou3d_nms_utils.boxes_iou3d_gpu(pred_boxes[:, 0:7], gt_boxes[:, 0:7])
                 preds_iou_max, assigned_gt_inds = pred_by_gt_overlap.max(dim=1)
                 statistics['pseudo_ious'].append(preds_iou_max.mean().item())
@@ -341,15 +341,18 @@ class PVRCNN_SSL(Detector3DTemplate):
 
                 fg_thresh = self.model_cfg['ROI_HEAD']['TARGET_CONFIG']['CLS_FG_THRESH']
                 bg_thresh = self.model_cfg['ROI_HEAD']['TARGET_CONFIG']['CLS_BG_THRESH']
-                fg = (preds_iou_max > fg_thresh).float().mean().item()
-                statistics['pseudo_fgs'].append(fg)
+                filtered_fg = (preds_iou_max > fg_thresh).float()
+                filtered_bg = (preds_iou_max < bg_thresh).float()
+
+                statistics['pseudo_fgs'].append(filtered_fg.mean().item())
+                statistics['pseudo_bgs'].append(filtered_bg.mean().item())
 
                 if kwargs['pseudo_sem_scores']:
                     pseudo_sem_scores = kwargs['pseudo_sem_scores']
-                    sem_score_fg = (pseudo_sem_scores[i] * (preds_iou_max > fg_thresh).float()).sum() \
-                                   / torch.clamp((preds_iou_max > fg_thresh).sum(), min=1.0)
-                    sem_score_bg = (pseudo_sem_scores[i] * (preds_iou_max < bg_thresh).float()).sum() \
-                                   / torch.clamp((preds_iou_max < bg_thresh).float().sum(), min=1.0)
+                    sem_score_fg = (pseudo_sem_scores[i][torch.nonzero(valid_preds_mask)] * filtered_fg).sum() \
+                                   / torch.clamp(filtered_fg.sum(), min=1.0)
+                    sem_score_bg = (pseudo_sem_scores[i][torch.nonzero(valid_preds_mask)] * filtered_bg).sum() \
+                                   / torch.clamp(filtered_bg.sum(), min=1.0)
 
                     statistics['sem_score_fgs'].append(sem_score_fg.item())
                     statistics['sem_score_bgs'].append(sem_score_bg.item())
@@ -365,16 +368,17 @@ class PVRCNN_SSL(Detector3DTemplate):
                 statistics['pseudo_ious'].append(nan)
                 statistics['pseudo_accs'].append(nan)
                 statistics['pseudo_fgs'].append(nan)
+                statistics['pseudo_bgs'].append(nan)
 
             if update_metrics:
                 if num_gts > 0 and num_preds == 0:
                     # Missed GTs. Probably filtered by sem/obj filters --> see the falsely rejected metric
-                    for gt_cls in gt_boxes[i, valid_gts_mask, -1].int():
+                    for gt_cls in gt_boxes_org[i, valid_gts_mask, -1].int():
                         cls_name = self.dataset.class_names[gt_cls.item()-1]
                         self.metric_registry.get(tag).get_metrics_of(cls_name).metrics['fn'].update(1)
                 if num_preds > 0 and num_gts == 0:
                     # False positives. Probably passed sem/obj filters --> see the falsely accepted metric
-                    for pred_cls in pred_boxes[i, valid_preds_mask, -1]:
+                    for pred_cls in pred_boxes_org[i, valid_preds_mask, -1]:
                         cls_name = self.dataset.class_names[pred_cls]
                         self.metric_registry.get(tag).get_metrics_of(cls_name).metrics['fp'].update(1)
 
