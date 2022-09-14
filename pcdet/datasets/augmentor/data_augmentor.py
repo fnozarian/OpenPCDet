@@ -308,7 +308,7 @@ class DataAugmentor(object):
     def prepare_aug_queue(self):
         # list containing all the augs to be applied on the stud/teacher n/w based on config file
         data_augmentor_list = {'stud': self.augmentor_configs.STUD_AUG_LIST, 
-                            'ema': self.augmentor_configs.TEACH_AUG_LIST}
+                                'ema': self.augmentor_configs.TEACH_AUG_LIST}
         # aug queues for each n/w 
         data_augmentor_queue = {'stud': [], 'ema': []}
         # only for debugging purpose 
@@ -316,9 +316,9 @@ class DataAugmentor(object):
 
         # fill the aug list and queues for teacher ensemble networks here
         for cur_ema_model in range(self.augmentor_configs.NUM_TEACH_ENSEMBLE):
-            data_augmentor_list['ema_' + str(cur_ema_model+1)] = self.augmentor_configs.TEACH_ENS_AUG_LIST[cur_ema_model]
-            data_augmentor_queue['ema_' + str(cur_ema_model+1)] = []
-            cur_cfg_names['ema_' + str(cur_ema_model+1)] = []
+            data_augmentor_list['ema_wa' + str(cur_ema_model+1)] = self.augmentor_configs.TEACH_ENS_AUG_LIST[cur_ema_model]
+            data_augmentor_queue['ema_wa' + str(cur_ema_model+1)] = []
+            cur_cfg_names['ema_wa' + str(cur_ema_model+1)] = []
 
         aug_config_list = self.augmentor_configs if isinstance(self.augmentor_configs, list) \
             else self.augmentor_configs.AUG_CONFIG_LIST

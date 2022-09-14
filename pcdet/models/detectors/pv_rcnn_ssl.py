@@ -147,10 +147,10 @@ class PVRCNN_SSL(Detector3DTemplate):
             if self.model_cfg['ROI_HEAD'].get('ENABLE_RELIABILITY', False):
                 keys = list(batch_dict.keys())
                 for k in keys:
-                    if k + '_ema_wa' in keys:
+                    if k + '_ema_wa1' in keys:
                         continue
-                    if k.endswith('_ema_wa'):
-                        batch_dict_ema_wa[k[:-7]] = batch_dict[k]
+                    if k.endswith('_ema_wa1'):
+                        batch_dict_ema_wa[k[:-8]] = batch_dict[k]
                     else:
                         # TODO(farzad) Warning! Here flip_x values are copied from _ema to _ema_wa which is not correct!
                         batch_dict_ema_wa[k] = batch_dict[k]

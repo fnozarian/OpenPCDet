@@ -396,6 +396,15 @@ class KittiDatasetSSL(DatasetTemplate):
             return data_dict_labeled
 
     @staticmethod
+    def get_valid_keys(key_list, num_teach_ensemble):
+        ret_keys_list = []
+        for key in key_list:
+            ret_keys_list.extend([key, key + '_ema'])
+            for cur_ema_model in range(num_teach_ensemble):
+                ret_keys_list.append(key + '_ema_wa' + str(cur_ema_model+1))
+        return ret_keys_list
+
+    @staticmethod
     def collate_batch(batch_list, _unused=False):
         data_dict = defaultdict(list)
         # print(batch_list)
@@ -414,18 +423,23 @@ class KittiDatasetSSL(DatasetTemplate):
             batch_size = len(batch_list)
         ret = {}
 
-        # TODO (shashank): need to make this generic in case of larger teacher ensemble
+        keys_list = [['voxels', 'voxel_num_points'], ['points', 'voxel_coords'], ['gt_boxes']]
+        ret_keys_list = []
+        for keys in keys_list:
+            ret_keys = KittiDatasetSSL.get_valid_keys(keys, data_dict['num_teach_ensemble'][0])
+            ret_keys_list.append(ret_keys)
+
         for key, val in data_dict.items():
             try:
-                if key in ['voxels', 'voxel_num_points', 'voxels_ema', 'voxel_num_points_ema', 'voxels_ema_wa', 'voxel_num_points_ema_wa']:
+                if key in ret_keys_list[0]: 
                     ret[key] = np.concatenate(val, axis=0)
-                elif key in ['points', 'voxel_coords', 'points_ema', 'voxel_coords_ema', 'points_ema_wa', 'voxel_coords_ema_wa']:
+                elif key in ret_keys_list[1]: 
                     coors = []
                     for i, coor in enumerate(val):
                         coor_pad = np.pad(coor, ((0, 0), (1, 0)), mode='constant', constant_values=i)
                         coors.append(coor_pad)
                     ret[key] = np.concatenate(coors, axis=0)
-                elif key in ['gt_boxes', 'gt_boxes_ema', 'gt_boxes_ema_wa']:
+                elif key in ret_keys_list[2]:
                     max_gt = max([len(x) for x in val])
                     batch_gt_boxes3d = np.zeros((batch_size, max_gt, val[0].shape[-1]), dtype=np.float32)
                     for k in range(batch_size):
@@ -521,28 +535,27 @@ class KittiDatasetSSL(DatasetTemplate):
             # fetch data augmentations for every network 
             # NOTE : these augs exclude gt-sampling as it is alreay done before
             data_augmentor_queue = self.data_augmentor.prepare_aug_queue()
-            
-            # perform data aug for each network 
+
+            # Perform data aug for each network 
+            # NOTE : Need to copy original points/gt_boxes each time as they are getting changed while performing aug
             for key in data_augmentor_queue:
-                data_dict['points'] = points.copy()
-                data_dict['gt_boxes'] = gt_boxes.copy()
-                data_dict['points_'+key], data_dict['gt_boxes_'+key] = self.data_augmentor.perform_augmentation(data_dict,
-                                                                                                                data_augmentor_queue[key])
+                data_dict['points'], data_dict['gt_boxes'] = points.copy(), gt_boxes.copy()     
+                data_dict['points_' + key], data_dict['gt_boxes_' + key] = \
+                                    self.data_augmentor.perform_augmentation(data_dict, data_augmentor_queue[key])
+            
+            # Replace points, gt_boxes with student's points, gt_boxes 
             data_dict['points'] = data_dict.pop('points_stud')
             data_dict['gt_boxes'] = data_dict.pop('gt_boxes_stud')
             
-            #! TODO (shashank): NEED TO AVOID THIS (when using larger teacher ensemble)!!
-            # Might need changes in pv_rcnn_ssl.py too
-            data_dict['points_ema_wa'] = data_dict.pop('points_ema_1')
-            data_dict['gt_boxes_ema_wa'] = data_dict.pop('gt_boxes_ema_1')
-
         if data_dict.get('gt_boxes', None) is not None:
             selected = common_utils.keep_arrays_by_name(data_dict['gt_names'], self.class_names)
             data_dict['gt_boxes'] = data_dict['gt_boxes'][selected]
             
             if self.training:
                 data_dict['gt_boxes_ema'] = data_dict['gt_boxes_ema'][selected]
-                data_dict['gt_boxes_ema_wa'] = data_dict['gt_boxes_ema_wa'][selected]
+                for cur_ema_model in range(self.data_augmentor.augmentor_configs.NUM_TEACH_ENSEMBLE):
+                    data_dict['gt_boxes_ema_wa' + str(cur_ema_model+1)] = data_dict['gt_boxes_ema_wa' + str(cur_ema_model+1)][selected]
+
             data_dict['gt_names'] = data_dict['gt_names'][selected]
             gt_classes = np.array([self.class_names.index(n) + 1 for n in data_dict['gt_names']], dtype=np.int32)
             gt_boxes = np.concatenate((data_dict['gt_boxes'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
@@ -551,8 +564,10 @@ class KittiDatasetSSL(DatasetTemplate):
                 gt_boxes_ema = np.concatenate((data_dict['gt_boxes_ema'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
                 data_dict['gt_boxes_ema'] = gt_boxes_ema
 
-                gt_boxes_ema_wa = np.concatenate((data_dict['gt_boxes_ema_wa'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
-                data_dict['gt_boxes_ema_wa'] = gt_boxes_ema_wa
+                for cur_ema_model in range(self.data_augmentor.augmentor_configs.NUM_TEACH_ENSEMBLE):
+                    gt_boxes_ema_wa = np.concatenate((data_dict['gt_boxes_ema_wa' + str(cur_ema_model+1)], 
+                                                        gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
+                    data_dict['gt_boxes_ema_wa' + str(cur_ema_model+1)] = gt_boxes_ema_wa
 
         # print((data_dict['points'] ** 2).sum(), (data_dict['points_ema'] ** 2).sum()*(data_dict['scale']**2))
         if self.training:
@@ -573,19 +588,20 @@ class KittiDatasetSSL(DatasetTemplate):
             data_dict['voxel_coords_ema'] = data_dict['voxel_coords']
             data_dict['voxel_num_points_ema'] = data_dict['voxel_num_points']
 
-            data_dict['points'] = data_dict['points_ema_wa']
-            data_dict['gt_boxes'] = data_dict['gt_boxes_ema_wa']
+            for cur_ema_model in range(self.data_augmentor.augmentor_configs.NUM_TEACH_ENSEMBLE):
+                data_dict['points'] = data_dict['points_ema_wa' + str(cur_ema_model+1)]
+                data_dict['gt_boxes'] = data_dict['gt_boxes_ema_wa' + str(cur_ema_model+1)]
 
-            data_dict = self.point_feature_encoder.forward(data_dict)
-            data_dict = self.data_processor.forward(
-                data_dict=data_dict
-            )
+                data_dict = self.point_feature_encoder.forward(data_dict)
+                data_dict = self.data_processor.forward(
+                    data_dict=data_dict
+                )
 
-            data_dict['points_ema_wa'] = data_dict['points']
-            data_dict['gt_boxes_ema_wa'] = data_dict['gt_boxes']
-            data_dict['voxels_ema_wa'] = data_dict['voxels']
-            data_dict['voxel_coords_ema_wa'] = data_dict['voxel_coords']
-            data_dict['voxel_num_points_ema_wa'] = data_dict['voxel_num_points']
+                data_dict['points_ema_wa' + str(cur_ema_model+1)] = data_dict['points']
+                data_dict['gt_boxes_ema_wa' + str(cur_ema_model+1)] = data_dict['gt_boxes']
+                data_dict['voxels_ema_wa' + str(cur_ema_model+1)] = data_dict['voxels']
+                data_dict['voxel_coords_ema_wa' + str(cur_ema_model+1)] = data_dict['voxel_coords']
+                data_dict['voxel_num_points_ema_wa' + str(cur_ema_model+1)] = data_dict['voxel_num_points']
 
             data_dict['points'] = points
             data_dict['gt_boxes'] = gt_boxes
@@ -599,6 +615,7 @@ class KittiDatasetSSL(DatasetTemplate):
             
             # might be needed later on
             data_dict['num_teach_ensemble'] = self.data_augmentor.augmentor_configs.NUM_TEACH_ENSEMBLE
+
         '''if self.training:
             if no_db_sample:
                 data_dict['gt_boxes_ema'].fill(0)
