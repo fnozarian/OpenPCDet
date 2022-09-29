@@ -100,6 +100,31 @@ def _max_score_replacement(batch_dict_a, batch_dict_b, unlabeled_inds, score_key
     for key in keys:
         batch_dict_a[key][unlabeled_inds] = batch_dict_cat[key][unlabeled_inds, ..., max_inds]
 
+# create new data dict for each teacher(ensemble) model using batch_dict
+def _get_data_dict(batch_dict, orig_teacher = True):
+    model_dicts = []
+    ret_batch_dict = {}
+    
+    teacher_ensemble_list = ['ema']
+    # Create list of teacher-ensembel model names which have been used as keys in kitti_dataset_ssl
+    for i in range(int(batch_dict['num_teach_ensemble'][0])):
+        teacher_ensemble_list.append('ema_wa' + str(i+1))
+    
+    model_list = [teacher_ensemble_list[0]] if orig_teacher else teacher_ensemble_list[1:]
+
+    keys = list(batch_dict.keys())
+    for model_name in model_list:
+        for k in keys:
+            if k + '_' + model_name in keys:
+                continue
+            if k.endswith('_' + model_name):
+                l = len('_' + model_name)
+                ret_batch_dict[k[:-l]] = batch_dict[k]
+            else:
+                ret_batch_dict[k] = batch_dict[k]
+        model_dicts.append(ret_batch_dict)
+    return model_dicts
+
 
 class PVRCNN_SSL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -131,30 +156,16 @@ class PVRCNN_SSL(Detector3DTemplate):
             labeled_inds = torch.nonzero(labeled_mask).squeeze(1).long()
             unlabeled_inds = torch.nonzero(1-labeled_mask).squeeze(1).long()
             batch_dict['unlabeled_inds'] = unlabeled_inds
-            batch_dict_ema = {}
-            keys = list(batch_dict.keys())
-            for k in keys:
-                if k + '_ema' in keys:
-                    continue
-                if k.endswith('_ema'):
-                    batch_dict_ema[k[:-4]] = batch_dict[k]
-                else:
-                    batch_dict_ema[k] = batch_dict[k]
+            # Create data dict for original teacher model (ema model)
+            batch_dict_ema = _get_data_dict(batch_dict, orig_teacher=True)[0]
 
             # Create new dict for weakly aug.(WA) data for teacher - Eg. flip along x axis
             batch_dict_ema_wa = {}
             # If ENABLE_RELIABILITY is True, run WA (Humble Teacher) along with original teacher 
             if self.model_cfg['ROI_HEAD'].get('ENABLE_RELIABILITY', False):
-                keys = list(batch_dict.keys())
-                for k in keys:
-                    if k + '_ema_wa1' in keys:
-                        continue
-                    if k.endswith('_ema_wa1'):
-                        batch_dict_ema_wa[k[:-8]] = batch_dict[k]
-                    else:
-                        # TODO(farzad) Warning! Here flip_x values are copied from _ema to _ema_wa which is not correct!
-                        batch_dict_ema_wa[k] = batch_dict[k]
-
+                # TODO(farzad) Warning! Here flip_x values are copied from _ema to _ema_wa which is not correct!
+                # TODO(shashank) when using larger ensemble n/w, we would need to change below line of code accordingly
+                batch_dict_ema_wa = _get_data_dict(batch_dict, orig_teacher=False)[0]
                 with torch.no_grad():
                     self.pv_rcnn_ema.train()
                     for cur_module in self.pv_rcnn_ema.module_list:
