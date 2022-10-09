@@ -16,6 +16,30 @@ import math
 from pcdet.config import cfg
 
 
+class ComparePair(Metric):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        self.add_state("diffs_angles", default=[], dist_reduce_fx='cat')
+        self.add_state("variances", default=[], dist_reduce_fx='cat')
+
+    def update(self, batch_dict_a: [torch.Tensor], batch_dict_b: [torch.Tensor], keys, unlabeled_inds):
+        for k in keys:
+            if k == 'batch_box_preds':
+                diffs_angles = torch.abs(batch_dict_a[k][unlabeled_inds][:, :, 6] - batch_dict_b[k][unlabeled_inds][:, :, 6])
+                self.diffs_angles.append(diffs_angles)
+                batch_dict_emas = torch.stack([batch_dict_a[k][unlabeled_inds], batch_dict_b[k][unlabeled_inds]],
+                                              dim=-1)
+                batch_dict_emas_var = torch.var(batch_dict_emas, dim=-1)
+                self.variances.append(batch_dict_emas_var)
+
+    def compute(self):
+        results = {}
+        results['diffs_angles'] = self.diffs_angles
+        results['variances'] = self.variances
+        return results
+
+
 # TODO(farzad): Pass only scores and labels?
 #               Calculate overlap inside update or compute?
 #               Change the states to TP, FP, FN, etc?

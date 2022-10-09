@@ -12,7 +12,7 @@ from ...utils import common_utils
 from .detector3d_template import Detector3DTemplate
 from collections import defaultdict
 from.pv_rcnn import PVRCNN
-from ...utils.stats_utils import KITTIEVAL
+from ...utils.stats_utils import KITTIEVAL, ComparePair
 import torch.distributed as dist
 
 def _to_dict_of_tensors(list_of_dicts, agg_mode='stack'):
@@ -123,6 +123,7 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         self.metrics = {'before_filtering': KITTIEVAL(),
                         'after_filtering': KITTIEVAL()}
+        self.compare_pair_metric = ComparePair()
 
     def forward(self, batch_dict):
         if self.training:
@@ -347,6 +348,42 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         statistics = {}
 
+        #  variances
+
+        outputs = self.compare_pair_metric.compute()
+        fig, axs = plt.subplots(1, 1, tight_layout=True)
+        # We can set the number of bins with the *bins* keyword argument.
+        diffs_angles = torch.cat(outputs['diffs_angles']).view(-1)
+        diffs_angles = diffs_angles * (180 / 3.14)
+        axs.hist(diffs_angles.cpu(), bins=20)
+        axs.set_title("histogram of differences of angles")
+        axs.set_xlabel('differences of angles between weakly augmented and augmented inputs of teacher')
+        axs.set_ylabel('Counts')
+        diffs_angles_fig = fig.get_figure()
+        statistics['diffs_angles_fig'] = diffs_angles_fig
+
+        variances = torch.cat(outputs['variances']).view(-1, outputs['variances'][0].shape[-1])
+        # [x, y, z, dx, dy, dz, heading]
+        fig, axs = plt.subplots(4, 2, tight_layout=True)
+        axs[0][0].hist(variances.cpu()[:, 0], range=[0, .2])
+        axs[0][0].set_xlabel('var of x')
+        axs[0][0].set_ylabel('Counts')
+        axs[0][1].hist(variances.cpu()[:, 1], range=[0, .2])
+        axs[0][1].set_xlabel('var of y')
+        axs[1][0].hist(variances.cpu()[:, 2], range=[0, .2])
+        axs[1][0].set_xlabel('var of z')
+        axs[1][1].hist(variances.cpu()[:, 3], range=[0, .2])
+        axs[1][1].set_xlabel('var of dx')
+        axs[2][0].hist(variances.cpu()[:, 4], range=[0, .2])
+        axs[2][0].set_xlabel('var of dy')
+        axs[2][1].hist(variances.cpu()[:, 5], range=[0, .2])
+        axs[2][1].set_xlabel('var of dz')
+        axs[3][0].hist(variances.cpu()[:, 6], range=[0, .2])
+        axs[3][0].set_xlabel('var of theta')
+
+        var_fig = fig.get_figure()
+        statistics['var_fig'] = var_fig
+
         # Get calculated TPs, FPs, FNs
         # Early results might not be correct as the 41 values are initialized with zero
         # and only a few predictions are available and thus a few thresholds are non-zero.
@@ -440,6 +477,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         elif ensemble_option == 'mean_pre_nms':
             _mean_and_var(batch_dict_a, batch_dict_b, unlabeled_inds,
                           keys=('batch_cls_preds', 'batch_box_preds'))
+            self.compare_pair_metric.update(batch_dict_a, batch_dict_b, ('batch_cls_preds', 'batch_box_preds'),
+                                            unlabeled_inds)
             # backup original values and replace them with mean values
             for key in ['batch_box_preds', 'batch_cls_preds']:
                 batch_dict_a[key + '_src'] = batch_dict_a[key].clone().detach()
