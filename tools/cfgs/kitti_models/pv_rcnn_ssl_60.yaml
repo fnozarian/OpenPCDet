@@ -3,7 +3,7 @@ CLASS_NAMES: ['Car', 'Pedestrian', 'Cyclist']
 DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/kitti_dataset_ssl.yaml
     DATA_AUGMENTOR:
-        DISABLE_AUG_LIST: ['placeholder']
+        DISABLE_AUG_LIST: ['random_world_flip', 'random_world_rotation', 'random_world_scaling', random_world_flip_ema]
         AUG_CONFIG_LIST:
             - NAME: gt_sampling
               USE_ROAD_PLANE: True
@@ -28,6 +28,15 @@ DATA_CONFIG:
 
             - NAME: random_world_scaling
               WORLD_SCALE_RANGE: [0.95, 1.05]
+
+            - NAME: random_world_flip_ema
+              ALONG_AXIS_LIST: ['x']
+        
+        # Num of teacher models excluding original teacher
+        NUM_TEACH_ENSEMBLE: 1 
+        STUD_AUG_LIST : ['random_world_flip', 'random_world_rotation', 'random_world_scaling']  
+        TEACH_AUG_LIST: []
+        TEACH_ENS_AUG_LIST : [['random_world_flip_ema']] # add aug here when increasing NUM_TEACH_ENSEMBLE
 
 MODEL:
     NAME: PVRCNN_SSL
