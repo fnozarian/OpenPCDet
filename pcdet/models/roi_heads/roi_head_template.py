@@ -182,14 +182,15 @@ class RoIHeadTemplate(nn.Module):
             self._override_unlabeled_target(targets_dict, batch_dict)
 
         tag = 'rcnn_proposals_metrics'
-        unlabeled_inds = batch_dict['unlabeled_inds']
-        props_metrics = batch_dict[tag]
-        metric_inputs = {'preds': [torch.cat([targets_dict['rois'], targets_dict['roi_labels'].unsqueeze(dim=-1)], dim=-1)[ind] for ind in unlabeled_inds],
-                         'targets': [batch_dict['ori_unlabeled_boxes'][ind] for ind, uind in enumerate(unlabeled_inds)],
-                         'pred_scores': [torch.sigmoid(targets_dict['roi_scores'][ind]) for ind in unlabeled_inds],
-                         'pred_sem_scores': [torch.sigmoid(targets_dict['roi_scores'][ind]) for ind in unlabeled_inds]
-                        }
-        props_metrics.update(**metric_inputs)
+        if tag in batch_dict:
+            unlabeled_inds = batch_dict['unlabeled_inds']
+            props_metrics = batch_dict[tag]
+            metric_inputs = {'preds': [torch.cat([targets_dict['rois'], targets_dict['roi_labels'].unsqueeze(dim=-1)], dim=-1)[ind] for ind in unlabeled_inds],
+                            'targets': [batch_dict['ori_unlabeled_boxes'][ind] for ind, uind in enumerate(unlabeled_inds)],
+                            'pred_scores': [torch.sigmoid(targets_dict['roi_scores'][ind]) for ind in unlabeled_inds],
+                            'pred_sem_scores': [torch.sigmoid(targets_dict['roi_scores'][ind]) for ind in unlabeled_inds]
+                            }
+            props_metrics.update(**metric_inputs)
 
         batch_size = batch_dict['batch_size']
 

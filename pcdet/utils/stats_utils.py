@@ -14,17 +14,15 @@ import numpy as np
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 import math
 from pcdet.config import cfg
+from matplotlib import pyplot as plt
 
 
 # TODO(farzad): Pass only scores and labels?
 #               Calculate overlap inside update or compute?
 #               Change the states to TP, FP, FN, etc?
 #               Calculate incrementally based on summarized value?
-
-class KITTIEVAL(Metric):
-    full_state_update: bool = False
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
+class KittiEvalMetric:
+    def __init__(self):
         # TODO(farzad): Move some of these to init args
         current_classes = ['Car', 'Pedestrian', 'Cyclist']
         self.metric = 2  # evaluation only for 3D metric (2)
@@ -45,9 +43,30 @@ class KITTIEVAL(Metric):
         self.current_classes = current_classes_int
         self.min_overlaps = self.min_overlaps[:, :, self.current_classes]
 
-        self.add_state("detections", default=[])
-        self.add_state("groundtruths", default=[])
-        self.add_state("overlaps", default=[])
+        self.detections= []
+        self.groundtruths= []
+        self.overlaps= []
+
+    def update(self, valid_pred_boxes,valid_gt_boxes, overlap):
+        # The following states are accumulated over updates
+        self.detections.append(valid_pred_boxes)
+        self.groundtruths.append(valid_gt_boxes)
+        self.overlaps.append(overlap)
+    def reset(self):
+        self.detections= []
+        self.groundtruths= []
+        self.overlaps= []
+    def compute(self):
+        results = eval_class(self.groundtruths, self.detections, self.current_classes,
+                                self.metric, self.min_overlaps, self.overlaps)
+        mAP_3d = get_mAP(results["precision"])
+        mAP_3d_R40 = get_mAP_R40(results["precision"])
+        results.update({'mAP_3d': mAP_3d, 'mAP_3d_R40': mAP_3d_R40, 'total_num_samples': len(self.detections)})
+        return results
+class MeanMetric(Metric):
+    full_state_update: bool = False
+    def __init__(self):
+        super().__init__()
         self.add_state("pred_ious", default=torch.tensor((0,)), dist_reduce_fx='cat')
         self.add_state("pred_accs", default=torch.tensor((0,)), dist_reduce_fx='cat')
         self.add_state("pred_fgs", default=torch.tensor((0,)), dist_reduce_fx='cat')
@@ -55,6 +74,32 @@ class KITTIEVAL(Metric):
         self.add_state("sem_score_bgs", default=torch.tensor((0,)), dist_reduce_fx='cat')
         self.add_state("num_pred_boxes", default=torch.tensor((0,)), dist_reduce_fx='cat')
         self.add_state("num_gt_boxes", default=torch.tensor((0,)), dist_reduce_fx='cat')
+
+    def update(self, pred_ious, pred_accs,pred_fgs,sem_score_fgs,sem_score_bgs,num_pred_boxes,num_gt_boxes):
+        # The following states are reset on every update (per-batch states)
+        self.pred_ious = torch.tensor(pred_ious).cuda().mean()
+        self.pred_accs = torch.tensor(pred_accs).cuda().mean()
+        self.pred_fgs = torch.tensor(pred_fgs).cuda().mean()
+        self.sem_score_fgs = torch.tensor(sem_score_fgs).cuda().mean()
+        self.sem_score_bgs = torch.tensor(sem_score_bgs).cuda().mean()
+        self.num_pred_boxes = torch.tensor(num_pred_boxes).cuda().float().mean()
+        self.num_gt_boxes = torch.tensor(num_gt_boxes).cuda().float().mean()
+
+
+
+        
+    def compute(self):
+        results = {'pred_ious': self.pred_ious.mean(), 'pred_accs': self.pred_accs.mean(),
+                   'pred_fgs': self.pred_fgs.mean(), 'sem_score_fgs': self.sem_score_fgs.mean(),
+                   'sem_score_bgs': self.sem_score_bgs.mean(), 'num_pred_boxes': self.num_pred_boxes.mean(),
+                   'num_gt_boxes': self.num_gt_boxes.mean()}
+        return results
+class CombinedMetric:
+    def __init__(self):
+        self.kitti_eval_metric = KittiEvalMetric()
+        self.mean_metric = MeanMetric()
+        self.update_count=0
+        self.kitti_eval_repeat_counter=cfg.MODEL.POST_PROCESSING.METRIC_CONFIG.KITTI_EVAL_UPDATE_COUNT
 
     def update(self, preds: [torch.Tensor], targets: [torch.Tensor], pred_scores: [torch.Tensor], pred_sem_scores: [torch.Tensor]) -> None:
         assert all([pred.shape[-1] == 8 for pred in preds]) and all([tar.shape[-1] == 8 for tar in targets])
@@ -106,7 +151,7 @@ class KITTIEVAL(Metric):
                 pred_accs.append(acc)
 
                 # Using kitti test class-wise fg threshold instead of thresholds used during train.
-                classwise_fg_thresh = self.min_overlaps[0, self.metric]
+                classwise_fg_thresh = self.kitti_eval_metric.min_overlaps[0, self.kitti_eval_metric.metric]
                 classwise_fg_thresh = pred_labels.new_tensor(classwise_fg_thresh).unsqueeze(dim=0).repeat(pred_labels.shape[0], 1)
                 fg_thresh = classwise_fg_thresh.gather(dim=-1, index=pred_labels.unsqueeze(dim=-1).long()).squeeze()
 
@@ -124,35 +169,91 @@ class KITTIEVAL(Metric):
                 sem_score_fgs.append(sem_score_fg)
                 sem_score_bgs.append(sem_score_bg)
 
-            # The following states are accumulated over updates
-            self.detections.append(valid_pred_boxes)
-            self.groundtruths.append(valid_gt_boxes)
-            self.overlaps.append(overlap)
-
+            #The following states are accumulated over updates
+            self.kitti_eval_metric.update(valid_pred_boxes,valid_gt_boxes, overlap)
         # The following states are reset on every update (per-batch states)
-        self.pred_ious = torch.tensor(pred_ious).cuda().mean()
-        self.pred_accs = torch.tensor(pred_accs).cuda().mean()
-        self.pred_fgs = torch.tensor(pred_fgs).cuda().mean()
-        self.sem_score_fgs = torch.tensor(sem_score_fgs).cuda().mean()
-        self.sem_score_bgs = torch.tensor(sem_score_bgs).cuda().mean()
-        self.num_pred_boxes = torch.tensor(num_pred_boxes).cuda().float().mean()
-        self.num_gt_boxes = torch.tensor(num_gt_boxes).cuda().float().mean()
+        self.mean_metric.update(pred_ious, pred_accs,pred_fgs,sem_score_fgs,sem_score_bgs,num_pred_boxes,num_gt_boxes)
+        self.update_count+=1
+    
+    def compute(self):
+        statistics={}
+        mean_metrics = self.mean_metric.compute()
+        other_stats = ['pred_ious', 'pred_accs', 'pred_fgs', 'sem_score_fgs',
+                       'sem_score_bgs', 'num_pred_boxes', 'num_gt_boxes']
+        for m, metric_name in enumerate(other_stats):
+            if metric_name in mean_metrics.keys():
+                statistics[metric_name] = mean_metrics[metric_name]
 
-    def compute(self, stats_only=True):
-        results = {'pred_ious': self.pred_ious.mean(), 'pred_accs': self.pred_accs.mean(),
-                   'pred_fgs': self.pred_fgs.mean(), 'sem_score_fgs': self.sem_score_fgs.mean(),
-                   'sem_score_bgs': self.sem_score_bgs.mean(), 'num_pred_boxes': self.num_pred_boxes.mean(),
-                   'num_gt_boxes': self.num_gt_boxes.mean()}
 
-        if not stats_only:
-            kitti_eval_metrics = eval_class(self.groundtruths, self.detections, self.current_classes,
-                                 self.metric, self.min_overlaps, self.overlaps)
-            mAP_3d = get_mAP(kitti_eval_metrics["precision"])
-            mAP_3d_R40 = get_mAP_R40(kitti_eval_metrics["precision"])
-            kitti_eval_metrics.update({"mAP_3d": mAP_3d, "mAP_3d_R40": mAP_3d_R40})
-            results.update(kitti_eval_metrics)
+        if self.update_count%self.kitti_eval_repeat_counter==0:  # TODO(farzad) epoch length is hardcoded.
+            kitti_eval_metrics = self.kitti_eval_metric.compute()
+            # Get calculated TPs, FPs, FNs
+            # Early results might not be correct as the 41 values are initialized with zero
+            # and only a few predictions are available and thus a few thresholds are non-zero.
+            # Therefore, mean over several zero values results in low final value.
+            # detailed_stats shape (3, 1, 41, 5) where last dim is
+            # {0: 'tp', 1: 'fp', 2: 'fn', 3: 'similarity', 4: 'precision thresholds'}
+            total_num_samples = kitti_eval_metrics['total_num_samples']#max(self.metrics[tag].kitti_eval_metric._update_count, 1)
+            detailed_stats = kitti_eval_metrics['detailed_stats']
+            for m, metric_name in enumerate(['tps', 'fps', 'fns', 'sim', 'thresh', 'trans_err', 'orient_err', 'scale_err']):
+                if metric_name == 'sim' or metric_name == 'thresh':
+                    continue
+                class_metrics_all = {}
+                class_metrics_batch = {}
+                for c, cls_name in enumerate(['Car', 'Pedestrian', 'Cyclist']):
+                    metric_value = np.nanmax(detailed_stats[c, 0, :, m])
+                    if not np.isnan(metric_value):
+                        # class_metrics_all[cls_name] = metric_value  # commented to reduce complexity.
+                        class_metrics_batch[cls_name] = metric_value / total_num_samples
+                # statistics['all_' + metric_name] = class_metrics_all
+                statistics[metric_name + '_per_sample'] = class_metrics_batch
 
-        return results
+            # Get calculated Precision
+            for m, metric_name in enumerate(['mAP_3d', 'mAP_3d_R40']):
+                class_metrics_all = {}
+                for c, cls_name in enumerate(['Car', 'Pedestrian', 'Cyclist']):
+                    metric_value = kitti_eval_metrics[metric_name][c].item()
+                    if not np.isnan(metric_value):
+                        class_metrics_all[cls_name] = metric_value
+                statistics[metric_name] = class_metrics_all
+
+            # Get calculated recall
+            class_metrics_all = {}
+            for c, cls_name in enumerate(['Car', 'Pedestrian', 'Cyclist']):
+                metric_value = np.nanmax(kitti_eval_metrics['raw_recall'][c])
+                if not np.isnan(metric_value):
+                    class_metrics_all[cls_name] = metric_value
+            statistics['max_recall'] = class_metrics_all
+
+            # Draw Precision-Recall curves
+            fig, axs = plt.subplots(1, 3, figsize=(12, 4), gridspec_kw={'wspace': 0.5})
+            # plt.tight_layout()
+            for c, cls_name in enumerate(['Car', 'Pedestrian', 'Cyclist']):
+                thresholds = kitti_eval_metrics['detailed_stats'][c, 0, ::-1, 4]
+                prec = kitti_eval_metrics['raw_precision'][c, 0, ::-1]
+                rec = kitti_eval_metrics['raw_recall'][c, 0, ::-1]
+                valid_mask = ~((rec == 0) | (prec == 0))
+
+                ax_c = axs[c]
+                ax_c_twin = ax_c.twinx()
+                ax_c.plot(thresholds[valid_mask], prec[valid_mask], 'b-')
+                ax_c_twin.plot(thresholds[valid_mask], rec[valid_mask], 'r-')
+                ax_c.set_title(cls_name)
+                ax_c.set_xlabel('Foreground score')
+                ax_c.set_ylabel('Precision', color='b')
+                ax_c_twin.set_ylabel('Recall', color='r')
+
+            prec_rec_fig = fig.get_figure()
+            statistics['prec_rec_fig'] = prec_rec_fig
+
+            # reset kitti eval stats
+            self.kitti_eval_metric.reset()
+            
+
+        # reset other stats
+        self.mean_metric.reset()
+
+        return statistics
 
 
 def eval_class(gt_annos,
