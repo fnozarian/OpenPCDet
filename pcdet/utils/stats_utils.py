@@ -99,7 +99,7 @@ class CombinedMetric:
         self.kitti_eval_metric = KittiEvalMetric()
         self.mean_metric = MeanMetric()
         self.update_count=0
-        #self.kitti_eval_metric_hsitory={}
+        self.kitti_eval_repeat_counter=cfg.MODEL.POST_PROCESSING.METRIC_CONFIG.KITTI_EVAL_UPDATE_COUNT
 
     def update(self, preds: [torch.Tensor], targets: [torch.Tensor], pred_scores: [torch.Tensor], pred_sem_scores: [torch.Tensor]) -> None:
         assert all([pred.shape[-1] == 8 for pred in preds]) and all([tar.shape[-1] == 8 for tar in targets])
@@ -185,7 +185,7 @@ class CombinedMetric:
                 statistics[metric_name] = mean_metrics[metric_name]
 
 
-        if self.update_count%(37*2)==0:  # TODO(farzad) epoch length is hardcoded.
+        if self.update_count%self.kitti_eval_repeat_counter==0:  # TODO(farzad) epoch length is hardcoded.
             kitti_eval_metrics = self.kitti_eval_metric.compute()
             # Get calculated TPs, FPs, FNs
             # Early results might not be correct as the 41 values are initialized with zero
@@ -246,7 +246,6 @@ class CombinedMetric:
             prec_rec_fig = fig.get_figure()
             statistics['prec_rec_fig'] = prec_rec_fig
 
-            #self.kitti_eval_metric_hsitory.update(kitti_eval_metrics_results)
             # reset kitti eval stats
             self.kitti_eval_metric.reset()
             

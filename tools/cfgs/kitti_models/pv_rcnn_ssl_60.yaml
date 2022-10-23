@@ -222,7 +222,11 @@ MODEL:
         OUTPUT_RAW_SCORE: False
 
         EVAL_METRIC: kitti
-
+        METRIC_CONFIG:
+            KITTI_EVAL_UPDATE_COUNT: 37
+            LOG_METRIC_BEFORE_FILTERING: True
+            LOG_METRIC_AFTER_FILTERING: True
+            LOG_METRIC_RCNN_PROPOSALS_STAGE: True
         NMS_CONFIG:
             MULTI_CLASSES_NMS: False
             NMS_TYPE: nms_gpu

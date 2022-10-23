@@ -121,9 +121,9 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
 
-        self.metrics = {'before_filtering': CombinedMetric(),
-                        'after_filtering': CombinedMetric(),
-                        'rcnn_proposals_metrics': CombinedMetric()}
+        self.metrics = {'before_filtering': CombinedMetric() if model_cfg.POST_PROCESSING.METRIC_CONFIG.LOG_METRIC_BEFORE_FILTERING else None,
+                        'after_filtering': CombinedMetric() if model_cfg.POST_PROCESSING.METRIC_CONFIG.LOG_METRIC_AFTER_FILTERING else None,
+                        'rcnn_proposals_metrics': CombinedMetric() if model_cfg.POST_PROCESSING.METRIC_CONFIG.LOG_METRIC_RCNN_PROPOSALS_STAGE else None}
     def forward(self, batch_dict):
         if self.training:
             labeled_mask = batch_dict['labeled_mask'].view(-1)
@@ -209,25 +209,26 @@ class PVRCNN_SSL(Detector3DTemplate):
             TODO (shashank) : Needs to be refactored (can also be made into a single function call)
             '''
             ################################
-            pseudo_boxes, pseudo_labels, pseudo_scores, pseudo_sem_scores, _, _ = self._unpack_predictions(pred_dicts_ens, unlabeled_inds)
-            pseudo_boxes = [torch.cat([pseudo_box, pseudo_label.view(-1, 1).float()], dim=1) \
-                for (pseudo_box, pseudo_label) in zip(pseudo_boxes, pseudo_labels)]
-            
-            # Making consistent # of pseudo boxes in each batch
-            # NOTE: Need to store them in batch_dict in a new key, which can be removed later
-            batch_dict['pseudo_boxes_prefilter'] = torch.zeros_like(batch_dict['gt_boxes'])
-            self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, unlabeled_inds, labeled_inds, key='pseudo_boxes_prefilter')
-            
-            # apply student's augs on teacher's pseudo-boxes (w/o filtered)
-            batch_dict = self.apply_augmentation(batch_dict, batch_dict, unlabeled_inds, key='pseudo_boxes_prefilter')
-            
-            metric_inputs = {'preds': batch_dict['pseudo_boxes_prefilter'][unlabeled_inds],
-                             'targets': ori_unlabeled_boxes,
-                             'pred_scores': pseudo_scores,
-                             'pred_sem_scores': pseudo_sem_scores}
-            
-            self.metrics['before_filtering'].update(**metric_inputs)
-            batch_dict.pop('pseudo_boxes_prefilter')
+            if self.metrics['before_filtering'] is not None:
+                pseudo_boxes, pseudo_labels, pseudo_scores, pseudo_sem_scores, _, _ = self._unpack_predictions(pred_dicts_ens, unlabeled_inds)
+                pseudo_boxes = [torch.cat([pseudo_box, pseudo_label.view(-1, 1).float()], dim=1) \
+                    for (pseudo_box, pseudo_label) in zip(pseudo_boxes, pseudo_labels)]
+                
+                # Making consistent # of pseudo boxes in each batch
+                # NOTE: Need to store them in batch_dict in a new key, which can be removed later
+                batch_dict['pseudo_boxes_prefilter'] = torch.zeros_like(batch_dict['gt_boxes'])
+                self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, unlabeled_inds, labeled_inds, key='pseudo_boxes_prefilter')
+                
+                # apply student's augs on teacher's pseudo-boxes (w/o filtered)
+                batch_dict = self.apply_augmentation(batch_dict, batch_dict, unlabeled_inds, key='pseudo_boxes_prefilter')
+                
+                metric_inputs = {'preds': batch_dict['pseudo_boxes_prefilter'][unlabeled_inds],
+                                'targets': ori_unlabeled_boxes,
+                                'pred_scores': pseudo_scores,
+                                'pred_sem_scores': pseudo_sem_scores}
+                
+                self.metrics['before_filtering'].update(**metric_inputs)
+                batch_dict.pop('pseudo_boxes_prefilter')
             ################################
             pseudo_boxes, pseudo_scores, pseudo_sem_scores, pseudo_boxes_var, pseudo_scores_var = \
                 self._filter_pseudo_labels(pred_dicts_ens, unlabeled_inds)
@@ -236,16 +237,18 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             # apply student's augs on teacher's pseudo-labels (filtered) only (not points)
             batch_dict = self.apply_augmentation(batch_dict, batch_dict, unlabeled_inds, key='gt_boxes')
-
-            ori_unlabeled_boxes_list = [ori_box for ori_box in ori_unlabeled_boxes]
-            pseudo_boxes_list = [ps_box for ps_box in batch_dict['gt_boxes'][unlabeled_inds]]
-            metric_inputs = {'preds': pseudo_boxes_list,
-                             'targets': ori_unlabeled_boxes_list,
-                             'pred_scores': pseudo_scores,
-                             'pred_sem_scores': pseudo_sem_scores}
-            self.metrics['after_filtering'].update(**metric_inputs)  # commented to reduce complexity.
-
-            batch_dict['rcnn_proposals_metrics'] = self.metrics['rcnn_proposals_metrics']
+            if self.metrics['after_filtering'] is not None:
+                ori_unlabeled_boxes_list = [ori_box for ori_box in ori_unlabeled_boxes]
+                pseudo_boxes_list = [ps_box for ps_box in batch_dict['gt_boxes'][unlabeled_inds]]
+                metric_inputs = {'preds': pseudo_boxes_list,
+                                'targets': ori_unlabeled_boxes_list,
+                                'pred_scores': pseudo_scores,
+                                'pred_sem_scores': pseudo_sem_scores}
+                self.metrics['after_filtering'].update(**metric_inputs)  # commented to reduce complexity.
+            
+            if self.metrics['rcnn_proposals_metrics'] is not None:
+                batch_dict['rcnn_proposals_metrics'] = self.metrics['rcnn_proposals_metrics']
+            
             batch_dict['ori_unlabeled_boxes'] = ori_unlabeled_boxes
             for cur_module in self.pv_rcnn.module_list:
                 if cur_module.model_cfg['NAME'] == 'PVRCNNHead' and self.model_cfg['ROI_HEAD'].get('ENABLE_RCNN_CONSISTENCY', False):
@@ -314,13 +317,17 @@ class PVRCNN_SSL(Detector3DTemplate):
                     tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].mean()
                 else:
                     tb_dict_[key] = tb_dict[key]
-
-            metrics_before_filtering = self.compute_metrics(tag='before_filtering')
-            tb_dict_.update(metrics_before_filtering)
-            metrics_after_filtering = self.compute_metrics(tag='after_filtering')  # commented to reduce complexity.
-            tb_dict_.update(metrics_after_filtering)
-            metrics_teachers_proposals = self.compute_metrics(tag='rcnn_proposals_metrics')
-            tb_dict_.update(metrics_teachers_proposals)
+            
+            
+            if self.metrics['before_filtering'] is not None:
+                metrics_before_filtering = self.compute_metrics(tag='before_filtering')
+                tb_dict_.update(metrics_before_filtering)
+            if self.metrics['after_filtering'] is not None:
+                metrics_after_filtering = self.compute_metrics(tag='after_filtering')  
+                tb_dict_.update(metrics_after_filtering)
+            if self.metrics['rcnn_proposals_metrics'] is not None:
+                metrics_teachers_proposals = self.compute_metrics(tag='rcnn_proposals_metrics')
+                tb_dict_.update(metrics_teachers_proposals)
 
             if dist.is_initialized():
                 rank = os.getenv('RANK')
