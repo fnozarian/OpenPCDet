@@ -608,6 +608,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             conf_thresh = torch.tensor(self.thresh, device=pseudo_label.device).unsqueeze(
                 0).repeat(len(pseudo_label), 1).gather(dim=1, index=(pseudo_label - 1).unsqueeze(-1))
 
+            # flexmatch
             # n_classes = len(self.thresh)
             # sigma_c = []
             # for i in range(n_classes):
