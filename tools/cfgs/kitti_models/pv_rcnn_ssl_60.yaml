@@ -171,7 +171,7 @@ MODEL:
                 NMS_TYPE: nms_gpu
                 MULTI_CLASSES_NMS: False
                 NMS_PRE_MAXSIZE: 9000
-                NMS_POST_MAXSIZE: 512
+                NMS_POST_MAXSIZE: 256
                 NMS_THRESH: 0.8
             TEST:
                 NMS_TYPE: nms_gpu

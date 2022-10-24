@@ -123,7 +123,8 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         self.metrics = {'before_filtering': KITTIEVAL(),
                         'after_filtering': KITTIEVAL()}
-        self.compare_pair_metric = ComparePair()
+        if self.model_cfg['ROI_HEAD'].get('ENABLE_RELIABILITY', False):
+            self.compare_pair_metric = ComparePair()
 
     def forward(self, batch_dict):
         if self.training:
@@ -267,7 +268,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                     batch_dict = self.apply_augmentation(batch_dict, batch_dict, unlabeled_inds, key='gt_boxes')
                     batch_dict['pred_scores_ema'] = torch.zeros_like(batch_dict['roi_scores_ema'])
                     for i, ui in enumerate(unlabeled_inds):
-                        batch_dict['pred_scores_ema'][ui] = torch.sigmoid(scores[i].detach().clone())
+                        batch_dict['pred_scores_ema'][ui] = scores[i].detach().clone()
                     # TODO(farzad) ENABLE_RELIABILITY option should not necessarily always have var
                     if self.model_cfg['ROI_HEAD'].get('ENABLE_RELIABILITY', False):
                         batch_dict['pred_scores_ema_var'] = torch.zeros_like(batch_dict['roi_scores_ema'])
@@ -349,40 +350,69 @@ class PVRCNN_SSL(Detector3DTemplate):
         statistics = {}
 
         #  variances
+        if self.model_cfg['ROI_HEAD'].get('ENABLE_RELIABILITY', False):
+            if self.compare_pair_metric._update_count == 37:
+                outputs = self.compare_pair_metric.compute(disabled=False)
+            else:
+                outputs = self.compare_pair_metric.compute()
+            if 'diffs_angles' in outputs.keys() and 'variances' in outputs.keys():
+                fig, axs = plt.subplots(1, 1, tight_layout=True)
+                # We can set the number of bins with the *bins* keyword argument.
+                diffs_angles = torch.cat(outputs['diffs_angles']).view(-1)
+                diffs_angles = diffs_angles * (180 / 3.14)
+                axs.hist(diffs_angles.cpu(), bins=20)
+                axs.set_title("histogram of differences of angles")
+                axs.set_xlabel('differences of angles between weakly augmented and augmented inputs of teacher')
+                axs.set_ylabel('Counts')
+                diffs_angles_fig = fig.get_figure()
+                statistics['diffs_angles_fig'] = diffs_angles_fig
 
-        outputs = self.compare_pair_metric.compute()
-        fig, axs = plt.subplots(1, 1, tight_layout=True)
-        # We can set the number of bins with the *bins* keyword argument.
-        diffs_angles = torch.cat(outputs['diffs_angles']).view(-1)
-        diffs_angles = diffs_angles * (180 / 3.14)
-        axs.hist(diffs_angles.cpu(), bins=20)
-        axs.set_title("histogram of differences of angles")
-        axs.set_xlabel('differences of angles between weakly augmented and augmented inputs of teacher')
-        axs.set_ylabel('Counts')
-        diffs_angles_fig = fig.get_figure()
-        statistics['diffs_angles_fig'] = diffs_angles_fig
+                variances = torch.cat(outputs['log_of_variances']).view(-1, outputs['log_of_variances'][0].shape[-1])
+                # [x, y, z, dx, dy, dz, heading]
+                fig, axs = plt.subplots(4, 2, tight_layout=True)
+                axs[0][0].hist(variances.cpu()[:, 0])
+                axs[0][0].set_xlabel('log_of_variance of x')
+                axs[0][0].set_ylabel('Counts')
+                axs[0][1].hist(variances.cpu()[:, 1])
+                axs[0][1].set_xlabel('log_of_variance of y')
+                axs[1][0].hist(variances.cpu()[:, 2])
+                axs[1][0].set_xlabel('log_of_variance of z')
+                axs[1][1].hist(variances.cpu()[:, 3])
+                axs[1][1].set_xlabel('log_of_variance of dx')
+                axs[2][0].hist(variances.cpu()[:, 4])
+                axs[2][0].set_xlabel('log_of_variance of dy')
+                axs[2][1].hist(variances.cpu()[:, 5])
+                axs[2][1].set_xlabel('log_of_variance of dz')
+                axs[3][0].hist(variances.cpu()[:, 6])
+                axs[3][0].set_xlabel('log_of_variance of theta')
 
-        variances = torch.cat(outputs['variances']).view(-1, outputs['variances'][0].shape[-1])
-        # [x, y, z, dx, dy, dz, heading]
-        fig, axs = plt.subplots(4, 2, tight_layout=True)
-        axs[0][0].hist(variances.cpu()[:, 0], range=[0, .2])
-        axs[0][0].set_xlabel('var of x')
-        axs[0][0].set_ylabel('Counts')
-        axs[0][1].hist(variances.cpu()[:, 1], range=[0, .2])
-        axs[0][1].set_xlabel('var of y')
-        axs[1][0].hist(variances.cpu()[:, 2], range=[0, .2])
-        axs[1][0].set_xlabel('var of z')
-        axs[1][1].hist(variances.cpu()[:, 3], range=[0, .2])
-        axs[1][1].set_xlabel('var of dx')
-        axs[2][0].hist(variances.cpu()[:, 4], range=[0, .2])
-        axs[2][0].set_xlabel('var of dy')
-        axs[2][1].hist(variances.cpu()[:, 5], range=[0, .2])
-        axs[2][1].set_xlabel('var of dz')
-        axs[3][0].hist(variances.cpu()[:, 6], range=[0, .2])
-        axs[3][0].set_xlabel('var of theta')
+                var_fig = fig.get_figure()
+                statistics['var_fig'] = var_fig
 
-        var_fig = fig.get_figure()
-        statistics['var_fig'] = var_fig
+                std_over_mean = torch.cat(outputs['std_over_mean']).view(-1, outputs['std_over_mean'][0].shape[-1])
+                # [x, y, z, dx, dy, dz, heading]
+                fig, axs = plt.subplots(4, 2, tight_layout=True)
+                axs[0][0].hist(std_over_mean.cpu()[:, 0])
+                axs[0][0].set_xlabel('std_over_mean of x')
+                axs[0][0].set_ylabel('Counts')
+                axs[0][1].hist(std_over_mean.cpu()[:, 1], range=[0, .5])
+                axs[0][1].set_xlabel('std_over_mean of y')
+                axs[1][0].hist(std_over_mean.cpu()[:, 2], range=[0, 1])
+                axs[1][0].set_xlabel('std_over_mean of z')
+                axs[1][1].hist(std_over_mean.cpu()[:, 3], range=[0, .5])
+                axs[1][1].set_xlabel('std_over_mean of dx')
+                axs[2][0].hist(std_over_mean.cpu()[:, 4], range=[0, .5])
+                axs[2][0].set_xlabel('std_over_mean of dy')
+                axs[2][1].hist(std_over_mean.cpu()[:, 5], range=[0, .5])
+                axs[2][1].set_xlabel('std_over_mean of dz')
+                axs[3][0].hist(std_over_mean.cpu()[:, 6], range=[0, .5])
+                axs[3][0].set_xlabel('std_over_mean of theta')
+
+                std_fig = fig.get_figure()
+                statistics['std_over_mean'] = std_fig
+
+                self.compare_pair_metric.reset()
+
 
         # Get calculated TPs, FPs, FNs
         # Early results might not be correct as the 41 values are initialized with zero
@@ -577,6 +607,13 @@ class PVRCNN_SSL(Detector3DTemplate):
         
             conf_thresh = torch.tensor(self.thresh, device=pseudo_label.device).unsqueeze(
                 0).repeat(len(pseudo_label), 1).gather(dim=1, index=(pseudo_label - 1).unsqueeze(-1))
+
+            # n_classes = len(self.thresh)
+            # sigma_c = []
+            # for i in range(n_classes):
+            #     a = (pseudo_score > conf_thresh.squeeze()).long()
+            #     mask = (pseudo_label == i+1).long()
+            #     sigma_c[i] = (mask * a).sum()
 
             valid_inds = pseudo_score > conf_thresh.squeeze()
 

@@ -143,7 +143,7 @@ class PVRCNNHead(RoIHeadTemplate):
         """
 
         # use test-time nms for pseudo label generation
-        nms_mode = self.model_cfg.NMS_CONFIG['TRAIN' if self.training and not disable_gt_roi_when_pseudo_labeling else 'TEST']
+        nms_mode = self.model_cfg.NMS_CONFIG['TRAIN' if self.training else 'TEST']
 
         # proposal_layer doesn't continue if the rois are already in the batch_dict.
         # However, for labeled data proposal layer should continue!

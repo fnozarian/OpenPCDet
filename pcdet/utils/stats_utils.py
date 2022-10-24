@@ -21,7 +21,8 @@ class ComparePair(Metric):
         super().__init__(**kwargs)
 
         self.add_state("diffs_angles", default=[], dist_reduce_fx='cat')
-        self.add_state("variances", default=[], dist_reduce_fx='cat')
+        self.add_state("log_of_variances", default=[], dist_reduce_fx='cat')
+        self.add_state("std_over_mean", default=[], dist_reduce_fx='cat')
 
     def update(self, batch_dict_a: [torch.Tensor], batch_dict_b: [torch.Tensor], keys, unlabeled_inds):
         for k in keys:
@@ -31,12 +32,20 @@ class ComparePair(Metric):
                 batch_dict_emas = torch.stack([batch_dict_a[k][unlabeled_inds], batch_dict_b[k][unlabeled_inds]],
                                               dim=-1)
                 batch_dict_emas_var = torch.var(batch_dict_emas, dim=-1)
-                self.variances.append(batch_dict_emas_var)
+                batch_dict_emas_var = torch.clamp(batch_dict_emas_var, min=1e-6)
+                batch_dict_emas_var_log = torch.log(batch_dict_emas_var)
+                batch_dict_emas_mean = torch.mean(batch_dict_emas, dim=-1)
+                batch_dict_emas_mean = torch.clamp(batch_dict_emas_mean, min=1e-6)
+                self.log_of_variances.append(batch_dict_emas_var_log)
+                batch_dict_emas_std = torch.std(batch_dict_emas, dim=-1)
+                self.std_over_mean.append(batch_dict_emas_std/batch_dict_emas_mean)
 
-    def compute(self):
+    def compute(self, disabled=True):
         results = {}
-        results['diffs_angles'] = self.diffs_angles
-        results['variances'] = self.variances
+        if not disabled:
+            results['diffs_angles'] = self.diffs_angles
+            results['log_of_variances'] = self.log_of_variances
+            results['std_over_mean'] = self.std_over_mean
         return results
 
 

@@ -146,9 +146,9 @@ class RoIHeadTemplate(nn.Module):
             batch_reg_valid_mask[labeled_inds, :num_rois] = targets_dict['reg_valid_mask'][labeled_inds]
             targets_dict['reg_valid_mask'] = batch_reg_valid_mask
 
-            batch_interval_mask = targets_dict['interval_mask'].new_zeros(batch_size, num_rois_ema)
-            batch_interval_mask[labeled_inds, :num_rois] = targets_dict['interval_mask'][labeled_inds]
-            targets_dict['interval_mask'] = batch_interval_mask
+            # batch_interval_mask = targets_dict['interval_mask'].new_zeros(batch_size, num_rois_ema)
+            # batch_interval_mask[labeled_inds, :num_rois] = targets_dict['interval_mask'][labeled_inds]
+            # targets_dict['interval_mask'] = batch_interval_mask
 
 
         targets_dict['rois'][unlabeled_inds, :num_rois_ema] = batch_dict['rois_ema'][unlabeled_inds]
@@ -157,8 +157,20 @@ class RoIHeadTemplate(nn.Module):
         targets_dict['roi_labels'][unlabeled_inds, :num_rois_ema] = batch_dict['roi_labels_ema'][unlabeled_inds]
         targets_dict['gt_of_rois'][unlabeled_inds, :num_rois_ema] = batch_dict['gt_boxes'][unlabeled_inds]
         targets_dict['rcnn_cls_labels'][unlabeled_inds, :num_rois_ema] = batch_dict['pred_scores_ema'][unlabeled_inds]
-        # TODO(farzad) fixed FG threshold.
-        targets_dict['reg_valid_mask'][unlabeled_inds, :num_rois_ema] = torch.ge(batch_dict['roi_scores_ema'][unlabeled_inds], 0.7).long()
+        # TODO(farzaneh) fixed FG threshold.
+        thresholds = [.3, .1, .1]
+        n_classes = torch.unique(batch_dict['roi_labels_ema'][unlabeled_inds])
+        all_reg_valid_mask = []
+        for i in n_classes:
+            class_score_i = batch_dict['roi_scores_ema'][unlabeled_inds] * (batch_dict['roi_labels_ema'][unlabeled_inds] == i).float()
+            all_reg_valid_mask.append((class_score_i >= thresholds[i-1]).long())
+        for i, item in enumerate(all_reg_valid_mask):
+            if i == 0:
+                result = item
+            else:
+                result = result | item
+
+        targets_dict['reg_valid_mask'][unlabeled_inds, :num_rois_ema] = result
         targets_dict['rcnn_cls_labels'][unlabeled_inds, num_rois_ema:] = -1
         targets_dict['reg_valid_mask'][unlabeled_inds, num_rois_ema:] = 0
         targets_dict['gt_iou_of_rois'][unlabeled_inds, :num_rois_ema] = 0
