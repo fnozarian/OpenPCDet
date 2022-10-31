@@ -21,8 +21,10 @@ from matplotlib import pyplot as plt
 #               Calculate overlap inside update or compute?
 #               Change the states to TP, FP, FN, etc?
 #               Calculate incrementally based on summarized value?
-class KittiEvalMetric:
+class KittiEvalMetric(Metric):
+    full_state_update: bool = False
     def __init__(self):
+        super().__init__()
         # TODO(farzad): Move some of these to init args
         current_classes = ['Car', 'Pedestrian', 'Cyclist']
         self.metric = 2  # evaluation only for 3D metric (2)
@@ -42,27 +44,18 @@ class KittiEvalMetric:
                 current_classes_int.append(curcls)
         self.current_classes = current_classes_int
         self.min_overlaps = self.min_overlaps[:, :, self.current_classes]
-
-        self.detections= []
-        self.groundtruths= []
-        self.overlaps= []
+        self.add_state("detections", default=[])
+        self.add_state("groundtruths", default=[])
+        self.add_state("overlaps", default=[])
 
     def update(self, valid_pred_boxes,valid_gt_boxes, overlap):
         # The following states are accumulated over updates
         self.detections.append(valid_pred_boxes)
         self.groundtruths.append(valid_gt_boxes)
         self.overlaps.append(overlap)
-    def reset(self):
-        self.detections= []
-        self.groundtruths= []
-        self.overlaps= []
+
     def compute(self):
-        results = eval_class(self.groundtruths, self.detections, self.current_classes,
-                                self.metric, self.min_overlaps, self.overlaps)
-        mAP_3d = get_mAP(results["precision"])
-        mAP_3d_R40 = get_mAP_R40(results["precision"])
-        results.update({'mAP_3d': mAP_3d, 'mAP_3d_R40': mAP_3d_R40, 'total_num_samples': len(self.detections)})
-        return results
+        return self.groundtruths, self.detections, self.overlaps
 class MeanMetric(Metric):
     full_state_update: bool = False
     def __init__(self):
@@ -186,15 +179,20 @@ class CombinedMetric:
 
 
         if self.update_count%self.kitti_eval_repeat_counter==0:  # TODO(farzad) epoch length is hardcoded.
-            kitti_eval_metrics = self.kitti_eval_metric.compute()
+            groundtruths, detections, overlaps = self.kitti_eval_metric.compute()
+            results = eval_class(groundtruths, detections, self.kitti_eval_metric.current_classes,
+                                self.kitti_eval_metric.metric, self.kitti_eval_metric.min_overlaps, overlaps)
+            mAP_3d = get_mAP(results["precision"])
+            mAP_3d_R40 = get_mAP_R40(results["precision"])
+            results.update({'mAP_3d': mAP_3d, 'mAP_3d_R40': mAP_3d_R40, 'total_num_samples': len(self.detections)})
             # Get calculated TPs, FPs, FNs
             # Early results might not be correct as the 41 values are initialized with zero
             # and only a few predictions are available and thus a few thresholds are non-zero.
             # Therefore, mean over several zero values results in low final value.
             # detailed_stats shape (3, 1, 41, 5) where last dim is
             # {0: 'tp', 1: 'fp', 2: 'fn', 3: 'similarity', 4: 'precision thresholds'}
-            total_num_samples = kitti_eval_metrics['total_num_samples']#max(self.metrics[tag].kitti_eval_metric._update_count, 1)
-            detailed_stats = kitti_eval_metrics['detailed_stats']
+            total_num_samples = results['total_num_samples']#max(self.metrics[tag].kitti_eval_metric._update_count, 1)
+            detailed_stats = results['detailed_stats']
             for m, metric_name in enumerate(['tps', 'fps', 'fns', 'sim', 'thresh', 'trans_err', 'orient_err', 'scale_err']):
                 if metric_name == 'sim' or metric_name == 'thresh':
                     continue
@@ -212,7 +210,7 @@ class CombinedMetric:
             for m, metric_name in enumerate(['mAP_3d', 'mAP_3d_R40']):
                 class_metrics_all = {}
                 for c, cls_name in enumerate(['Car', 'Pedestrian', 'Cyclist']):
-                    metric_value = kitti_eval_metrics[metric_name][c].item()
+                    metric_value = results[metric_name][c].item()
                     if not np.isnan(metric_value):
                         class_metrics_all[cls_name] = metric_value
                 statistics[metric_name] = class_metrics_all
@@ -220,7 +218,7 @@ class CombinedMetric:
             # Get calculated recall
             class_metrics_all = {}
             for c, cls_name in enumerate(['Car', 'Pedestrian', 'Cyclist']):
-                metric_value = np.nanmax(kitti_eval_metrics['raw_recall'][c])
+                metric_value = np.nanmax(results['raw_recall'][c])
                 if not np.isnan(metric_value):
                     class_metrics_all[cls_name] = metric_value
             statistics['max_recall'] = class_metrics_all
@@ -229,9 +227,9 @@ class CombinedMetric:
             fig, axs = plt.subplots(1, 3, figsize=(12, 4), gridspec_kw={'wspace': 0.5})
             # plt.tight_layout()
             for c, cls_name in enumerate(['Car', 'Pedestrian', 'Cyclist']):
-                thresholds = kitti_eval_metrics['detailed_stats'][c, 0, ::-1, 4]
-                prec = kitti_eval_metrics['raw_precision'][c, 0, ::-1]
-                rec = kitti_eval_metrics['raw_recall'][c, 0, ::-1]
+                thresholds = results['detailed_stats'][c, 0, ::-1, 4]
+                prec = results['raw_precision'][c, 0, ::-1]
+                rec = results['raw_recall'][c, 0, ::-1]
                 valid_mask = ~((rec == 0) | (prec == 0))
 
                 ax_c = axs[c]
