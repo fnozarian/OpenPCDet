@@ -44,9 +44,9 @@ class KittiEvalMetric(Metric):
                 current_classes_int.append(curcls)
         self.current_classes = current_classes_int
         self.min_overlaps = self.min_overlaps[:, :, self.current_classes]
-        self.add_state("detections", default=[])
-        self.add_state("groundtruths", default=[])
-        self.add_state("overlaps", default=[])
+        self.add_state("detections", default=[], dist_reduce_fx=None)
+        self.add_state("groundtruths", default=[], dist_reduce_fx=None)
+        self.add_state("overlaps", default=[], dist_reduce_fx=None)
 
     def update(self, valid_pred_boxes,valid_gt_boxes, overlap):
         # The following states are accumulated over updates
@@ -55,7 +55,7 @@ class KittiEvalMetric(Metric):
         self.overlaps.append(overlap)
 
     def compute(self):
-        return self.groundtruths, self.detections, self.overlaps
+        return torch.cat(self.groundtruths), torch.cat(self.detections), torch.cat(self.overlaps)
 class MeanMetric(Metric):
     full_state_update: bool = False
     def __init__(self):
