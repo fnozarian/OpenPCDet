@@ -136,7 +136,7 @@ class PVRCNNHead(RoIHeadTemplate):
                           - (local_roi_size.unsqueeze(dim=1) / 2)  # (B, 6x6x6, 3)
         return roi_grid_points
 
-    def forward(self, batch_dict, disable_gt_roi_when_pseudo_labeling=False):
+    def forward(self, batch_dict, disable_gt_roi_when_pseudo_labeling=False, topk_proposals=None):
         """
         :param input_data: input dict
         :return:
@@ -147,7 +147,7 @@ class PVRCNNHead(RoIHeadTemplate):
 
         # proposal_layer doesn't continue if the rois are already in the batch_dict.
         # However, for labeled data proposal layer should continue!
-        targets_dict = self.proposal_layer(batch_dict, nms_config=nms_mode)
+        targets_dict = self.proposal_layer(batch_dict, nms_config=nms_mode, topk_proposals=topk_proposals)
         # should not use gt_roi for pseudo label generation
         if (self.training or self.print_loss_when_eval) and not disable_gt_roi_when_pseudo_labeling:
             targets_dict = self.assign_targets(batch_dict, override_unlabeled_targets=self.model_cfg.get("ENABLE_RCNN_CONSISTENCY", False))

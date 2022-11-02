@@ -48,7 +48,7 @@ class RoIHeadTemplate(nn.Module):
         return fc_layers
 
     @torch.no_grad()
-    def proposal_layer(self, batch_dict,  nms_config):
+    def proposal_layer(self, batch_dict, nms_config, topk_proposals=None):
         """
         Args:
             batch_dict:
@@ -70,13 +70,21 @@ class RoIHeadTemplate(nn.Module):
             return batch_dict
 
         batch_size = batch_dict['batch_size']
+        if topk_proposals is not None:
+            # Restore original proposals to select topk and refine them.
+            batch_box_preds = batch_dict['batch_box_preds_consistency']
+            batch_cls_preds = batch_dict['batch_cls_preds_consistency']
+        else:
+            batch_box_preds = batch_dict['batch_box_preds']
+            batch_cls_preds = batch_dict['batch_cls_preds']
+            # Backup original proposals and use them as topk proposals in consistency module
+            batch_dict['batch_box_preds_consistency'] = batch_box_preds.clone().detach()
+            batch_dict['batch_cls_preds_consistency'] = batch_cls_preds.clone().detach()
 
-        batch_box_preds = batch_dict['batch_box_preds']
-        batch_cls_preds = batch_dict['batch_cls_preds']
-
-        rois = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_box_preds.shape[-1]))
-        roi_scores = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
-        roi_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
+        num_proposals = topk_proposals if topk_proposals is not None else nms_config.NMS_POST_MAXSIZE
+        rois = batch_box_preds.new_zeros((batch_size, num_proposals, batch_box_preds.shape[-1]))
+        roi_scores = batch_box_preds.new_zeros((batch_size, num_proposals))
+        roi_labels = batch_box_preds.new_zeros((batch_size, num_proposals), dtype=torch.long)
 
         for index in range(batch_size):
             if batch_dict.get('batch_index', None) is not None:
@@ -92,6 +100,10 @@ class RoIHeadTemplate(nn.Module):
 
             if nms_config.MULTI_CLASSES_NMS:
                 raise NotImplementedError
+            elif topk_proposals is not None:
+                selected, _ = class_agnostic_nms(
+                    box_scores=cur_roi_scores, box_preds=box_preds, nms_config=nms_config,
+                    topk_proposals=topk_proposals)
             else:
                 selected, selected_scores = class_agnostic_nms(
                     box_scores=cur_roi_scores, box_preds=box_preds, nms_config=nms_config

@@ -269,6 +269,9 @@ class PVRCNN_SSL(Detector3DTemplate):
                 if cur_module.model_cfg['NAME'] == 'PVRCNNHead' and self.model_cfg['ROI_HEAD'].get('ENABLE_RCNN_CONSISTENCY', False):
                     # Pass teacher's proposal to the student.
                     # To let proposal_layer continues for labeled data we pass rois with _ema postfix
+                    with torch.no_grad():
+                        self.pv_rcnn_ema.roi_head(batch_dict_ema, disable_gt_roi_when_pseudo_labeling=True,
+                                                  topk_proposals=self.model_cfg.get('TOPK_PROPOSALS_CONSISTENCY', None))
                     batch_dict['rois_ema'] = batch_dict_ema['rois'].detach().clone()
                     batch_dict['roi_scores_ema'] = torch.sigmoid(batch_dict_ema['roi_scores'].detach().clone())
                     batch_dict['roi_labels_ema'] = batch_dict_ema['roi_labels'].detach().clone()

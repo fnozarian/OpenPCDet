@@ -166,6 +166,8 @@ MODEL:
         REG_FC: [256, 256]
         DP_RATIO: 0.3
 
+        TOPK_PROPOSALS_CONSISTENCY: 512
+
         NMS_CONFIG:
             TRAIN:
                 NMS_TYPE: nms_gpu
