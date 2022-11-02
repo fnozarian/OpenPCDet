@@ -166,10 +166,12 @@ MODEL:
         REG_FC: [256, 256]
         DP_RATIO: 0.3
 
-        ROI_AUGMENTATION: True
-        ROI_AUGMENTATION_SCALE_RANGE: [0.9, 1.1]
-        ROI_AUGMENTATION_ROTATE_RANGE: [0, 0] 
-        SAME_SCALE_XYZ: True
+        ROI_AUG:
+            ENABLE: True
+            ROS:
+                SCALE_RANGE: [0.9, 1.1]
+                ROTATE_RANGE: [0, 0] 
+                SAME_SCALE_XYZ: True
 
         NMS_CONFIG:
             TRAIN:

@@ -4,6 +4,7 @@ import torch.nn as nn
 from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
+from pcdet.datasets.augmentor.augmentor_utils import *
 
 
 class PVRCNNHead(RoIHeadTemplate):
@@ -173,10 +174,11 @@ class PVRCNNHead(RoIHeadTemplate):
             batch_dict['roi_scores'] = targets_dict['roi_scores']
             batch_dict['roi_labels'] = targets_dict['roi_labels']
 
-            if self.model_cfg.ROI_AUGMENTATION :
+            if self.model_cfg.ROI_AUG.ENABLE :
                 uids = batch_dict['unlabeled_inds']
+                # only used for debugging, can be removed later
                 batch_dict['rois_before_aug'] = batch_dict['rois'].clone().detach()
-                batch_dict['rois'][uids] = self.augment_rois(batch_dict['rois'][uids])
+                batch_dict['rois'][uids] = augment_rois(batch_dict['rois'][uids], self.model_cfg, aug_type='ros')
 
         # RoI aware pooling
         pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
