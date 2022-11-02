@@ -413,13 +413,31 @@ def roi_aug_ros(rois, roi_cfg):
     return rois
 
 '''
+Makes the ROI data sparse 
+'''
+def roi_aug_sparse(rois, roi_cfg):
+    raise NotImplementedError 
+
+'''
+Perform translation operation along all three axis on ROIs
+Currently, it translates the center of ROIs along all 3 axis with different scale
+TODO (shashank) : Need to check how translation along z-axis would affect the points
+'''
+def roi_aug_translate(rois, roi_cfg):
+    trans_factor = torch.normal(mean=0.0, std=torch.Tensor(roi_cfg.ROI_AUG.TRANSLATE.SCALE))
+    rois[...,:3] += trans_factor.cuda()
+    return rois
+
+'''
 Used to augment ROIs before ROI grid pooling in pvrcnnhead
 '''
 def augment_rois(rois, roi_cfg, aug_type="ros"):
     if aug_type == "ros":
         aug_rois = roi_aug_ros(rois, roi_cfg)
     elif aug_type == "sparse":
-        raise NotImplementedError
-    elif aug_type == "translation":
-        raise NotImplementedError     
+        aug_rois = roi_aug_sparse(rois, roi_cfg)
+    elif aug_type == "translate":
+        aug_rois = roi_aug_translate(rois, roi_cfg)   
+    else :
+        raise Exception("ROI augmentation not found : {}".format(aug_type))
     return aug_rois

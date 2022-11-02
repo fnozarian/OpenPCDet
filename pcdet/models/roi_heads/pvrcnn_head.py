@@ -138,23 +138,6 @@ class PVRCNNHead(RoIHeadTemplate):
                           - (local_roi_size.unsqueeze(dim=1) / 2)  # (B, 6x6x6, 3)
         return roi_grid_points
 
-    def augment_rois(self, rois):
-        if self.model_cfg.ROI_AUGMENTATION:
-            roi_scale_range = self.model_cfg.ROI_AUGMENTATION_SCALE_RANGE
-            if not (roi_scale_range[0] == roi_scale_range[1] == 1):
-                if self.model_cfg.get('SAME_SCALE_XYZ', False):
-                    roi_scale_factor = roi_scale_range[0] + torch.rand_like(rois[:,:,3]) * (roi_scale_range[1] - roi_scale_range[0])
-                    roi_scale_factor = roi_scale_factor.unsqueeze(-1)
-                else:
-                    roi_scale_factor = roi_scale_range[0] + torch.rand_like(rois[:,:,3:6]) * (roi_scale_range[1] - roi_scale_range[0])
-                rois[...,3:6] *= roi_scale_factor
-            roi_rotate_range = self.model_cfg.ROI_AUGMENTATION_ROTATE_RANGE
-            if not (roi_rotate_range[0] == roi_rotate_range[1] == 0):
-                roi_rotate_angle = roi_rotate_range[0] + torch.rand_like(rois[:,:,6]) * (roi_rotate_range[1] - roi_rotate_range[0])
-                rois[...,6] += roi_rotate_angle
-        
-        return rois
-
     def forward(self, batch_dict, disable_gt_roi_when_pseudo_labeling=False):
         """
         :param input_data: input dict
@@ -178,7 +161,7 @@ class PVRCNNHead(RoIHeadTemplate):
                 uids = batch_dict['unlabeled_inds']
                 # only used for debugging, can be removed later
                 batch_dict['rois_before_aug'] = batch_dict['rois'].clone().detach()
-                batch_dict['rois'][uids] = augment_rois(batch_dict['rois'][uids], self.model_cfg, aug_type='ros')
+                batch_dict['rois'][uids] = augment_rois(batch_dict['rois'][uids], self.model_cfg, aug_type='transslate')
 
         # RoI aware pooling
         pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)

@@ -172,6 +172,8 @@ MODEL:
                 SCALE_RANGE: [0.9, 1.1]
                 ROTATE_RANGE: [0, 0] 
                 SAME_SCALE_XYZ: True
+            TRANSLATE:
+                SCALE: [0.25, 0.25, 0.25]
 
         NMS_CONFIG:
             TRAIN:
