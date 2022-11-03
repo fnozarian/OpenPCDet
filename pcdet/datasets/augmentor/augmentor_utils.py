@@ -414,6 +414,7 @@ def roi_aug_ros(rois, roi_cfg):
 
 '''
 Makes the ROI data sparse 
+# NOTE (shashank) : Augmentations on points shall be performed after ROI Grid pooling ?
 '''
 def roi_aug_sparse(rois, roi_cfg):
     raise NotImplementedError 

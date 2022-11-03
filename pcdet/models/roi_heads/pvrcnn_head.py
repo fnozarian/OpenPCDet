@@ -161,7 +161,7 @@ class PVRCNNHead(RoIHeadTemplate):
                 uids = batch_dict['unlabeled_inds']
                 # only used for debugging, can be removed later
                 batch_dict['rois_before_aug'] = batch_dict['rois'].clone().detach()
-                batch_dict['rois'][uids] = augment_rois(batch_dict['rois'][uids], self.model_cfg, aug_type='transslate')
+                batch_dict['rois'][uids] = augment_rois(batch_dict['rois'][uids], self.model_cfg, aug_type='translate')
 
         # RoI aware pooling
         pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
