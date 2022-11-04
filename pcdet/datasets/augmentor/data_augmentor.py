@@ -4,6 +4,7 @@ import numpy as np
 
 from ...utils import common_utils
 from . import augmentor_utils, database_sampler
+from .part_aware_augmentation import PartAwareAugmentation
 
 
 class DataAugmentor(object):
@@ -299,6 +300,25 @@ class DataAugmentor(object):
         return data_dict
 
     '''
+    Adapted from Part-Aware Data Augmentation for 3D Object Detection in Point Cloud 
+    '''
+    def pa_aug(self, data_dict=None, config=None):
+        """
+        Refer to the paper:
+            Part-Aware Data Augmentation for 3D Object Detection in Point Cloud
+        """
+        if data_dict is None:
+            return partial(self.pa_aug, config=config)
+        pa_aug = PartAwareAugmentation(data_dict['points'], data_dict['gt_boxes'], data_dict['gt_names'],
+                                           class_names=self.class_names)
+        data_dict['points'], gt_boxes_mask = pa_aug.augment(pa_aug_param=config["EXP_NAME"])
+        data_dict['gt_boxes'] = data_dict['gt_boxes'][gt_boxes_mask]
+        data_dict['gt_names'] = data_dict['gt_names'][gt_boxes_mask]
+        if 'gt_boxes_mask' in data_dict:
+            data_dict['gt_boxes_mask'] = data_dict['gt_boxes_mask'][gt_boxes_mask]
+        return data_dict
+
+    '''
     Prepare augmentation queues for each network to be used based on their augmentation list in config (.yaml) file
         Args:
         Returns:
@@ -351,7 +371,8 @@ class DataAugmentor(object):
         for cur_augmentor in data_augmentor_queue:
                 data_dict = cur_augmentor(data_dict=data_dict)
 
-        # TODO (shashank): Need to check if this is required. Adapted from forward()
+        # Transfer unbounded angles to bounded angles
+        # More details : https://github.com/open-mmlab/OpenPCDet/issues/99#issuecomment-649640252
         data_dict['gt_boxes'][:, 6] = common_utils.limit_period(
             data_dict['gt_boxes'][:, 6], offset=0.5, period=2 * np.pi
         )
