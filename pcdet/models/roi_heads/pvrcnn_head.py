@@ -161,7 +161,14 @@ class PVRCNNHead(RoIHeadTemplate):
                 uids = batch_dict['unlabeled_inds']
                 # only used for debugging, can be removed later
                 batch_dict['rois_before_aug'] = batch_dict['rois'].clone().detach()
-                batch_dict['rois'][uids] = augment_rois(batch_dict['rois'][uids], self.model_cfg, aug_type='translate')
+                batch_dict['rois'][uids] = augment_rois(batch_dict['rois'][uids], self.model_cfg, aug_type='ros')
+                
+                stud_rois = torch.cat([batch_dict['rois'][uids].squeeze(0), batch_dict['roi_labels'][uids].view(-1, 1).float()], dim=1)
+                teacher_rois = torch.cat([batch_dict['rois_before_aug'][uids].squeeze(0), batch_dict['roi_labels'][uids].view(-1, 1).float()], dim=1)
+                
+                # plot the dim distribution between teacher's rois vs student's augmented rois
+                dim_distribution = batch_dict['dimension_dist_registry'].get('stud_teach_rois_dims')
+                dim_distribution.update(stud_rois, teacher_rois)
 
         # RoI aware pooling
         pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
