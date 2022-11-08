@@ -274,7 +274,8 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             # plot the dim distribution between teacher's pseudo boxes and ground truths
             dim_distribution = self.dimension_dist_registry.get('pseudobox_gt_dims')
-            dim_distribution.update(batch_dict['gt_boxes'][unlabeled_inds].squeeze(0), ori_unlabeled_boxes.squeeze(0))
+            ndims = batch_dict['gt_boxes'][unlabeled_inds].shape[-1]
+            dim_distribution.update(batch_dict['gt_boxes'][unlabeled_inds].view(-1, ndims), ori_unlabeled_boxes.view(-1, ndims))
 
             # ori_unlabeled_boxes_list = [ori_box for ori_box in ori_unlabeled_boxes]
             # pseudo_boxes_list = [ps_box for ps_box in batch_dict['gt_boxes'][unlabeled_inds]]
