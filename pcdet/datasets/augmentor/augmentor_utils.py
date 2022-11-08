@@ -400,7 +400,7 @@ It provides option to scale all the three dimsnions differently as well as rotat
 def roi_aug_ros(rois, roi_cfg):
     roi_scale_range = roi_cfg.ROI_AUG.ROS.SCALE_RANGE
     if not (roi_scale_range[0] == roi_scale_range[1] == 1):
-        if roi_cfg.get('SAME_SCALE_XYZ', False):
+        if roi_cfg.ROI_AUG.ROS.get('SAME_SCALE_XYZ', False):
             roi_scale_factor = roi_scale_range[0] + torch.rand_like(rois[:,:,3]) * (roi_scale_range[1] - roi_scale_range[0])
             roi_scale_factor = roi_scale_factor.unsqueeze(-1)
         else:
