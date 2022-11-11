@@ -16,49 +16,28 @@ import math
 from pcdet.config import cfg
 from matplotlib import pyplot as plt
 
+# Used for updating distribution of different dimensions of bounding boxes for predictions and targets 
 class ComparePair(Metric):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.add_state("bbox_length_pred", default=[], dist_reduce_fx='cat')
-        self.add_state("bbox_width_pred", default=[], dist_reduce_fx='cat')
-        self.add_state("bbox_height_pred", default=[], dist_reduce_fx='cat')
-        self.add_state("bbox_angle_pred", default=[], dist_reduce_fx='cat')
-        self.add_state("label_pred", default=[], dist_reduce_fx='cat')
-
-        self.add_state("bbox_length_target", default=[], dist_reduce_fx='cat')
-        self.add_state("bbox_width_target", default=[], dist_reduce_fx='cat')
-        self.add_state("bbox_height_target", default=[], dist_reduce_fx='cat')
-        self.add_state("bbox_angle_target", default=[], dist_reduce_fx='cat')
-        self.add_state("label_target", default=[], dist_reduce_fx='cat')
+        self.state_names = ['bbox_length', 'bbox_width', 'bbox_height', 'bbox_angle', 'label']
+        for sname in self.state_names:
+            self.add_state(sname + '_pred', default=[], dist_reduce_fx='cat')
+            self.add_state(sname + '_target', default=[], dist_reduce_fx='cat')
+        # Mapping every state to its corresponding bbox dimension into a dictionary
+        self.state_names_dict = dict(zip([3,4,5,6,7], self.state_names))
 
     def update(self, pred, target):
-        # dimensionds of preds 
-        self.bbox_length_pred.append(pred[...,3]) 
-        self.bbox_width_pred.append(pred[...,4])
-        self.bbox_height_pred.append(pred[...,5])
-        self.bbox_angle_pred.append(pred[...,6])
-        self.label_pred.append(pred[...,7])
-
-        # dimensions of targets
-        self.bbox_length_target.append(target[...,3])
-        self.bbox_width_target.append(target[...,4])
-        self.bbox_height_target.append(target[...,5])
-        self.bbox_angle_target.append(target[...,6])
-        self.label_target.append(target[...,7])
+        # add dimension values to each state 
+        for (sdim, sname) in self.state_names_dict.items():
+            getattr(self, sname + '_pred').append(pred[..., sdim])  
+            getattr(self, sname + '_target').append(target[..., sdim])
 
     def compute(self):
         results = {}
-        results['bbox_length_pred'] = self.bbox_length_pred
-        results['bbox_width_pred'] = self.bbox_width_pred
-        results['bbox_height_pred'] = self.bbox_height_pred
-        results['bbox_angle_pred'] = self.bbox_angle_pred
-        results['label_pred'] = self.label_pred
-
-        results['bbox_length_target'] = self.bbox_length_target
-        results['bbox_width_target'] = self.bbox_width_target
-        results['bbox_height_target'] = self.bbox_height_target
-        results['bbox_angle_target'] = self.bbox_angle_target
-        results['label_target'] = self.label_target
+        for sname in self.state_names:
+            results[sname + '_pred'] = getattr(self, sname + '_pred')
+            results[sname + '_target'] = getattr(self, sname + '_target')
         return results
 
 # TODO(farzad): Pass only scores and labels?

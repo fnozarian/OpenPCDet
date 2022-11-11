@@ -168,7 +168,7 @@ class PVRCNNHead(RoIHeadTemplate):
                 teacher_rois = torch.cat([batch_dict['rois_before_aug'][uids].view(-1, ndims), batch_dict['roi_labels'][uids].view(-1, 1).float()], dim=1)
                 
                 # plot the dim distribution between teacher's rois vs student's augmented rois
-                dim_distribution = batch_dict['dimension_dist_registry'].get('stud_teach_rois_dims')
+                dim_distribution = batch_dict['dimension_dist_registry'].get('StudentRois', 'TeacherRois')
                 dim_distribution.update(stud_rois, teacher_rois)
 
         # RoI aware pooling

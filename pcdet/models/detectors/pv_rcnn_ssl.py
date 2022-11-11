@@ -4,6 +4,7 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
+from matplotlib import pyplot as plt
 from pcdet.datasets.augmentor.augmentor_utils import *
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 
@@ -123,9 +124,22 @@ class DimDistributionRegistry(object):
     def __init__(self, ):
         self._tag_metrics = {}
 
-    def get(self, tag=None):
-        if tag is None:
-            tag = 'default'
+    # def get(self, tag=None):
+    #     if tag is None:
+    #         tag = 'default'
+    #     if tag in self._tag_metrics.keys():
+    #         metric = self._tag_metrics[tag]
+    #     else:
+    #         metric = ComparePair()
+    #         self._tag_metrics[tag] = metric
+    #     return metric
+
+    def get(self, pred_tag=None, target_tag=None):
+        if pred_tag is None :
+            pred_tag = 'pred'
+        if target_tag is None :
+            target_tag = 'target'
+        tag = pred_tag + "_" + target_tag
         if tag in self._tag_metrics.keys():
             metric = self._tag_metrics[tag]
         else:
@@ -278,7 +292,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict = self.apply_augmentation(batch_dict, batch_dict, unlabeled_inds, key='gt_boxes')
 
             # plot the dim distribution between teacher's pseudo boxes and ground truths
-            dim_distribution = self.dimension_dist_registry.get('pseudobox_gt_dims')
+            dim_distribution = self.dimension_dist_registry.get('PseudoBox', 'GroundTruth')
             ndims = batch_dict['gt_boxes'][unlabeled_inds].shape[-1]
             dim_distribution.update(batch_dict['gt_boxes'][unlabeled_inds].view(-1, ndims), ori_unlabeled_boxes.view(-1, ndims))
 
@@ -367,8 +381,9 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             # Used to plot dimension distributions of preds vs GTs
             for key in self.dimension_dist_registry.tags():
+                pred_target_tag = key.split("_")
                 # TODO (shashank): currently hard coded epoch length
-                if self.dimension_dist_registry.get(key)._update_count == 5:
+                if self.dimension_dist_registry.get(pred_target_tag[0], pred_target_tag[1])._update_count == 5:
                     dim_distribution = self.plot_dimension_dist(tag=key)
                     tb_dict_.update(dim_distribution)
 
@@ -403,57 +418,52 @@ class PVRCNN_SSL(Detector3DTemplate):
     # Function to call compute of Torchmetrics class to plot the dimension distribution 
     # It saves 3 images containing dimension distribution of each class    
     def plot_dimension_dist(self, tag):
-        outputs = self.dimension_dist_registry.get(tag).compute()
+        labels = tag.split('_')
+        outputs = self.dimension_dist_registry.get(labels[0], labels[1]).compute()
         
+        classwise_distribution = {}
         distribution = {}
         if "bbox_length_pred" in outputs.keys():
-            bbox_length_pred = torch.cat(outputs['bbox_length_pred'])
-            bbox_width_pred = torch.cat(outputs['bbox_width_pred'])
-            bbox_height_pred = torch.cat(outputs['bbox_height_pred'])
-            bbox_angle_pred = torch.cat(outputs['bbox_angle_pred'])
-            label_pred = torch.cat(outputs['label_pred'])
-            
-            bbox_length_target = torch.cat(outputs['bbox_length_target'])
-            bbox_width_target = torch.cat(outputs['bbox_width_target'])
-            bbox_height_target = torch.cat(outputs['bbox_height_target'])
-            bbox_angle_target = torch.cat(outputs['bbox_angle_target'])
-            label_target = torch.cat(outputs['label_target'])
+            for key in outputs.keys():
+                distribution[key] = torch.cat(outputs[key])
             
             class_names = {1:'Car', 2:'Pedestrian', 3:'Cyclist'}
             for key, val in class_names.items():
                 fig, axs = plt.subplots(2, 2, tight_layout=True)
                 fig.suptitle("{}'s Dimension distribution".format(val))
                 colors = ['b', 'r']
-                labels = ['Pseudo Box', 'Ground Truth']
+                labels = tag.split('_')
+                class_pred_mask = distribution['label_pred']==key
+                class_target_mask = distribution['label_target']==key
 
-                bbox_length_pred_target = [bbox_length_pred[label_pred==key].cpu(), bbox_length_target[label_target==key].cpu()]
+                bbox_length_pred_target = [distribution['bbox_length_pred'][class_pred_mask].cpu(), distribution['bbox_length_target'][class_target_mask].cpu()]
                 axs[0][0].hist(bbox_length_pred_target, alpha= 0.5, histtype='stepfilled', label=labels, color=colors)
                 axs[0][0].set_xlabel('Length (in meters)')
                 axs[0][0].set_ylabel('Count')
 
-                bbox_width_pred_target = [bbox_width_pred[label_pred==key].cpu(), bbox_width_target[label_target==key].cpu()]
+                bbox_width_pred_target = [distribution['bbox_width_pred'][class_pred_mask].cpu(), distribution['bbox_width_target'][class_target_mask].cpu()]
                 axs[0][1].hist(bbox_width_pred_target, alpha= 0.5, histtype='stepfilled', label=labels, color=colors)
                 axs[0][1].set_xlabel('Width (in meters)')
                 axs[0][1].set_ylabel('Count')
 
-                bbox_height_pred_target = [bbox_height_pred[label_pred==key].cpu(), bbox_height_target[label_target==key].cpu()]
+                bbox_height_pred_target = [distribution['bbox_height_pred'][class_pred_mask].cpu(), distribution['bbox_height_target'][class_target_mask].cpu()]
                 axs[1][0].hist(bbox_height_pred_target, alpha= 0.5, histtype='stepfilled', label=labels, color=colors)
                 axs[1][0].set_xlabel('Height (in meters)')
                 axs[1][0].set_ylabel('Count')
 
-                bbox_angle_pred_target = [bbox_angle_pred[label_pred==key].cpu(), bbox_angle_target[label_target==key].cpu()]
+                bbox_angle_pred_target = [distribution['bbox_angle_pred'][class_pred_mask].cpu(), distribution['bbox_angle_target'][class_target_mask].cpu()]
                 axs[1][1].hist(bbox_angle_pred_target, alpha= 0.5, histtype='stepfilled', label=labels, color=colors)
                 axs[1][1].set_xlabel('Orientation Angle')
                 axs[1][1].set_ylabel('Count')
                 
                 plt.legend()
                 dim_fig = fig.get_figure()
-                distribution[val] = dim_fig
+                classwise_distribution[val] = dim_fig
             
-            self.dimension_dist_registry.get(tag).reset()
+            self.dimension_dist_registry.get(labels[0], labels[1]).reset()
             
         ret_dist = {}
-        for key, val in distribution.items():
+        for key, val in classwise_distribution.items():
             ret_dist[tag + '/' + key] = val
         return ret_dist
 
