@@ -138,8 +138,69 @@ class ProposalTargetLayerConsistency(nn.Module):
 
         return selected_inds, reg_valid_mask, cls_labels
 
+    '''
+    Sample based on Teacher's (pseudo boxes) objectness score using Flexmatch idea 
+    This sampling would be based on classwise thresholds which would be flexible i.e. in case the number of PLs
+     for a particular class is less, we would lower the threshold while for dominant class in PLs, the threshold would be 
+     set higher - in order to pass balanced unlabeled data taking into accoutn the learning difficulties of diff classes
+    '''
+    # NOTE : Needs to be debugged and validated
     def classwise_adapative_thresholds_sampler(self, **kwargs):
-        raise NotImplementedError
+        thresh = [0.8,0.4,0.4] # TODO (shashank) : import from model_cfg and use appropriate thresh values
+
+        gt_scores = kwargs.get('gt_scores')
+        gt_boxes = kwargs.get('gt_boxes')
+        gt_labels = gt_boxes[:, -1]
+
+        # Apply initial fixed threshold filtering to all PL (pseudo label) objectness scores
+        fixed_thresh_mask = gt_scores > thresh
+        # Assign invalid (unused) class (0) wherever threshold wasn't crossed
+        gt_labels[~fixed_thresh_mask] = 0
+
+        # NOTE : order of num_gt_labels_per_class : {0-unused labels, 1-car, 2-pedestrian, 3-cyclist}
+        num_gt_labels_per_class = torch.bincount(gt_labels.type(torch.int64), minlength=4)
+        # as per Flexmatch eq. 11 - uses warmup stage
+        norm_factor = torch.max(num_gt_labels_per_class).item()
+
+        sampled_inds = torch.zeros_like(gt_scores, dtype=torch.bool)
+        
+        # TODO (shashank) : num classes threshold hard coded
+        for k in range(1, 4):  
+            gt_label_mask = (gt_labels == k)
+
+            # Normalise the threshold based on number of obj detected per class
+            # Lowers the threshold if less samples are detected 
+            norm_est_learning_effect = num_gt_labels_per_class[k].item() / norm_factor
+
+            # TODO (shashank) : Base threshold can be made class agnostic also instead of class wise
+            # class_thresh  = thresh[k-1] if isinstance(thresh, list) else thresh
+            # dynamic_cls_thresh = class_thresh * normalized_coef
+
+            dynamic_cls_thresh = thresh[k-1] * norm_est_learning_effect
+            thresh_mask = (gt_scores > dynamic_cls_thresh)
+
+            cur_mask = gt_label_mask & thresh_mask
+            sampled_inds = torch.bitwise_xor(cur_mask, sampled_inds).long()
+
+        # TODO (shashank): reg_valid_mask and cls_ables filtering can be converted 
+        #   into a seperate method if its being used by all the samplers
+        sampled_gt_scores = gt_scores[sampled_inds]
+        sampled_gt_boxes = gt_boxes[sampled_inds]
+        reg_valid_mask  = (sampled_gt_scores > self.roi_sampler_cfg.UNLABELED_REG_FG_THRESH).long()
+
+        # filter GT labels based on FG/BG thresholds 
+        iou_bg_thresh = self.roi_sampler_cfg.CLS_BG_THRESH
+        iou_fg_thresh = self.roi_sampler_cfg.CLS_FG_THRESH
+        fg_mask = sampled_gt_scores > iou_fg_thresh
+        bg_mask = sampled_gt_scores < iou_bg_thresh
+        interval_mask = (fg_mask == 0) & (bg_mask == 0)
+        cls_labels = (fg_mask > 0).float()
+        cls_labels[interval_mask] = sampled_gt_scores[interval_mask]
+        # Ignoring all-zero pseudo-labels produced due to filtering
+        ignore_mask = torch.eq(sampled_gt_boxes, 0).all(dim=-1)
+        cls_labels[ignore_mask] = -1
+            
+        return sampled_inds, reg_valid_mask, cls_labels
 
     def classwise_top_k_sampler(self, **kwargs):
         roi_labels = kwargs.get('roi_labels')
