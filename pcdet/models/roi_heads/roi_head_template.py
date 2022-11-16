@@ -17,7 +17,8 @@ else:
     headless_server = False
     import mayavi.mlab as mlab
     from visual_utils import visualize_utils as V
-
+# import mayavi.mlab as mlab
+# from visual_utils import visualize_utils as V
 
 def vis(points, gt_boxes, pred_boxes=None, pred_scores=None, pred_labels=None):
     """A simple/temporary visualization for debugging"""
@@ -44,6 +45,10 @@ class RoIHeadTemplate(nn.Module):
         self.predict_boxes_when_training = predict_boxes_when_training
 
     def build_losses(self, losses_cfg):
+        self.add_module(
+            'cls_loss_func',
+            loss_utils.SigmoidFocalClassificationLoss(alpha=0.25, gamma=2.0)
+        )
         self.add_module(
             'reg_loss_func',
             loss_utils.WeightedSmoothL1Loss(code_weights=losses_cfg.LOSS_WEIGHTS['code_weights'])
@@ -220,7 +225,7 @@ class RoIHeadTemplate(nn.Module):
             pred_scores.append(pred_score)
             pred_sem_scores.append(pred_sem_score)
 
-            if self.model_cfg.get('ENABLE_VIS', False):
+            if self.model_cfg.get('ENABLE_VIS', False) and not headless_server:
                 points_mask = targets_dict['points'][:, 0] == uind
                 points = targets_dict['points'][points_mask, 1:]
                 vis(points, gt_boxes=target_boxes[:, :-1], pred_boxes=pred_boxes,
@@ -383,6 +388,7 @@ class RoIHeadTemplate(nn.Module):
                 rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
                 rcnn_acc_cls = torch.abs(torch.sigmoid(rcnn_cls_flat) - rcnn_cls_labels).reshape(batch_size, -1)
                 rcnn_acc_cls = (rcnn_acc_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
+        
         elif loss_cfgs.CLS_LOSS == 'CrossEntropy':
             batch_loss_cls = F.cross_entropy(rcnn_cls, rcnn_cls_labels, reduction='none', ignore_index=-1)
             cls_valid_mask = (rcnn_cls_labels >= 0).float()
@@ -393,6 +399,28 @@ class RoIHeadTemplate(nn.Module):
                 batch_loss_cls = batch_loss_cls.reshape(batch_size, -1)
                 cls_valid_mask = cls_valid_mask.reshape(batch_size, -1)
                 rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
+        
+        elif loss_cfgs.CLS_LOSS == 'FocalLoss':
+            batch_size = forward_ret_dict['rcnn_cls_labels'].shape[0]
+
+            batch_rcnn_cls = rcnn_cls.view(batch_size, -1, rcnn_cls.shape[-1])  #[B,N,C]
+            batch_rcnn_cls_labels = rcnn_cls_labels.view_as(batch_rcnn_cls)     #[B,N,C]
+
+            cls_weights = torch.ones_like(batch_rcnn_cls.squeeze(-1))
+            cls_loss_src = self.cls_loss_func(batch_rcnn_cls, batch_rcnn_cls_labels, weights=cls_weights) # [B, N, C]
+            cls_valid_mask = (rcnn_cls_labels >= 0).float()     # [B*N]
+
+            if scalar:
+                cls_loss = (cls_loss_src.flatten() * cls_valid_mask).sum() / torch.clamp(cls_valid_mask.sum(), min=1.0)
+                rcnn_acc_cls = (torch.abs(torch.sigmoid(batch_rcnn_cls.flatten()) - batch_rcnn_cls_labels.flatten()) * cls_valid_mask).sum() \
+                               / torch.clamp(cls_valid_mask.sum(), min=1.0)
+            else:
+                cls_loss = cls_loss_src.squeeze(-1)
+                cls_valid_mask = cls_valid_mask.reshape(batch_size, -1)
+                rcnn_loss_cls = (cls_loss * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
+                rcnn_acc_cls = torch.abs(torch.sigmoid(batch_rcnn_cls) - batch_rcnn_cls_labels).reshape(batch_size, -1)
+                rcnn_acc_cls = (rcnn_acc_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
+            
         else:
             raise NotImplementedError
 
