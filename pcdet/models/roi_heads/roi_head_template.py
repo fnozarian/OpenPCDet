@@ -17,8 +17,6 @@ else:
     headless_server = False
     import mayavi.mlab as mlab
     from visual_utils import visualize_utils as V
-# import mayavi.mlab as mlab
-# from visual_utils import visualize_utils as V
 
 def vis(points, gt_boxes, pred_boxes=None, pred_scores=None, pred_labels=None):
     """A simple/temporary visualization for debugging"""
@@ -446,7 +444,7 @@ class RoIHeadTemplate(nn.Module):
     def get_loss(self, tb_dict=None, scalar=True):
         tb_dict = {} if tb_dict is None else tb_dict
 
-        if self.model_cfg.ENABLE_RCNN_CONSISTENCY:
+        if self.model_cfg.ENABLE_RCNN_CONSISTENCY and self.model_cfg.ENABLE_PRE_LOSS_FILTERING:
             self.pre_loss_filtering()
 
         self.update_metrics(self.forward_ret_dict, mask_type='reg')
