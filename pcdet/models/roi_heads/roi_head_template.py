@@ -1,3 +1,5 @@
+import os 
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -8,6 +10,12 @@ from ..model_utils.model_nms_utils import class_agnostic_nms
 from .target_assigner.proposal_target_layer import ProposalTargetLayer
 from .target_assigner.proposal_target_layer_consistency import ProposalTargetLayerConsistency
 
+from visual_utils import visualize_utils as V
+
+
+
+
+
 
 class RoIHeadTemplate(nn.Module):
     def __init__(self, num_class, model_cfg, predict_boxes_when_training=True):
@@ -17,7 +25,7 @@ class RoIHeadTemplate(nn.Module):
         self.box_coder = getattr(box_coder_utils, self.model_cfg.TARGET_CONFIG.BOX_CODER)(
             **self.model_cfg.TARGET_CONFIG.get('BOX_CODER_CONFIG', {})
         )
-        if self.model_cfg.TARGET_CONFIG.USE_CONSISTENCY:
+        if self.model_cfg.ENABLE_RCNN_CONSISTENCY:
             self.proposal_target_layer = ProposalTargetLayerConsistency(roi_sampler_cfg=self.model_cfg.TARGET_CONFIG)
         else:
             self.proposal_target_layer = ProposalTargetLayer(roi_sampler_cfg=self.model_cfg.TARGET_CONFIG)
@@ -156,7 +164,7 @@ class RoIHeadTemplate(nn.Module):
 
 
         targets_dict['rois'][unlabeled_inds, :num_rois_ema] = batch_dict['rois_ema'][unlabeled_inds]
-        # TODO(farzad) WARNING:roi_scores are not normalized for the labeled data! Ignored bc it's not used in losses.
+        # TODO(farzad) WARNING:roi_scores are not normalized for the un/labeled data! Ignored bc it's not used in losses.
         targets_dict['roi_scores'][unlabeled_inds, :num_rois_ema] = batch_dict['roi_scores_ema'][unlabeled_inds]
         targets_dict['roi_labels'][unlabeled_inds, :num_rois_ema] = batch_dict['roi_labels_ema'][unlabeled_inds]
         targets_dict['gt_of_rois'][unlabeled_inds, :num_rois_ema] = batch_dict['gt_boxes'][unlabeled_inds]
@@ -177,11 +185,11 @@ class RoIHeadTemplate(nn.Module):
             targets_dict['gt_of_rois_var'][unlabeled_inds, :num_rois_ema, :-1] = batch_dict['pred_boxes_ema_var'][
                 unlabeled_inds]
 
-    def update_metrics(self, batch_dict, targets_dict, override_unlabeled_targets, mask_type='reg', pred_type='pl'):
-        metric_registry = batch_dict['metric_registry']
+    def update_metrics(self, targets_dict, mask_type='reg', pred_type='pl'):
+        metric_registry = targets_dict['metric_registry']
         tag = f'rcnn_{pred_type}_metrics_{mask_type}'
         metrics = metric_registry.get(tag)
-        unlabeled_inds = batch_dict['unlabeled_inds']
+        unlabeled_inds = targets_dict['unlabeled_inds']
 
         preds, targets, pred_scores, pred_sem_scores = [], [], [], []
         for i, uind in enumerate(unlabeled_inds):
@@ -190,37 +198,38 @@ class RoIHeadTemplate(nn.Module):
             pred_label = targets_dict['roi_labels'][uind][mask].unsqueeze(-1)
             pred_score = targets_dict['rcnn_cls_labels'][uind][mask].unsqueeze(-1)
 
-            if override_unlabeled_targets:
-                pred_sem_score = targets_dict['roi_scores'][uind][mask].unsqueeze(-1)
-            else:
-                pred_sem_score = torch.sigmoid(targets_dict['roi_scores'])[uind][mask].unsqueeze(-1)
+            pred_sem_score = torch.sigmoid(targets_dict['roi_scores'])[uind][mask].unsqueeze(-1)
 
-            pred_boxes = targets_dict['gt_of_rois'][uind][mask, :-1] if pred_type == 'pl' else targets_dict['rois'][uind][mask]
+            pred_boxes = targets_dict['gt_of_rois_src'][uind][mask, :-1] if pred_type == 'pl' else targets_dict['rois'][uind][mask]
             pred = torch.cat([pred_boxes, pred_label], dim=-1)
 
-            target_boxes = batch_dict['ori_unlabeled_boxes'][i]
+            target_boxes = targets_dict['ori_unlabeled_boxes'][i]
 
             preds.append(pred)
             targets.append(target_boxes)
             pred_scores.append(pred_score)
             pred_sem_scores.append(pred_sem_score)
 
+            if self.model_cfg.get('ENABLE_VIS', False):
+                points_mask = targets_dict['points'][:, 0] == uind
+                points = targets_dict['points'][points_mask, 1:]
+                V.vis(points, gt_boxes=target_boxes[:, :-1], pred_boxes=pred_boxes,
+                    pred_scores=pred_score.view(-1), pred_labels=pred_label.view(-1), filename=f'vis_{pred_type}_{uind}.png')
+
+
         metric_inputs = {'preds': preds, 'targets': targets, 'pred_scores': pred_scores,
                          'pred_sem_scores': pred_sem_scores}
         metrics.update(**metric_inputs)
 
-    def assign_targets(self, batch_dict, override_unlabeled_targets=False):
+    def assign_targets(self, batch_dict):
 
         with torch.no_grad():
             targets_dict = self.proposal_target_layer.forward(batch_dict)
 
-        # if override_unlabeled_targets:
-        #     self._override_unlabeled_target(targets_dict, batch_dict)
-
-        self.update_metrics(batch_dict, targets_dict, override_unlabeled_targets, mask_type='reg')
-        self.update_metrics(batch_dict, targets_dict, override_unlabeled_targets, mask_type='cls')
-
         batch_size = batch_dict['batch_size']
+
+        # Adding points temporarily to the targets_dict for visualization inside update_metrics
+        targets_dict['points'] = batch_dict['points']
 
         rois = targets_dict['rois']  # (B, N, 7 + C)
         gt_of_rois = targets_dict['gt_of_rois']  # (B, N, 7 + C + 1)
@@ -384,15 +393,32 @@ class RoIHeadTemplate(nn.Module):
         }
         return rcnn_loss_cls, tb_dict
 
+    def pre_loss_filtering(self):
+
+        rcnn_cls_labels = self.forward_ret_dict['rcnn_cls_labels'].clone().detach()
+        rcnn_cls = torch.sigmoid(self.forward_ret_dict['rcnn_cls'].clone().detach()).view_as(rcnn_cls_labels)
+        pred_thresh = self.model_cfg.get('CONSISTENCY_PRE_LOSS_CLS_PRED_FILTERING_THRESH', [0.9])
+        label_thresh = self.model_cfg.get('CONSISTENCY_PRE_LOSS_CLS_LABEL_FILTERING_THRESH', [0.9])
+        # TODO(farzad) make thresholds classwise
+        filtering_mask = (rcnn_cls > pred_thresh[0]) & (rcnn_cls_labels > label_thresh[0])
+        self.forward_ret_dict['reg_valid_mask'] &= filtering_mask
+
+        # TODO(farzad) we can also filter rcnn_cls_labels
+
     def get_loss(self, tb_dict=None, scalar=True):
         tb_dict = {} if tb_dict is None else tb_dict
-        rcnn_loss_cls, cls_tb_dict = self.get_box_cls_layer_loss(self.forward_ret_dict, scalar=scalar)
-        #rcnn_loss = rcnn_loss_cls
-        tb_dict.update(cls_tb_dict)
 
+        if self.model_cfg.ENABLE_RCNN_CONSISTENCY:
+            self.pre_loss_filtering()
+
+        self.update_metrics(self.forward_ret_dict, mask_type='reg')
+        self.update_metrics(self.forward_ret_dict, mask_type='cls')
+
+        rcnn_loss_cls, cls_tb_dict = self.get_box_cls_layer_loss(self.forward_ret_dict, scalar=scalar)
         rcnn_loss_reg, reg_tb_dict = self.get_box_reg_layer_loss(self.forward_ret_dict, scalar=scalar)
-        #rcnn_loss += rcnn_loss_reg  #if scalar is False, rcnn_loss_cls is (rcnn_loss_cls + rcnn_loss_reg)
         rcnn_loss = rcnn_loss_cls + rcnn_loss_reg
+
+        tb_dict.update(cls_tb_dict)
         tb_dict.update(reg_tb_dict)
         tb_dict['rcnn_loss'] = rcnn_loss.item() if scalar else rcnn_loss
         if scalar:

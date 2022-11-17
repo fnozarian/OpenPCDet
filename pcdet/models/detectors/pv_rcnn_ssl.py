@@ -15,6 +15,7 @@ from.pv_rcnn import PVRCNN
 from ...utils.stats_utils import KITTIEvalMetrics, PredQualityMetrics, ComparePair
 from torchmetrics.collections import MetricCollection
 import torch.distributed as dist
+from visual_utils import visualize_utils as V
 
 def _to_dict_of_tensors(list_of_dicts, agg_mode='stack'):
     new_dict = {}
@@ -97,7 +98,7 @@ def _max_score_replacement(batch_dict_a, batch_dict_b, unlabeled_inds, score_key
     for key in keys:
         batch_dict_a[key][unlabeled_inds] = batch_dict_cat[key][unlabeled_inds, ..., max_inds]
 
-
+# TODO(farzad) refactor this with global registry, accessible in different places, not via passing through batch_dict
 class MetricRegistry(object):
     def __init__(self, **kwargs):
         self._tag_metrics = {}
@@ -150,6 +151,7 @@ class DimDistributionRegistry(object):
     def tags(self):
         return self._tag_metrics.keys()
 
+
 class PVRCNN_SSL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
@@ -196,7 +198,7 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             # Create new dict for weakly aug.(WA) data for teacher - Eg. flip along x axis
             batch_dict_ema_wa = {}
-            # If ENABLE_RELIABILITY is True, run WA (Humble Teacher) along with original teacher 
+            # If ENABLE_RELIABILITY is True, run WA (Humble Teacher) along with original teacher
             if self.model_cfg['ROI_HEAD'].get('ENABLE_RELIABILITY', False):
                 keys = list(batch_dict.keys())
                 for k in keys:
@@ -211,7 +213,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 with torch.no_grad():
                     self.pv_rcnn_ema.train()
                     for cur_module in self.pv_rcnn_ema.module_list:
-                        # Do not use RPN to produce rois for WA image, instead augment (eg. flip) 
+                        # Do not use RPN to produce rois for WA image, instead augment (eg. flip)
                         # the proposal coord. of P horizontally to obtain P^
                         try:
                             batch_dict_ema = cur_module(batch_dict_ema, disable_gt_roi_when_pseudo_labeling=True)
@@ -254,12 +256,12 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pred_dicts_ens, recall_dicts_ema = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True,
                                                                                     override_thresh=0.0,
                                                                                     no_nms_for_unlabeled=self.no_nms)
-            
+
             # Used for calc stats before and after filtering
             ori_unlabeled_boxes = batch_dict['gt_boxes'][unlabeled_inds, ...]
-            
-            ''' 
-            Recording PL vs GT statistics BEFORE filtering 
+
+            '''
+            Recording PL vs GT statistics BEFORE filtering
             TODO (shashank) : Needs to be refactored (can also be made into a single function call)
             '''
             ################################
@@ -296,6 +298,17 @@ class PVRCNN_SSL(Detector3DTemplate):
             ndims = batch_dict['gt_boxes'][unlabeled_inds].shape[-1]
             dim_distribution.update(batch_dict['gt_boxes'][unlabeled_inds].view(-1, ndims), ori_unlabeled_boxes.view(-1, ndims))
 
+            # if self.model_cfg.ROI_HEAD.get('ENABLE_VIS', False):
+            #     for i, uind in enumerate(unlabeled_inds):
+            #         mask = batch_dict['points'][:, 0] == uind
+            #         point = batch_dict['points'][mask, 1:]
+            #         pred_boxes = batch_dict['gt_boxes'][uind][:, :-1]
+            #         pred_labels = batch_dict['gt_boxes'][uind][:, -1].int()
+            #         pred_scores = torch.zeros_like(pred_labels).float()
+            #         pred_scores[:pseudo_scores[i].shape[0]] = pseudo_scores[i]
+            #         V.vis(point, gt_boxes=ori_unlabeled_boxes[i][:, :-1],
+            #             pred_boxes=pred_boxes, pred_scores=pred_scores, pred_labels=pred_labels)
+
             # ori_unlabeled_boxes_list = [ori_box for ori_box in ori_unlabeled_boxes]
             # pseudo_boxes_list = [ps_box for ps_box in batch_dict['gt_boxes'][unlabeled_inds]]
             # metric_inputs = {'preds': pseudo_boxes_list,
@@ -312,7 +325,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                     # Pass teacher's proposal to the student.
                     # To let proposal_layer continues for labeled data we pass rois with _ema postfix
                     batch_dict['rois_ema'] = batch_dict_ema['rois'].detach().clone()
-                    batch_dict['roi_scores_ema'] = torch.sigmoid(batch_dict_ema['roi_scores'].detach().clone())
+                    # TODO(farzad) the normalization is done lazily, to be consistent with the other unnormalized roi_scores.
+                    batch_dict['roi_scores_ema'] = batch_dict_ema['roi_scores'].detach().clone()
                     batch_dict['roi_labels_ema'] = batch_dict_ema['roi_labels'].detach().clone()
                     batch_dict = self.apply_augmentation(batch_dict, batch_dict, unlabeled_inds, key='rois_ema')
                     if self.model_cfg['ROI_HEAD'].get('ENABLE_RELIABILITY', False):
@@ -336,6 +350,16 @@ class PVRCNN_SSL(Detector3DTemplate):
                         for i, ui in enumerate(unlabeled_inds):
                             batch_dict['pred_scores_ema_var'][ui] = scores_var[i]
                             batch_dict['pred_boxes_ema_var'][ui] = boxes_var[i]
+
+                    # if self.model_cfg.ROI_HEAD.get('ENABLE_VIS', False):
+                    #     for i, uind in enumerate(unlabeled_inds):
+                    #         mask = batch_dict['points'][:, 0] == uind
+                    #         point = batch_dict['points'][mask, 1:]
+                    #         pred_boxes = batch_dict['gt_boxes'][uind][:, :-1]
+                    #         pred_labels = batch_dict['gt_boxes'][uind][:, -1].int()
+                    #         pred_scores = batch_dict['pred_scores_ema'][uind]
+                    #         V.vis(point, gt_boxes=ori_unlabeled_boxes[i][:, :-1], pred_boxes=pred_boxes,
+                    #             pred_scores=pred_scores, pred_labels=pred_labels)
 
                 batch_dict = cur_module(batch_dict)
 
@@ -415,18 +439,18 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             return pred_dicts, recall_dicts, {}
 
-    # Function to call compute of Torchmetrics class to plot the dimension distribution 
-    # It saves 3 images containing dimension distribution of each class    
+    # Function to call compute of Torchmetrics class to plot the dimension distribution
+    # It saves 3 images containing dimension distribution of each class
     def plot_dimension_dist(self, tag):
         labels = tag.split('_')
         outputs = self.dimension_dist_registry.get(labels[0], labels[1]).compute()
-        
+
         classwise_distribution = {}
         distribution = {}
         if "bbox_length_pred" in outputs.keys():
             for key in outputs.keys():
                 distribution[key] = torch.cat(outputs[key])
-            
+
             class_names = {1:'Car', 2:'Pedestrian', 3:'Cyclist'}
             for key, val in class_names.items():
                 fig, axs = plt.subplots(2, 2, tight_layout=True)
@@ -455,13 +479,13 @@ class PVRCNN_SSL(Detector3DTemplate):
                 axs[1][1].hist(bbox_angle_pred_target, alpha= 0.5, histtype='stepfilled', label=labels, color=colors)
                 axs[1][1].set_xlabel('Orientation Angle')
                 axs[1][1].set_ylabel('Count')
-                
+
                 plt.legend()
                 dim_fig = fig.get_figure()
                 classwise_distribution[val] = dim_fig
-            
+
             self.dimension_dist_registry.get(labels[0], labels[1]).reset()
-            
+
         ret_dist = {}
         for key, val in classwise_distribution.items():
             ret_dist[tag + '/' + key] = val
@@ -574,7 +598,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         pseudo_boxes_var = []
         for pseudo_box, pseudo_label, pseudo_score, pseudo_sem_score, pseudo_box_var, pseudo_score_var in zip(
                 *self._unpack_predictions(pred_dicts, unlabeled_inds)):
-            
+
             if pseudo_label[0] == 0:
                 pseudo_boxes.append(torch.cat([pseudo_box, pseudo_label.view(-1, 1).float()], dim=1))
                 pseudo_sem_scores.append(pseudo_sem_score)
@@ -582,7 +606,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pseudo_scores_var.append(pseudo_score_var)
                 pseudo_boxes_var.append(pseudo_box_var)
                 continue
-        
+
             conf_thresh = torch.tensor(self.thresh, device=pseudo_label.device).unsqueeze(
                 0).repeat(len(pseudo_label), 1).gather(dim=1, index=(pseudo_label - 1).unsqueeze(-1))
 
@@ -638,7 +662,7 @@ class PVRCNN_SSL(Detector3DTemplate):
     def _fill_with_pseudo_labels(self, batch_dict, pseudo_boxes, unlabeled_inds, labeled_inds, key=None):
         key = 'gt_boxes' if key is None else key
         max_box_num = batch_dict['gt_boxes'].shape[1]
-        
+
         # Ignore the count of pseudo boxes if filled with default values(zeros) when no preds are made
         max_pseudo_box_num = max([torch.logical_not(torch.all(ps_box == 0, dim=-1)).sum().item() for ps_box in pseudo_boxes])
 
@@ -673,11 +697,13 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict[key][unlabeled_inds], batch_dict_org['rot_angle'][unlabeled_inds])
         batch_dict[key][unlabeled_inds] = global_scaling_bbox(
             batch_dict[key][unlabeled_inds], batch_dict_org['scale'][unlabeled_inds])
-        
+
         batch_dict[key][unlabeled_inds, :, 6] = common_utils.limit_period(
-            batch_dict[key][unlabeled_inds, :, 6], offset=0.5, period=2 * np.pi)
+            batch_dict[key][unlabeled_inds, :, 6], offset=0.5, period=2 * np.pi
+        )
+
         return batch_dict
-    
+
     def reverse_augmentation(self, batch_dict, batch_dict_org, unlabeled_inds, key = 'rois'):
         batch_dict[key][unlabeled_inds] = global_scaling_bbox(
             batch_dict[key][unlabeled_inds], batch_dict_org['scale'][unlabeled_inds])
@@ -687,7 +713,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict[key][unlabeled_inds], batch_dict_org['flip_y'][unlabeled_inds])
         batch_dict[key][unlabeled_inds] = random_flip_along_x_bbox(
             batch_dict[key][unlabeled_inds], batch_dict_org['flip_x'][unlabeled_inds])
-        
+
         batch_dict[key][unlabeled_inds, :, 6] = common_utils.limit_period(
             batch_dict[key][unlabeled_inds, :, 6], offset=0.5, period=2 * np.pi)
         return batch_dict
