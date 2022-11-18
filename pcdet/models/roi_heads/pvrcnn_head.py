@@ -5,7 +5,7 @@ from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stac
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
 from pcdet.datasets.augmentor.augmentor_utils import *
-
+from visual_utils import visualize_utils as V
 
 class PVRCNNHead(RoIHeadTemplate):
     def __init__(self, input_channels, model_cfg, num_class=1,
@@ -168,6 +168,15 @@ class PVRCNNHead(RoIHeadTemplate):
                 batch_dict['rois_before_aug'] = batch_dict['rois'].clone().detach()
                 batch_dict['rois'][uids] = augment_rois(batch_dict['rois'][uids], self.model_cfg, aug_type='ros')
                 
+                # Visualizing student ROIs before and after augmentation
+                # gts: ROIs preaugmentation, preds: ROIs post augmentation
+                # NOTE (shashank): Takes a lot of time to generate the image, thus commented out for now
+                # if self.model_cfg.get('ENABLE_VIS', False):
+                #     points_mask = batch_dict['points'][:, 0] == uids
+                #     points = batch_dict['points'][points_mask, 1:]
+                #     V.vis(points, gt_boxes=batch_dict['rois_before_aug'][uids].squeeze(0), pred_boxes=batch_dict['rois'][uids].squeeze(0),
+                #         pred_scores=batch_dict['roi_scores'][uids].view(-1), pred_labels=batch_dict['roi_labels'][uids].view(-1), filename=f'vis_roiaug.png')
+
                 ndims = batch_dict['rois'][uids].shape[-1]
                 stud_rois = torch.cat([batch_dict['rois'][uids].view(-1, ndims), batch_dict['roi_labels'][uids].view(-1, 1).float()], dim=1)
                 teacher_rois = torch.cat([batch_dict['rois_before_aug'][uids].view(-1, ndims), batch_dict['roi_labels'][uids].view(-1, 1).float()], dim=1)
