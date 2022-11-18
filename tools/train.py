@@ -218,7 +218,7 @@ def main():
         model,
         optimizer,
         train_loader,
-        test_loader=test_loader_during_train,
+        test_loader=None, #test_loader_during_train,
         model_func=model_fn_decorator(),
         lr_scheduler=lr_scheduler,
         optim_cfg=cfg.OPTIMIZATION,
