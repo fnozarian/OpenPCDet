@@ -401,12 +401,13 @@ class KittiDatasetSSL(DatasetTemplate):
             return data_dict_labeled
 
     @staticmethod
-    def get_valid_keys(key_list, num_teach_ensemble):
+    def get_valid_keys(key_list, data_dict):
         ret_keys_list = []
         for key in key_list:
             ret_keys_list.extend([key, key + '_ema'])
-            for cur_ema_model in range(num_teach_ensemble):
-                ret_keys_list.append(key + '_ema_wa' + str(cur_ema_model+1))
+            if data_dict['training'][0]:
+                for cur_ema_model in range(data_dict['num_teach_ensemble'][0]):
+                    ret_keys_list.append(key + '_ema_wa' + str(cur_ema_model+1))
         return ret_keys_list
 
     @staticmethod
@@ -431,7 +432,7 @@ class KittiDatasetSSL(DatasetTemplate):
         keys_list = [['voxels', 'voxel_num_points'], ['points', 'voxel_coords'], ['gt_boxes']]
         ret_keys_list = []
         for keys in keys_list:
-            ret_keys = KittiDatasetSSL.get_valid_keys(keys, data_dict['num_teach_ensemble'][0])
+            ret_keys = KittiDatasetSSL.get_valid_keys(keys, data_dict)
             ret_keys_list.append(ret_keys)
 
         for key, val in data_dict.items():
@@ -618,9 +619,9 @@ class KittiDatasetSSL(DatasetTemplate):
                 data_dict=data_dict
             )
             
-            # might be needed later on
+            # needed in collate_batch
             data_dict['num_teach_ensemble'] = self.data_augmentor.augmentor_configs.NUM_TEACH_ENSEMBLE
-
+        data_dict['training'] = self.training
         '''if self.training:
             if no_db_sample:
                 data_dict['gt_boxes_ema'].fill(0)
