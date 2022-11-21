@@ -365,6 +365,10 @@ class PVRCNN_SSL(Detector3DTemplate):
                 loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].mean() + loss_rcnn_box[unlabeled_inds, ...].mean() * self.unlabeled_weight
 
             loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box
+            
+            tb_dict['pred_scores_ema_var'] = batch_dict['pred_scores_ema_var'][ui].mean()
+            tb_dict['pred_boxes_ema_var'] = batch_dict['pred_boxes_ema_var'][ui].mean()
+
             tb_dict_ = {}
             for key in tb_dict.keys():
                 if 'loss' in key:
@@ -627,17 +631,20 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         return batch_dict
     
-    # NOTE (shashank) : need to be careful with the scales being passed into the below augs
-    # To perform reverse aug, the scales should be opposite.
     def reverse_augmentation(self, batch_dict, batch_dict_org, unlabeled_inds, key = 'rois'):
         batch_dict[key][unlabeled_inds] = global_scaling_bbox(
-            batch_dict[key][unlabeled_inds], batch_dict_org['scale'][unlabeled_inds])
+            batch_dict[key][unlabeled_inds], 1.0/batch_dict_org['scale'][unlabeled_inds])
         batch_dict[key][unlabeled_inds] = global_rotation_bbox(
-            batch_dict[key][unlabeled_inds], batch_dict_org['rot_angle'][unlabeled_inds])
+            batch_dict[key][unlabeled_inds], -batch_dict_org['rot_angle'][unlabeled_inds])
         batch_dict[key][unlabeled_inds] = random_flip_along_y_bbox(
-            batch_dict[key][unlabeled_inds], batch_dict_org['flip_y'][unlabeled_inds])
+            batch_dict[key][unlabeled_inds], batch_dict_org['flip_y'][unlabeled_inds])   
         batch_dict[key][unlabeled_inds] = random_flip_along_x_bbox(
             batch_dict[key][unlabeled_inds], batch_dict_org['flip_x'][unlabeled_inds])
+        
+        batch_dict[key][unlabeled_inds, :, 6] = common_utils.limit_period(
+            batch_dict[key][unlabeled_inds, :, 6], offset=0.5, period=2 * np.pi
+        )
+
         return batch_dict
 
     def get_supervised_training_loss(self):
