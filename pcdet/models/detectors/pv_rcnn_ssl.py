@@ -219,6 +219,12 @@ class PVRCNN_SSL(Detector3DTemplate):
                     batch_dict_ema_wa['batch_box_preds'][unlabeled_inds] = random_flip_along_x_bbox(
                         batch_dict_ema_wa['batch_box_preds'][unlabeled_inds], [1] * len(unlabeled_inds))
 
+                    # if self.model_cfg['ROI_HEAD'].get('ENABLE_VIS', False):
+                    #     points_mask = batch_dict_ema['points'][:, 0] == unlabeled_inds
+                    #     points = batch_dict_ema['points'][points_mask, 1:]
+                    #     V.vis(points, gt_boxes=batch_dict_ema['batch_box_preds'][unlabeled_inds].squeeze(0), pred_boxes=batch_dict_ema_wa['batch_box_preds'][unlabeled_inds].squeeze(0),
+                    #     pred_scores=batch_dict_ema['roi_scores'][unlabeled_inds].view(-1), pred_labels=batch_dict_ema['roi_labels'][unlabeled_inds].view(-1), filename=f'vis_rel.png')
+
                     # pseudo-labels used for training rpn head
                     pred_dicts_ens = self.ensemble_post_processing(batch_dict_ema, batch_dict_ema_wa, unlabeled_inds,
                                                                    ensemble_option='mean_pre_nms')
@@ -419,6 +425,10 @@ class PVRCNN_SSL(Detector3DTemplate):
                     (batch_dict_a[key][unlabeled_inds], batch_dict_b[key][unlabeled_inds]), dim=1)
 
         elif ensemble_option == 'mean_pre_nms':
+            # NOTE (shashank) : Normalizing cls scores before mean computation 
+            _normalize_scores(batch_dict_a, score_keys=('batch_cls_preds',))
+            _normalize_scores(batch_dict_b, score_keys=('batch_cls_preds',))
+
             _mean_and_var(batch_dict_a, batch_dict_b, unlabeled_inds,
                           keys=('batch_cls_preds', 'batch_box_preds'))
             # backup original values and replace them with mean values
@@ -614,6 +624,8 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         return batch_dict
     
+    # NOTE (shashank) : need to be careful with the scales being passed into the below augs
+    # To perform reverse aug, the scales should be opposite.
     def reverse_augmentation(self, batch_dict, batch_dict_org, unlabeled_inds, key = 'rois'):
         batch_dict[key][unlabeled_inds] = global_scaling_bbox(
             batch_dict[key][unlabeled_inds], batch_dict_org['scale'][unlabeled_inds])
