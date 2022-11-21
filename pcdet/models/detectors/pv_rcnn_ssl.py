@@ -204,7 +204,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                                     'batch_box_preds'].clone().detach()
                                 batch_dict_ema_wa['cls_preds_normalized'] = batch_dict_ema['cls_preds_normalized']
 
-                                enable = [1] * len(unlabeled_inds)
+                                enable = batch_dict_ema_wa['flip_x'][unlabeled_inds]
                                 batch_dict_ema_wa['batch_box_preds'][unlabeled_inds] = random_flip_along_x_bbox(
                                     batch_dict_ema_wa['batch_box_preds'][unlabeled_inds],
                                     enables=enable)
@@ -217,13 +217,16 @@ class PVRCNN_SSL(Detector3DTemplate):
                             batch_dict_ema_wa = cur_module(batch_dict_ema_wa)
                     # Reverse preds of wa input to match their original (no-aug) preds
                     batch_dict_ema_wa['batch_box_preds'][unlabeled_inds] = random_flip_along_x_bbox(
-                        batch_dict_ema_wa['batch_box_preds'][unlabeled_inds], [1] * len(unlabeled_inds))
+                        batch_dict_ema_wa['batch_box_preds'][unlabeled_inds], enable)
 
                     # if self.model_cfg['ROI_HEAD'].get('ENABLE_VIS', False):
                     #     points_mask = batch_dict_ema['points'][:, 0] == unlabeled_inds
                     #     points = batch_dict_ema['points'][points_mask, 1:]
-                    #     V.vis(points, gt_boxes=batch_dict_ema['batch_box_preds'][unlabeled_inds].squeeze(0), pred_boxes=batch_dict_ema_wa['batch_box_preds'][unlabeled_inds].squeeze(0),
-                    #     pred_scores=batch_dict_ema['roi_scores'][unlabeled_inds].view(-1), pred_labels=batch_dict_ema['roi_labels'][unlabeled_inds].view(-1), filename=f'vis_rel.png')
+                    #     V.vis(points, gt_boxes=batch_dict_ema['batch_box_preds'][unlabeled_inds].squeeze(0), 
+                    #         pred_boxes=batch_dict_ema_wa['batch_box_preds'][unlabeled_inds].squeeze(0),
+                    #         pred_scores=batch_dict_ema['roi_scores'][unlabeled_inds].view(-1),
+                    #         pred_labels=batch_dict_ema['roi_labels'][unlabeled_inds].view(-1), 
+                    #         filename=f'vis_rel_2111_enablefix1.png')
 
                     # pseudo-labels used for training rpn head
                     pred_dicts_ens = self.ensemble_post_processing(batch_dict_ema, batch_dict_ema_wa, unlabeled_inds,

@@ -65,23 +65,25 @@ class DataAugmentor(object):
         data_dict['points'] = points
         return data_dict
     
-    # TODO(shashank) : Need to refactor and avoid using this seperate function
     '''
-    In order to apply augmentation on all the data for EMA model, we need to keep enable_ = TRUE
-    (Adapted from random_world_flip and added enable_=True in random_flip_along_%s() call)
+    Adapted from 'random_world_flip' with two modifications :
+    1. added enable_=True in random_flip_along_%s() call to augment all points/gt_boxes of WA teacher
+        TODO (Shashank) : Is it better to apply this aug on random samples instead of applying on all of them ?
+    2. Added teacher_key arg in function call to prevent overwriting student's flip_along_x
     '''
-    def random_world_flip_ema(self, data_dict=None, config=None):
+    def random_world_flip_ema(self, data_dict=None, config=None, teacher_key='wa'):
         if data_dict is None:
             return partial(self.random_world_flip_ema, config=config)
         gt_boxes, points = data_dict['gt_boxes'], data_dict['points']
-        data_dict['flip_x'] = False
-        data_dict['flip_y'] = False
+        data_dict['flip_x_' + teacher_key] = False
+        data_dict['flip_y_' + teacher_key] = False
         for cur_axis in config['ALONG_AXIS_LIST']:
             assert cur_axis in ['x', 'y']
             gt_boxes, points, enable = getattr(augmentor_utils, 'random_flip_along_%s' % cur_axis)(
                 gt_boxes, points, enable_=True
             )
-            data_dict['flip_' + cur_axis] = enable
+            # NOTE (shashank) : Keeping this flag seperately for WA teacher to prevent overwriting student's flip_along_x
+            data_dict['flip_' + cur_axis + '_' + teacher_key] = enable
 
         data_dict['gt_boxes'] = gt_boxes
         data_dict['points'] = points
@@ -367,8 +369,11 @@ class DataAugmentor(object):
                 points: (N, 3 + C_in)
                 gt_boxes: optional, (N, 7) [x, y, z, dx, dy, dz, heading]
     '''
-    def perform_augmentation(self, data_dict, data_augmentor_queue):
-        for cur_augmentor in data_augmentor_queue:
+    def perform_augmentation(self, data_dict, data_augmentor_queue, key):
+        for cur_augmentor in data_augmentor_queue[key]:
+            try :
+                data_dict = cur_augmentor(data_dict=data_dict, teacher_key=key)
+            except:
                 data_dict = cur_augmentor(data_dict=data_dict)
 
         # Transfer unbounded angles to bounded angles

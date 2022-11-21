@@ -547,7 +547,7 @@ class KittiDatasetSSL(DatasetTemplate):
             for key in data_augmentor_queue:
                 data_dict['points'], data_dict['gt_boxes'] = points.copy(), gt_boxes.copy()     
                 data_dict['points_' + key], data_dict['gt_boxes_' + key] = \
-                                    self.data_augmentor.perform_augmentation(data_dict, data_augmentor_queue[key])
+                                    self.data_augmentor.perform_augmentation(data_dict, data_augmentor_queue, key)
             
             # Replace points, gt_boxes with student's points, gt_boxes 
             data_dict['points'] = data_dict.pop('points_stud')
