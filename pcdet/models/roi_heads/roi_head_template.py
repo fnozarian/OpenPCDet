@@ -1,3 +1,5 @@
+import os 
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -8,6 +10,12 @@ from ..model_utils.model_nms_utils import class_agnostic_nms
 from .target_assigner.proposal_target_layer import ProposalTargetLayer
 from .target_assigner.proposal_target_layer_consistency import ProposalTargetLayerConsistency
 
+from visual_utils import visualize_utils as V
+
+
+
+
+
 
 class RoIHeadTemplate(nn.Module):
     def __init__(self, num_class, model_cfg, predict_boxes_when_training=True):
@@ -17,7 +25,7 @@ class RoIHeadTemplate(nn.Module):
         self.box_coder = getattr(box_coder_utils, self.model_cfg.TARGET_CONFIG.BOX_CODER)(
             **self.model_cfg.TARGET_CONFIG.get('BOX_CODER_CONFIG', {})
         )
-        if self.model_cfg.TARGET_CONFIG.USE_CONSISTENCY:
+        if self.model_cfg.ENABLE_RCNN_CONSISTENCY:
             self.proposal_target_layer = ProposalTargetLayerConsistency(roi_sampler_cfg=self.model_cfg.TARGET_CONFIG)
         else:
             self.proposal_target_layer = ProposalTargetLayer(roi_sampler_cfg=self.model_cfg.TARGET_CONFIG)
@@ -192,7 +200,7 @@ class RoIHeadTemplate(nn.Module):
 
             pred_sem_score = torch.sigmoid(targets_dict['roi_scores'])[uind][mask].unsqueeze(-1)
 
-            pred_boxes = targets_dict['gt_of_rois'][uind][mask, :-1] if pred_type == 'pl' else targets_dict['rois'][uind][mask]
+            pred_boxes = targets_dict['gt_of_rois_src'][uind][mask, :-1] if pred_type == 'pl' else targets_dict['rois'][uind][mask]
             pred = torch.cat([pred_boxes, pred_label], dim=-1)
 
             target_boxes = targets_dict['ori_unlabeled_boxes'][i]
@@ -201,6 +209,13 @@ class RoIHeadTemplate(nn.Module):
             targets.append(target_boxes)
             pred_scores.append(pred_score)
             pred_sem_scores.append(pred_sem_score)
+
+            if self.model_cfg.get('ENABLE_VIS', False):
+                points_mask = targets_dict['points'][:, 0] == uind
+                points = targets_dict['points'][points_mask, 1:]
+                V.vis(points, gt_boxes=target_boxes[:, :-1], pred_boxes=pred_boxes,
+                    pred_scores=pred_score.view(-1), pred_labels=pred_label.view(-1), filename=f'vis_{pred_type}_{uind}.png')
+
 
         metric_inputs = {'preds': preds, 'targets': targets, 'pred_scores': pred_scores,
                          'pred_sem_scores': pred_sem_scores}
@@ -212,6 +227,9 @@ class RoIHeadTemplate(nn.Module):
             targets_dict = self.proposal_target_layer.forward(batch_dict)
 
         batch_size = batch_dict['batch_size']
+
+        # Adding points temporarily to the targets_dict for visualization inside update_metrics
+        targets_dict['points'] = batch_dict['points']
 
         rois = targets_dict['rois']  # (B, N, 7 + C)
         gt_of_rois = targets_dict['gt_of_rois']  # (B, N, 7 + C + 1)
@@ -390,7 +408,8 @@ class RoIHeadTemplate(nn.Module):
     def get_loss(self, tb_dict=None, scalar=True):
         tb_dict = {} if tb_dict is None else tb_dict
 
-        self.pre_loss_filtering()
+        if self.model_cfg.ENABLE_RCNN_CONSISTENCY:
+            self.pre_loss_filtering()
 
         self.update_metrics(self.forward_ret_dict, mask_type='reg')
         self.update_metrics(self.forward_ret_dict, mask_type='cls')

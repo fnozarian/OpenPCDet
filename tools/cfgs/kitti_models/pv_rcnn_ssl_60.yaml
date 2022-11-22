@@ -159,6 +159,7 @@ MODEL:
     ROI_HEAD:
         NAME: PVRCNNHead
         CLASS_AGNOSTIC: True
+        ENABLE_VIS: False
         ENABLE_RELIABILITY: False
         ENABLE_RCNN_CONSISTENCY: False
         CONSISTENCY_PRE_LOSS_CLS_PRED_FILTERING_THRESH: [0.9]
@@ -203,7 +204,6 @@ MODEL:
             HARD_BG_RATIO: 0.8
 
             REG_FG_THRESH: 0.55
-            USE_CONSISTENCY: True
             UNLABELED_SAMPLER_TYPE: gt_scores_sampler
             UNLABELED_REG_FG_THRESH: 0.7
 

@@ -14,6 +14,7 @@ from.pv_rcnn import PVRCNN
 from ...utils.stats_utils import KITTIEvalMetrics, PredQualityMetrics
 from torchmetrics.collections import MetricCollection
 import torch.distributed as dist
+from visual_utils import visualize_utils as V
 
 def _to_dict_of_tensors(list_of_dicts, agg_mode='stack'):
     new_dict = {}
@@ -118,6 +119,7 @@ class MetricRegistry(object):
 
     def tags(self):
         return self._tag_metrics.keys()
+
 
 
 class PVRCNN_SSL(Detector3DTemplate):
@@ -259,6 +261,17 @@ class PVRCNN_SSL(Detector3DTemplate):
             # apply student's augs on teacher's pseudo-labels (filtered) only (not points)
             batch_dict = self.apply_augmentation(batch_dict, batch_dict, unlabeled_inds, key='gt_boxes')
 
+            # if self.model_cfg.ROI_HEAD.get('ENABLE_VIS', False):
+            #     for i, uind in enumerate(unlabeled_inds):
+            #         mask = batch_dict['points'][:, 0] == uind
+            #         point = batch_dict['points'][mask, 1:]
+            #         pred_boxes = batch_dict['gt_boxes'][uind][:, :-1]
+            #         pred_labels = batch_dict['gt_boxes'][uind][:, -1].int()
+            #         pred_scores = torch.zeros_like(pred_labels).float()
+            #         pred_scores[:pseudo_scores[i].shape[0]] = pseudo_scores[i]
+            #         V.vis(point, gt_boxes=ori_unlabeled_boxes[i][:, :-1],
+            #             pred_boxes=pred_boxes, pred_scores=pred_scores, pred_labels=pred_labels)
+
             # ori_unlabeled_boxes_list = [ori_box for ori_box in ori_unlabeled_boxes]
             # pseudo_boxes_list = [ps_box for ps_box in batch_dict['gt_boxes'][unlabeled_inds]]
             # metric_inputs = {'preds': pseudo_boxes_list,
@@ -299,6 +312,16 @@ class PVRCNN_SSL(Detector3DTemplate):
                         for i, ui in enumerate(unlabeled_inds):
                             batch_dict['pred_scores_ema_var'][ui] = scores_var[i]
                             batch_dict['pred_boxes_ema_var'][ui] = boxes_var[i]
+
+                    # if self.model_cfg.ROI_HEAD.get('ENABLE_VIS', False):
+                    #     for i, uind in enumerate(unlabeled_inds):
+                    #         mask = batch_dict['points'][:, 0] == uind
+                    #         point = batch_dict['points'][mask, 1:]
+                    #         pred_boxes = batch_dict['gt_boxes'][uind][:, :-1]
+                    #         pred_labels = batch_dict['gt_boxes'][uind][:, -1].int()
+                    #         pred_scores = batch_dict['pred_scores_ema'][uind]
+                    #         V.vis(point, gt_boxes=ori_unlabeled_boxes[i][:, :-1], pred_boxes=pred_boxes,
+                    #             pred_scores=pred_scores, pred_labels=pred_labels)
 
                 batch_dict = cur_module(batch_dict)
 
@@ -575,6 +598,11 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict[key][unlabeled_inds], batch_dict_org['rot_angle'][unlabeled_inds])
         batch_dict[key][unlabeled_inds] = global_scaling_bbox(
             batch_dict[key][unlabeled_inds], batch_dict_org['scale'][unlabeled_inds])
+
+        batch_dict[key][unlabeled_inds, :, 6] = common_utils.limit_period(
+            batch_dict[key][unlabeled_inds, :, 6], offset=0.5, period=2 * np.pi
+        )
+
         return batch_dict
     
     def reverse_augmentation(self, batch_dict, batch_dict_org, unlabeled_inds, key = 'rois'):
