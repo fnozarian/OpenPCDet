@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -145,11 +146,11 @@ class ProposalTargetLayerConsistency(nn.Module):
      set higher - in order to pass balanced unlabeled data taking into accoutn the learning difficulties of diff classes
     '''
     # NOTE : Needs to be debugged and validated
-    def classwise_adapative_thresholds_sampler(self, **kwargs):
+    def classwise_adapative_thresholds_sampler(self, batch_dict, index):
         thresh = 0.7 # TODO (shashank) : import from model_cfg and use appropriate thresh value
 
-        gt_scores = kwargs.get('gt_scores')
-        gt_boxes = kwargs.get('gt_boxes')
+        gt_scores = batch_dict['pred_scores_ema'][index]
+        gt_boxes = batch_dict['gt_boxes'][index]
         gt_labels = gt_boxes[:, -1]
 
         # Apply initial fixed threshold filtering to all PL (pseudo label) objectness scores
@@ -200,18 +201,60 @@ class ProposalTargetLayerConsistency(nn.Module):
             
         return sampled_inds, reg_valid_mask, cls_labels
 
-    def classwise_top_k_sampler(self, **kwargs):
-        roi_labels = kwargs.get('roi_labels')
-        gt_scores = kwargs.get('gt_scores')
-        classwise_topk_inds = {}
-        for k in range(3):  # TODO(Farzad) fixed num class
+    '''
+    Increased TEST:NMS_POST_MAXSIZE form 100->256 to perform this sampling.
+    This method fetches the classwise top-k indices based on gt_scores (teacher's rcnn cls preds). 
+    It further truncates those classwise top-k inds based on the proportion of rois predicted for each of those classes originally.
+    '''
+    def classwise_top_k_sampler(self, batch_dict, index):
+        roi_labels = batch_dict['roi_labels_ema'][index]       
+        gt_scores = batch_dict['pred_scores_ema'][index]
+        gt_boxes = batch_dict['gt_boxes'][index]
+
+        classwise_topk_inds = []
+        class_proportion_list = []
+        for k in range(1,4):  # TODO(Farzad) fixed num class
             roi_mask = (roi_labels == k)
             if roi_mask.sum() > 0:
                 cur_gt_scores = gt_scores[roi_mask]
                 cur_inds = roi_mask.nonzero().view(-1)
-                _, top_k_inds = torch.topk(cur_gt_scores, k=min(100, len(cur_inds)))  # TODO(Farzad) fixed k
-                classwise_topk_inds[k] = cur_inds[top_k_inds]
-        raise NotImplementedError
+                _, top_k_inds = torch.topk(cur_gt_scores, k=min(256, len(cur_inds)))  # TODO(Farzad) fixed k
+
+                # Compute proportionate number of rois to be sampled for each class
+                class_proportion = math.ceil((len(cur_inds) / 256) * self.roi_sampler_cfg.ROI_PER_IMAGE)
+                class_proportion_list.append(class_proportion)
+                # Store sampled classwise top-k inds as per the proportion
+                classwise_topk_inds.append(cur_inds[top_k_inds][:class_proportion])  
+
+        # total sampled rois might exceed self.roi_sampler_cfg.ROI_PER_IMAGE due to ceil operator 
+        # if so, remove extra rois from the class with maximum rois
+        total_rois = sum(class_proportion_list)
+        extra_rois = total_rois - self.roi_sampler_cfg.ROI_PER_IMAGE 
+        if extra_rois != 0:
+            max_rois_class = class_proportion_list.index(max(class_proportion_list))
+            classwise_topk_inds[max_rois_class] = classwise_topk_inds[max_rois_class][:-extra_rois]
+        
+        sampled_inds = torch.cat(classwise_topk_inds)
+        assert sampled_inds.shape[0] == self.roi_sampler_cfg.ROI_PER_IMAGE
+
+        # TODO (shashank): reg_valid_mask and cls_ables filtering can be converted 
+        #   into a seperate method if its being used by all the samplers
+        sampled_gt_scores = gt_scores[sampled_inds]
+        sampled_gt_boxes = gt_boxes[sampled_inds]
+        reg_valid_mask  = (sampled_gt_scores > self.roi_sampler_cfg.UNLABELED_REG_FG_THRESH).long()
+
+        # filter GT labels based on FG/BG thresholds 
+        iou_bg_thresh = self.roi_sampler_cfg.CLS_BG_THRESH
+        iou_fg_thresh = self.roi_sampler_cfg.CLS_FG_THRESH
+        fg_mask = sampled_gt_scores > iou_fg_thresh
+        bg_mask = sampled_gt_scores < iou_bg_thresh
+        interval_mask = (fg_mask == 0) & (bg_mask == 0)
+        cls_labels = (fg_mask > 0).float()
+        cls_labels[interval_mask] = sampled_gt_scores[interval_mask]
+        # Ignoring all-zero pseudo-labels produced due to filtering
+        ignore_mask = torch.eq(sampled_gt_boxes, 0).all(dim=-1)
+        cls_labels[ignore_mask] = -1
+        return sampled_inds, reg_valid_mask, cls_labels
 
     def roi_scores_sampler(self, **kwargs):
         roi_scores = kwargs.get("roi_scores")
