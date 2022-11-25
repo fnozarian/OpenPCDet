@@ -366,8 +366,10 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box
             
-            tb_dict['pred_scores_ema_var'] = batch_dict['pred_scores_ema_var'][ui].mean()
-            tb_dict['pred_boxes_ema_var'] = batch_dict['pred_boxes_ema_var'][ui].mean()
+            if 'pred_scores_ema_var' in tb_dict:
+                tb_dict['pred_scores_ema_var'] = batch_dict['pred_scores_ema_var'][ui].mean()
+            if 'pred_boxes_ema_var' in tb_dict:
+                tb_dict['pred_boxes_ema_var'] = batch_dict['pred_boxes_ema_var'][ui].mean()
 
             tb_dict_ = {}
             for key in tb_dict.keys():

@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 
 from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
@@ -159,6 +160,18 @@ class PVRCNNHead(RoIHeadTemplate):
             # TODO(farzad) refactor this with global registry,
             #  accessible in different places, not via passing through batch_dict
             targets_dict['metric_registry'] = batch_dict['metric_registry']
+
+            # Store teacher ensemble's cls/reg variances for loss computation
+            if 'pred_scores_ema_var' in batch_dict.keys():
+                num_rois_ema = batch_dict['rois_ema'].shape[1]
+                targets_dict['rcnn_cls_labels_var'] = torch.zeros_like(targets_dict['rcnn_cls_labels'])
+                targets_dict['rcnn_cls_labels_var'][batch_dict['unlabeled_inds'], :num_rois_ema] = \
+                                                batch_dict['pred_scores_ema_var'][batch_dict['unlabeled_inds']]
+            if 'pred_boxes_ema_var' in batch_dict.keys():
+                targets_dict['gt_of_rois_var'] = torch.zeros_like(targets_dict['gt_of_rois'])
+                # Setting all output dims' var to predicted var except for class label
+                targets_dict['gt_of_rois_var'][batch_dict['unlabeled_inds'], :num_rois_ema, :-1] = \
+                                                batch_dict['pred_boxes_ema_var'][batch_dict['unlabeled_inds']]
 
         # RoI aware pooling
         pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
