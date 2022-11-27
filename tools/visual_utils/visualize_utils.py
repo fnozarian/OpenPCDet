@@ -13,11 +13,12 @@ if os.name == 'posix' and "DISPLAY" not in os.environ:
     try:
         display = Display(visible=0, size=(1920, 1080))
         display.start()
+        import mayavi.mlab as mlab
+        mlab.options.offscreen = True
     except: 
         pass
     
-    import mayavi.mlab as mlab
-    mlab.options.offscreen = True
+    
 
 else:
     import mayavi.mlab as mlab
