@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from pcdet.datasets.augmentor.augmentor_utils import *
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
-
+from pcdet.config import cfg
 from ...utils import common_utils
 from .detector3d_template import Detector3DTemplate
 from collections import defaultdict
@@ -148,7 +148,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         cls_bg_thresh = model_cfg.ROI_HEAD.TARGET_CONFIG.CLS_BG_THRESH
         self.metric_registry = MetricRegistry(dataset=self.dataset, cls_bg_thresh=cls_bg_thresh)
 
-    def forward(self, batch_dict):
+    def forward(self, batch_dict, cur_epoch=None):
         if self.training:
             labeled_mask = batch_dict['labeled_mask'].view(-1)
             labeled_inds = torch.nonzero(labeled_mask).squeeze(1).long()
@@ -330,24 +330,33 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
             loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
 
-            if not self.unlabeled_supervise_cls:
-                loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].mean()
-            else:
-                loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].mean() + loss_rpn_cls[unlabeled_inds, ...].mean() * self.unlabeled_weight
+            # Labeleled Losses
+            loss_rpn_cls_lab = loss_rpn_cls[labeled_inds, ...].mean()
+            loss_rpn_box_lab = loss_rpn_box[labeled_inds, ...].mean() 
+            loss_point_lab = loss_point[labeled_inds, ...].mean()
+            loss_rcnn_cls_lab = loss_rcnn_cls[labeled_inds, ...].mean()
+            loss_rcnn_box_lab = loss_rcnn_box[labeled_inds, ...].mean() 
+            labeled_loss = loss_rpn_cls_lab + loss_rpn_box_lab + loss_point_lab + loss_rcnn_cls_lab + loss_rcnn_box_lab
 
-            loss_rpn_box = loss_rpn_box[labeled_inds, ...].mean() + loss_rpn_box[unlabeled_inds, ...].mean() * self.unlabeled_weight
-            loss_point = loss_point[labeled_inds, ...].mean()
-            if self.model_cfg.get('UNLABELED_SUPERVISE_OBJ', False):
-                loss_rcnn_cls = loss_rcnn_cls[labeled_inds, ...].mean() + loss_rcnn_cls[unlabeled_inds, ...].mean() * self.unlabeled_weight
-            else:
-                loss_rcnn_cls = loss_rcnn_cls[labeled_inds, ...].mean()
-            if not self.unlabeled_supervise_refine:
-                loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].mean()
-            else:
-                loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].mean() + loss_rcnn_box[unlabeled_inds, ...].mean() * self.unlabeled_weight
+            # Un-Labeleled Losses
+            loss_rpn_cls_unlab = loss_rpn_cls[unlabeled_inds, ...].mean() * self.unlabeled_weight if self.unlabeled_supervise_cls else 0
+            loss_rpn_box_unlab = loss_rpn_box[unlabeled_inds, ...].mean() * self.unlabeled_weight
+            loss_point_unlab = 0 # why it is not being used
+            loss_rcnn_cls_unlab = loss_rcnn_cls[unlabeled_inds, ...].mean() * self.unlabeled_weight if self.model_cfg.get('UNLABELED_SUPERVISE_OBJ', False) else 0
+            loss_rcnn_box_unlab= loss_rcnn_box[unlabeled_inds, ...].mean() * self.unlabeled_weight if self.unlabeled_supervise_refine else 0
+            unlabeled_loss = loss_rpn_cls_unlab + loss_rpn_box_unlab + loss_point_unlab + loss_rcnn_cls_unlab + loss_rcnn_box_unlab
 
-            loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box
-            tb_dict_ = {}
+            if cfg.OPTIMIZATION.WARMUP_EPOCH > 0 and cur_epoch < cfg.OPTIMIZATION.WARMUP_EPOCH:
+                labeled_loss = labeled_loss* self.model_cfg.get('LABELED_LOSS_WEIGHT', 1.0)
+                unlabeled_loss = 0
+            else:
+                multiplier = np.exp(-cur_epoch) if self.model_cfg.get('LABELED_LOSS_EXPONENTIAL_DECAY', False) else 1.0
+                labeled_loss = labeled_loss * self.model_cfg.get('LABELED_LOSS_WEIGHT', 1.0) * multiplier
+
+            loss = labeled_loss + unlabeled_loss
+            tb_dict_ = {'labeled_loss': labeled_loss,
+                        'unlabeled_loss': unlabeled_loss}
+            
             for key in tb_dict.keys():
                 if 'loss' in key:
                     tb_dict_[key+"_labeled"] = tb_dict[key][labeled_inds, ...].mean()

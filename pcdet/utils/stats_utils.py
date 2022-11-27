@@ -136,7 +136,7 @@ class PredQualityMetrics(Metric):
             results = {}
             for mname in self.metrics_name:
                 mstate = getattr(self, mname)
-                results[mname] = torch.stack(mstate, dim=0).nanmean(dim=0)
+                results[mname] = nanmean(torch.stack(mstate, dim=0), 0) # 'tensor' object has no attribute 'nanmean' pytorch <1.8 
 
             for key, val in results.items():
                 classwise_results = {}
@@ -149,6 +149,13 @@ class PredQualityMetrics(Metric):
             self.reset()
 
         return final_results
+
+def nanmean(v, *args, inplace=False, **kwargs):
+    if not inplace:
+        v = v.clone()
+    is_nan = torch.isnan(v)
+    v[is_nan] = 0
+    return v.sum(*args, **kwargs) / (~is_nan).float().sum(*args, **kwargs)
 
 
 # TODO(farzad) This class should later be derived from PredQualityMetrics to avoid repeating the code and computation
