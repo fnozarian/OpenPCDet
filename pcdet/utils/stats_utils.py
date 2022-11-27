@@ -136,6 +136,8 @@ class PredQualityMetrics(Metric):
             results = {}
             for mname in self.metrics_name:
                 mstate = getattr(self, mname)
+                if not isinstance(mstate, (list, tuple)):
+                    mstate = [mstate]
                 results[mname] = nanmean(torch.stack(mstate, dim=0), 0) # 'tensor' object has no attribute 'nanmean' pytorch <1.8 
 
             for key, val in results.items():
