@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ...utils import box_coder_utils, common_utils, loss_utils
-from ..model_utils.model_nms_utils import class_agnostic_nms
+from ..model_utils.model_nms_utils import class_agnostic_nms, multi_classes_nms
 from .target_assigner.proposal_target_layer import ProposalTargetLayer
 from .target_assigner.proposal_target_layer_consistency import ProposalTargetLayerConsistency
 
@@ -82,9 +82,12 @@ class RoIHeadTemplate(nn.Module):
         batch_box_preds = batch_dict['batch_box_preds']
         batch_cls_preds = batch_dict['batch_cls_preds']
 
-        rois = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_box_preds.shape[-1]))
-        roi_scores = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
-        roi_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
+        num_classes = batch_cls_preds.shape[-1]
+        num_selected_rois = nms_config.NMS_POST_MAXSIZE*num_classes if nms_config.MULTI_CLASSES_NMS else nms_config.NMS_POST_MAXSIZE
+        # NOTE (Shashank) : Currently NMS_PRE_MAXSIZE and NMS_POST_MAXSIZE have been set as per multi_class_nms
+        rois = batch_box_preds.new_zeros((batch_size, num_selected_rois, batch_box_preds.shape[-1]))
+        roi_scores = batch_box_preds.new_zeros((batch_size, num_selected_rois))
+        roi_labels = batch_box_preds.new_zeros((batch_size, num_selected_rois), dtype=torch.long)
 
         for index in range(batch_size):
             if batch_dict.get('batch_index', None) is not None:
@@ -99,15 +102,18 @@ class RoIHeadTemplate(nn.Module):
             cur_roi_scores, cur_roi_labels = torch.max(cls_preds, dim=1)
 
             if nms_config.MULTI_CLASSES_NMS:
-                raise NotImplementedError
+                selected_scores, selected_labels, selected_boxes = multi_classes_nms(cls_preds, box_preds, nms_config=nms_config)
+                rois[index, :len(selected_boxes), :] = selected_boxes
+                roi_scores[index, :len(selected_scores)] = selected_scores
+                roi_labels[index, :len(selected_labels)] = selected_labels
+
             else:
                 selected, selected_scores = class_agnostic_nms(
                     box_scores=cur_roi_scores, box_preds=box_preds, nms_config=nms_config
                 )
-
-            rois[index, :len(selected), :] = box_preds[selected]
-            roi_scores[index, :len(selected)] = cur_roi_scores[selected]
-            roi_labels[index, :len(selected)] = cur_roi_labels[selected]
+                rois[index, :len(selected), :] = box_preds[selected]
+                roi_scores[index, :len(selected)] = cur_roi_scores[selected]
+                roi_labels[index, :len(selected)] = cur_roi_labels[selected]
 
         batch_dict['rois'] = rois
         batch_dict['roi_scores'] = roi_scores
