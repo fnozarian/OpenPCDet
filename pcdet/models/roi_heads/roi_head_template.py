@@ -185,7 +185,7 @@ class RoIHeadTemplate(nn.Module):
             targets_dict['gt_of_rois_var'][unlabeled_inds, :num_rois_ema, :-1] = batch_dict['pred_boxes_ema_var'][
                 unlabeled_inds]
 
-    def update_metrics(self, targets_dict, mask_type='reg', pred_type='pred'):
+    def update_metrics(self, targets_dict, mask_type='reg', pred_type='roi'):
         metric_registry = targets_dict['metric_registry']
         tag = f'rcnn_{pred_type}_metrics_{mask_type}'
         metrics = metric_registry.get(tag)
@@ -203,6 +203,9 @@ class RoIHeadTemplate(nn.Module):
             roi_labeled_boxes = torch.cat([rois, roi_labels], dim=-1)
             sample_rois.append(roi_labeled_boxes)
             sample_roi_scores.append(roi_scores)
+
+            # (RoIs before aug)
+            rois_before_aug = targets_dict['rois_before_aug'][uind][mask]
 
             # (Pseudo labels) Target info
             target_labeled_boxes = targets_dict['gt_of_rois_src'][uind][mask].detach().clone()
@@ -226,6 +229,9 @@ class RoIHeadTemplate(nn.Module):
                 points = targets_dict['points'][points_mask, 1:]
                 if pred_type == 'roi':
                     vis_pred_boxes = roi_labeled_boxes[:, :-1]
+                    vis_pred_scores = roi_scores
+                elif pred_type == 'rois_before_aug':
+                    vis_pred_boxes = rois_before_aug
                     vis_pred_scores = roi_scores
                 elif pred_type == 'pl':
                     vis_pred_boxes = target_labeled_boxes[:, :-1]

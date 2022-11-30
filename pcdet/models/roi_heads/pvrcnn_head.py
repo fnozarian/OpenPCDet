@@ -163,28 +163,19 @@ class PVRCNNHead(RoIHeadTemplate):
             #  accessible in different places, not via passing through batch_dict
             targets_dict['metric_registry'] = batch_dict['metric_registry']
 
-            if self.model_cfg.ROI_AUG.ENABLE :
+            if self.model_cfg.ROI_AUG.ENABLE:
                 uids = batch_dict['unlabeled_inds']
                 # only used for debugging, can be removed later
                 batch_dict['rois_before_aug'] = batch_dict['rois'].clone().detach()
                 batch_dict['rois'][uids] = augment_rois(batch_dict['rois'][uids], self.model_cfg, aug_type='ros')
-                
-                # Visualizing student ROIs before and after augmentation
-                # gts: ROIs preaugmentation, preds: ROIs post augmentation
-                # NOTE (shashank): Takes a lot of time to generate the image, thus commented out for now
-                # if self.model_cfg.get('ENABLE_VIS', False):
-                #     points_mask = batch_dict['points'][:, 0] == uids
-                #     points = batch_dict['points'][points_mask, 1:]
-                #     V.vis(points, gt_boxes=batch_dict['rois_before_aug'][uids].squeeze(0), pred_boxes=batch_dict['rois'][uids].squeeze(0),
-                #         pred_scores=batch_dict['roi_scores'][uids].view(-1), pred_labels=batch_dict['roi_labels'][uids].view(-1), filename=f'vis_roiaug.png')
+                targets_dict['rois_before_aug'] = batch_dict['rois_before_aug']
 
-                ndims = batch_dict['rois'][uids].shape[-1]
-                stud_rois = torch.cat([batch_dict['rois'][uids].view(-1, ndims), batch_dict['roi_labels'][uids].view(-1, 1).float()], dim=1)
-                teacher_rois = torch.cat([batch_dict['rois_before_aug'][uids].view(-1, ndims), batch_dict['roi_labels'][uids].view(-1, 1).float()], dim=1)
-                
-                # plot the dim distribution between teacher's rois vs student's augmented rois
-                dim_distribution = batch_dict['dimension_dist_registry'].get('StudentRois', 'TeacherRois')
-                dim_distribution.update(stud_rois, teacher_rois)
+                # Uncomment to plot the dim distribution between teacher's rois vs student's augmented rois
+                # ndims = batch_dict['rois'][uids].shape[-1]
+                # stud_rois = torch.cat([batch_dict['rois'][uids].view(-1, ndims), batch_dict['roi_labels'][uids].view(-1, 1).float()], dim=1)
+                # teacher_rois = torch.cat([batch_dict['rois_before_aug'][uids].view(-1, ndims), batch_dict['roi_labels'][uids].view(-1, 1).float()], dim=1)
+                # dim_distribution = batch_dict['dimension_dist_registry'].get('StudentRois', 'TeacherRois')
+                # dim_distribution.update(stud_rois, teacher_rois)
 
         # RoI aware pooling
         pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
