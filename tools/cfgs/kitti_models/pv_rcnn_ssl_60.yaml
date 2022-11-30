@@ -176,13 +176,14 @@ MODEL:
                 NMS_PRE_MAXSIZE: 9000
                 NMS_POST_MAXSIZE: 512
                 NMS_THRESH: 0.8
+                NMS_SIGMA: 0.5
             TEST:
-                NMS_TYPE: nms_gpu
-                MULTI_CLASSES_NMS: True
-                # NOTE (Shashank) : NMS_PRE_MAXSIZE and NMS_POST_MAXSIZE set as per multi_class_nms
-                NMS_PRE_MAXSIZE: 400
-                NMS_POST_MAXSIZE: 40
+                NMS_TYPE: soft_nms
+                MULTI_CLASSES_NMS: False
+                NMS_PRE_MAXSIZE: 1024
+                NMS_POST_MAXSIZE: 128
                 NMS_THRESH: 0.7
+                NMS_SIGMA: 0.5              
 
         ROI_GRID_POOL:
             GRID_SIZE: 6
