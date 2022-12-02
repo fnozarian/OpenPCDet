@@ -417,6 +417,13 @@ class RoIHeadTemplate(nn.Module):
         return rcnn_loss_cls, tb_dict
 
     def pre_loss_filtering(self):
+        # batch_size = self.forward_ret_dict['rcnn_cls_labels'].shape[0]
+
+
+        # for ul_index in unlabeled_inds: 
+        #     subsample_unlabeled_preds = getattr(self.proposal_target_layer, self.model_cfg.LOSS_CONFIG.UNLABELED_SAMPLER_TYPE)
+        #     subsample_unlabeled_preds(self.forward_ret_dict, ul_index)
+
 
         unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
         rcnn_cls_labels = self.forward_ret_dict['rcnn_cls_labels'].clone().detach()
@@ -433,6 +440,18 @@ class RoIHeadTemplate(nn.Module):
         self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] = reg_valid_mask & filtering_mask
 
         # ----------- RCNN_CLS_LABELS -----------
+        # sampled_inds = self.proposal_target_layer.subsample_preds(rcnn_cls_labels)
+        # sampled_rcnn_cls_labels = rcnn_cls_labels[sampled_inds]
+        # fg_mask = sampled_rcnn_cls_labels > self.model_cfg.TARGET_CONFIG.CLS_FG_THRESH
+        # bg_mask = sampled_rcnn_cls_labels < self.model_cfg.TARGET_CONFIG.CLS_BG_THRESH
+        # ignore_mask = torch.eq(self.forward_ret_dict['gt_of_rois'][unlabeled_inds], 0).all(dim=-1)
+        # sampled_rcnn_cls_labels[fg_mask] = 1
+        # sampled_rcnn_cls_labels[bg_mask] = 0
+        # sampled_rcnn_cls_labels[ignore_mask] = -1
+        # self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = sampled_rcnn_cls_labels
+        # cls_pred_target = torch.cat((rcnn_cls_preds.view(rcnn_cls_preds.shape[1], -1), sampled_rcnn_cls_labels.view(sampled_rcnn_cls_labels.shape[1], -1)), dim=1)
+
+
         fg_mask = rcnn_cls_labels > self.model_cfg.TARGET_CONFIG.CLS_FG_THRESH
         bg_mask = rcnn_cls_labels < self.model_cfg.TARGET_CONFIG.CLS_BG_THRESH
         ignore_mask = torch.eq(self.forward_ret_dict['gt_of_rois'][unlabeled_inds], 0).all(dim=-1)
@@ -440,6 +459,7 @@ class RoIHeadTemplate(nn.Module):
         rcnn_cls_labels[bg_mask] = 0
         rcnn_cls_labels[ignore_mask] = -1
         self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels
+        cls_pred_target = torch.cat((rcnn_cls_preds.view(rcnn_cls_preds.shape[1], -1), rcnn_cls_labels.view(rcnn_cls_labels.shape[1], -1)), dim=1)
         # TODO(farzad) we can also filter rcnn_cls_labels
 
     def get_loss(self, tb_dict=None, scalar=True):

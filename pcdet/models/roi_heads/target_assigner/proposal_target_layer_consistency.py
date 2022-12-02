@@ -354,6 +354,53 @@ class ProposalTargetLayerConsistency(nn.Module):
 
         return sampled_inds, reg_valid_mask, cls_labels
 
+    # def _gt_scores_sampler(self, forward_ret_dict, index):
+    #     # (mis?) using pseudo-label objectness scores as a proxy for iou!
+
+    #     rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'].clone().detach()
+    #     gt_boxes = batch_dict['gt_boxes'][index]
+    #     sampled_inds = self.subsample_rois(max_overlaps=gt_scores)
+    #     sampled_gt_scores = gt_scores[sampled_inds]
+    #     sampled_gt_boxes = gt_boxes[sampled_inds]
+    #     reg_valid_mask = (sampled_gt_scores > self.roi_sampler_cfg.UNLABELED_REG_FG_THRESH).long()
+
+    #     iou_bg_thresh = self.roi_sampler_cfg.CLS_BG_THRESH
+    #     iou_fg_thresh = self.roi_sampler_cfg.CLS_FG_THRESH
+    #     fg_mask = sampled_gt_scores > iou_fg_thresh
+    #     bg_mask = sampled_gt_scores < iou_bg_thresh
+    #     interval_mask = (fg_mask == 0) & (bg_mask == 0)
+    #     cls_labels = (fg_mask > 0).float()
+    #     cls_labels[interval_mask] = sampled_gt_scores[interval_mask]
+    #     # Ignoring all-zero pseudo-labels produced due to filtering
+    #     ignore_mask = torch.eq(sampled_gt_boxes, 0).all(dim=-1)
+    #     cls_labels[ignore_mask] = -1
+
+    #     return sampled_inds, reg_valid_mask, cls_labels
+
+    # def default_preloss_filter(self, forward_ret_dict, index):
+    #     unlabeled_inds = forward_ret_dict['unlabeled_inds']
+    #     rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'].clone().detach()
+    #     rcnn_cls_preds = forward_ret_dict['rcnn_cls'].view_as(rcnn_cls_labels).clone().detach()
+    #     rcnn_cls_labels = rcnn_cls_labels[unlabeled_inds]
+    #     rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds)[unlabeled_inds]
+
+    #     # ----------- REG_VALID_MASK -----------
+    #     reg_valid_mask = (rcnn_cls_labels > self.roi_sampler_cfg.UNLABELED_REG_FG_THRESH).long()
+    #     pred_thresh = self.model_cfg.get('CONSISTENCY_PRE_LOSS_CLS_PRED_FILTERING_THRESH', [0.9])
+    #     label_thresh = self.model_cfg.get('CONSISTENCY_PRE_LOSS_CLS_LABEL_FILTERING_THRESH', [0.9])
+    #     # TODO(farzad) make thresholds classwise
+    #     filtering_mask = (rcnn_cls_preds > pred_thresh[0]) & (rcnn_cls_labels > label_thresh[0])
+    #     forward_ret_dict['reg_valid_mask'][unlabeled_inds] = reg_valid_mask & filtering_mask
+
+    #     # ----------- RCNN_CLS_LABELS -----------
+    #     fg_mask = rcnn_cls_labels > self.roi_sampler_cfg.CLS_FG_THRESH
+    #     bg_mask = rcnn_cls_labels < self.roi_sampler_cfg.CLS_BG_THRESH
+    #     ignore_mask = torch.eq(self.forward_ret_dict['gt_of_rois'][unlabeled_inds], 0).all(dim=-1)
+    #     rcnn_cls_labels[fg_mask] = 1
+    #     rcnn_cls_labels[bg_mask] = 0
+    #     rcnn_cls_labels[ignore_mask] = -1
+    #     forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels
+
     def subsample_labeled_rois(self, batch_dict, index):
         cur_roi = batch_dict['rois'][index]
         cur_gt_boxes = batch_dict['gt_boxes'][index]
@@ -428,6 +475,53 @@ class ProposalTargetLayerConsistency(nn.Module):
         elif bg_num_rois > 0 and fg_num_rois == 0:
             # sampling bg
             bg_rois_per_this_image = self.roi_sampler_cfg.ROI_PER_IMAGE
+            bg_inds = self.sample_bg_inds(
+                hard_bg_inds, easy_bg_inds, bg_rois_per_this_image, self.roi_sampler_cfg.HARD_BG_RATIO
+            )
+        else:
+            print('maxoverlaps:(min=%f, max=%f)' % (max_overlaps.min().item(), max_overlaps.max().item()))
+            print('ERROR: FG=%d, BG=%d' % (fg_num_rois, bg_num_rois))
+            raise NotImplementedError
+
+        sampled_inds = torch.cat((fg_inds, bg_inds), dim=0)
+        return sampled_inds
+
+    def subsample_preds(self, max_overlaps):
+        # sample fg, easy_bg, hard_bg
+        fg_rois_per_image = int(np.round(self.roi_sampler_cfg.FG_RATIO * self.roi_sampler_cfg.PREDS_PER_IMAGE))
+        fg_thresh = min(self.roi_sampler_cfg.REG_FG_THRESH, self.roi_sampler_cfg.CLS_FG_THRESH)
+
+        fg_inds = ((max_overlaps >= fg_thresh)).nonzero().view(-1)  # > 0.55
+        easy_bg_inds = ((max_overlaps < self.roi_sampler_cfg.CLS_BG_THRESH_LO)).nonzero().view(-1)  # < 0.1
+        hard_bg_inds = ((max_overlaps < self.roi_sampler_cfg.REG_FG_THRESH) &
+                        (max_overlaps >= self.roi_sampler_cfg.CLS_BG_THRESH_LO)).nonzero().view(-1)
+
+        fg_num_rois = fg_inds.numel()
+        bg_num_rois = hard_bg_inds.numel() + easy_bg_inds.numel()
+
+        if fg_num_rois > 0 and bg_num_rois > 0:
+            # sampling fg
+            fg_rois_per_this_image = min(fg_rois_per_image, fg_num_rois)
+
+            rand_num = torch.from_numpy(np.random.permutation(fg_num_rois)).type_as(max_overlaps).long()
+            fg_inds = fg_inds[rand_num[:fg_rois_per_this_image]]
+
+            # sampling bg
+            bg_rois_per_this_image = self.roi_sampler_cfg.PREDS_PER_IMAGE - fg_rois_per_this_image
+            bg_inds = self.sample_bg_inds(
+                hard_bg_inds, easy_bg_inds, bg_rois_per_this_image, self.roi_sampler_cfg.HARD_BG_RATIO
+            )
+
+        elif fg_num_rois > 0 and bg_num_rois == 0:
+            # sampling fg
+            rand_num = np.floor(np.random.rand(self.roi_sampler_cfg.PREDS_PER_IMAGE) * fg_num_rois)
+            rand_num = torch.from_numpy(rand_num).type_as(max_overlaps).long()
+            fg_inds = fg_inds[rand_num]
+            bg_inds = fg_inds[fg_inds < 0] # yield empty tensor
+
+        elif bg_num_rois > 0 and fg_num_rois == 0:
+            # sampling bg
+            bg_rois_per_this_image = self.roi_sampler_cfg.PREDS_PER_IMAGE
             bg_inds = self.sample_bg_inds(
                 hard_bg_inds, easy_bg_inds, bg_rois_per_this_image, self.roi_sampler_cfg.HARD_BG_RATIO
             )
