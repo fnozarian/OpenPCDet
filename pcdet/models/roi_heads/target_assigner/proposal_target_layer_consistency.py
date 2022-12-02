@@ -2,6 +2,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+from collections import Counter
 
 from ....ops.iou3d_nms import iou3d_nms_utils
 
@@ -204,6 +205,63 @@ class ProposalTargetLayerConsistency(nn.Module):
         cls_labels[ignore_mask] = -1
             
         return sampled_inds, reg_valid_mask, cls_labels
+
+    '''
+    Same as classwise_adapative_thresholds_sampler, based on the official implementation of Flexmatch 
+    https://github.com/TorchSSL/TorchSSL
+    '''
+    def flexmatch_classwise_adapative_thresholds_sampler(self, batch_dict, index):
+        fixed_thresh = self.roi_sampler_cfg.UNLABELED_REG_FG_THRESH 
+        num_classes = batch_dict['batch_cls_preds'].shape[-1]
+
+        gt_scores = batch_dict['pred_scores_ema'][index]
+        gt_boxes = batch_dict['gt_boxes'][index]
+        gt_labels = gt_boxes[:, -1].long()
+
+        selected_labels = torch.ones((len(gt_labels),), dtype=torch.long, ).cuda() * -1
+        classwise_acc = torch.zeros((num_classes,)).cuda()
+        
+        # Use fixed threshold to estimate the learning status of each class, assign remaining as BG
+        select = gt_scores.ge(fixed_thresh).long()
+        selected_labels[select == 1] = gt_labels[select == 1].long()
+
+        # Counter for classwise learning based on fixed threshold 
+        pseudo_counter = Counter(selected_labels.tolist())
+        if max(pseudo_counter.values()) < len(gt_labels):  
+            if self.roi_sampler_cfg.UNLABELED_SAMPLER_THRESH_WARMUP:
+                for i in range(num_classes):
+                    classwise_acc[i] = pseudo_counter[i+1] / max(pseudo_counter.values())
+            else:
+                wo_negative_one = pseudo_counter.clone().detach()
+                if -1 in wo_negative_one.keys():
+                    wo_negative_one.pop(-1)
+                for i in range(num_classes):
+                    classwise_acc[i] = pseudo_counter[i+1] / max(wo_negative_one.values())
+
+        sampled_inds = gt_scores.ge(fixed_thresh * classwise_acc[gt_labels-1]).long()  # linear
+        # Non linear mapping function based on Flexmatch sec3.3
+        # sampled_inds = gt_scores.ge(fixed_thresh * (classwise_acc[gt_labels-1] / (2. - classwise_acc[gt_labels-1]))).long()  # convex
+
+        # TODO (shashank): reg_valid_mask and cls_lables filtering can be converted 
+        #   into a seperate method if its being used by all the samplers
+        sampled_gt_scores = gt_scores[sampled_inds]
+        sampled_gt_boxes = gt_boxes[sampled_inds]
+        reg_valid_mask  = (sampled_gt_scores > self.roi_sampler_cfg.UNLABELED_REG_FG_THRESH).long()
+
+        # filter GT labels based on FG/BG thresholds 
+        iou_bg_thresh = self.roi_sampler_cfg.CLS_BG_THRESH
+        iou_fg_thresh = self.roi_sampler_cfg.CLS_FG_THRESH
+        fg_mask = sampled_gt_scores > iou_fg_thresh
+        bg_mask = sampled_gt_scores < iou_bg_thresh
+        interval_mask = (fg_mask == 0) & (bg_mask == 0)
+        cls_labels = (fg_mask > 0).float()
+        cls_labels[interval_mask] = sampled_gt_scores[interval_mask]
+        # Ignoring all-zero pseudo-labels produced due to filtering
+        ignore_mask = torch.eq(sampled_gt_boxes, 0).all(dim=-1)
+        cls_labels[ignore_mask] = -1
+            
+        return sampled_inds, reg_valid_mask, cls_labels
+
 
     '''
     Increased TEST:NMS_POST_MAXSIZE form 100->256 to perform this sampling.

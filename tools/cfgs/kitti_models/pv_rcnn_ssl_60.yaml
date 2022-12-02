@@ -204,8 +204,9 @@ MODEL:
             HARD_BG_RATIO: 0.8
 
             REG_FG_THRESH: 0.55
-            UNLABELED_SAMPLER_TYPE: classwise_top_k_sampler #gt_scores_sampler
+            UNLABELED_SAMPLER_TYPE: flexmatch_classwise_adapative_thresholds_sampler #gt_scores_sampler
             UNLABELED_REG_FG_THRESH: 0.7
+            UNLABELED_SAMPLER_THRESH_WARMUP: True # for flexmatch_classwise_adapative_thresholds_sampler
 
         LOSS_CONFIG:
             UL_INTERVAL_ROI_IOU_SCORE_TYPE: 'interval-only' # two options: `all` or `interval-only`
