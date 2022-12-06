@@ -176,12 +176,14 @@ MODEL:
                 NMS_PRE_MAXSIZE: 9000
                 NMS_POST_MAXSIZE: 512
                 NMS_THRESH: 0.8
+                NMS_SIGMA: 0.5
             TEST:
-                NMS_TYPE: nms_gpu
+                NMS_TYPE: soft_nms
                 MULTI_CLASSES_NMS: False
                 NMS_PRE_MAXSIZE: 1024
                 NMS_POST_MAXSIZE: 128
                 NMS_THRESH: 0.7
+                NMS_SIGMA: 0.5
 
         ROI_GRID_POOL:
             GRID_SIZE: 6
@@ -200,16 +202,19 @@ MODEL:
             CLS_WEIGHT: 0.35
             CLS_FG_THRESH: 0.75
             CLS_BG_THRESH: 0.25
+            UNLABELED_CLS_FG_THRESH: 0.75
+            UNLABELED_CLS_BG_THRESH: 0.25
             CLS_BG_THRESH_LO: 0.1
             HARD_BG_RATIO: 0.8
 
             REG_FG_THRESH: 0.55
+            UNLABELED_REG_FG_THRESH: 0.9
             UNLABELED_SAMPLER_TYPE: None
             UNLABELED_REG_FG_THRESH: 0.7
             UNLABELED_SAMPLER_THRESH_WARMUP: True # for flexmatch_classwise_adapative_thresholds_sampler
 
             PRE_LOSS_SAMPLER_TYPE: None
-            PREDS_PER_IMAGE: 100 
+            PREDS_PER_IMAGE: 100
             NMS_CONFIG:
                 MULTI_CLASSES_NMS: False
                 NMS_TYPE: nms_gpu
