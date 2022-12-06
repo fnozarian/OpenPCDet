@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ...utils import box_coder_utils, common_utils, loss_utils
-from ..model_utils.model_nms_utils import class_agnostic_nms, multi_classes_nms
+from ..model_utils.model_nms_utils import class_agnostic_nms
 from .target_assigner.proposal_target_layer import ProposalTargetLayer
 from .target_assigner.proposal_target_layer_consistency import ProposalTargetLayerConsistency
 from .preloss_sampler import PreLossSampler
@@ -30,9 +30,9 @@ class RoIHeadTemplate(nn.Module):
             self.proposal_target_layer = ProposalTargetLayerConsistency(roi_sampler_cfg=self.model_cfg.TARGET_CONFIG)
         else:
             self.proposal_target_layer = ProposalTargetLayer(roi_sampler_cfg=self.model_cfg.TARGET_CONFIG)
-
+        
         self.preloss_sampler = PreLossSampler(pred_sampler_cfg=self.model_cfg.TARGET_CONFIG)
-
+        
         self.build_losses(self.model_cfg.LOSS_CONFIG)
         self.forward_ret_dict = None
         self.predict_boxes_when_training = predict_boxes_when_training
@@ -86,12 +86,9 @@ class RoIHeadTemplate(nn.Module):
         batch_box_preds = batch_dict['batch_box_preds']
         batch_cls_preds = batch_dict['batch_cls_preds']
 
-        num_classes = batch_cls_preds.shape[-1]
-        num_selected_rois = nms_config.NMS_POST_MAXSIZE*num_classes if nms_config.MULTI_CLASSES_NMS else nms_config.NMS_POST_MAXSIZE
-        # NOTE (Shashank) : Currently NMS_PRE_MAXSIZE and NMS_POST_MAXSIZE have been set as per multi_class_nms
-        rois = batch_box_preds.new_zeros((batch_size, num_selected_rois, batch_box_preds.shape[-1]))
-        roi_scores = batch_box_preds.new_zeros((batch_size, num_selected_rois))
-        roi_labels = batch_box_preds.new_zeros((batch_size, num_selected_rois), dtype=torch.long)
+        rois = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_box_preds.shape[-1]))
+        roi_scores = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
+        roi_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
 
         for index in range(batch_size):
             if batch_dict.get('batch_index', None) is not None:
@@ -106,18 +103,15 @@ class RoIHeadTemplate(nn.Module):
             cur_roi_scores, cur_roi_labels = torch.max(cls_preds, dim=1)
 
             if nms_config.MULTI_CLASSES_NMS:
-                selected_scores, selected_labels, selected_boxes = multi_classes_nms(cls_preds, box_preds, nms_config=nms_config)
-                rois[index, :len(selected_boxes), :] = selected_boxes
-                roi_scores[index, :len(selected_scores)] = selected_scores
-                roi_labels[index, :len(selected_labels)] = selected_labels
-
+                raise NotImplementedError
             else:
                 selected, selected_scores = class_agnostic_nms(
                     box_scores=cur_roi_scores, box_preds=box_preds, nms_config=nms_config
                 )
-                rois[index, :len(selected), :] = box_preds[selected]
-                roi_scores[index, :len(selected)] = cur_roi_scores[selected]
-                roi_labels[index, :len(selected)] = cur_roi_labels[selected]
+
+            rois[index, :len(selected), :] = box_preds[selected]
+            roi_scores[index, :len(selected)] = cur_roi_scores[selected]
+            roi_labels[index, :len(selected)] = cur_roi_labels[selected]
 
         batch_dict['rois'] = rois
         batch_dict['roi_scores'] = roi_scores
@@ -434,9 +428,12 @@ class RoIHeadTemplate(nn.Module):
         rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds)[unlabeled_inds]
 
         # ----------- REG_VALID_MASK -----------
-        reg_fg_thresh = self.model_cfg.TARGET_CONFIG.UNLABELED_REG_FG_THRESH
-        filtering_mask = (rcnn_cls_preds > reg_fg_thresh) & (rcnn_cls_labels > reg_fg_thresh)
-        self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] = filtering_mask.long()
+        reg_valid_mask = (rcnn_cls_labels > self.model_cfg.TARGET_CONFIG.UNLABELED_REG_FG_THRESH).long()
+        pred_thresh = self.model_cfg.get('CONSISTENCY_PRE_LOSS_CLS_PRED_FILTERING_THRESH', [0.9])
+        label_thresh = self.model_cfg.get('CONSISTENCY_PRE_LOSS_CLS_LABEL_FILTERING_THRESH', [0.9])
+        # TODO(farzad) make thresholds classwise
+        filtering_mask = (rcnn_cls_preds > pred_thresh[0]) & (rcnn_cls_labels > label_thresh[0])
+        self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] = reg_valid_mask & filtering_mask
 
         # ----------- RCNN_CLS_LABELS -----------
         sampler_type = getattr(self.preloss_sampler, self.model_cfg.TARGET_CONFIG.PRE_LOSS_SAMPLER_TYPE, None)
@@ -455,10 +452,10 @@ class RoIHeadTemplate(nn.Module):
             for index in unlabeled_inds:
                 # NOTE (shashank) : Uses inplace operation to compute rcnn_cls_labels
                 _, rcnn_cls_labels[index] = sampler_type(self.forward_ret_dict, index)
-                # TODO (shashank) : remove this afterwards, only for debugging
+                # TODO (shashank) : remove this afterwards, only for debugging 
                 cls_pred_target = torch.cat((rcnn_cls_preds.view(rcnn_cls_preds.shape[1], -1), rcnn_cls_labels.view(rcnn_cls_labels.shape[1], -1)), dim=1)
             self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels[unlabeled_inds]
-
+            
 
     def get_loss(self, tb_dict=None, scalar=True):
         tb_dict = {} if tb_dict is None else tb_dict
