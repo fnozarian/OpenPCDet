@@ -246,7 +246,7 @@ class ProposalTargetLayerConsistency(nn.Module):
                 for i in range(num_classes):
                     classwise_acc[i] = pseudo_counter[i+1] / max(wo_negative_one.values())
 
-        sampled_inds = gt_scores.ge(fixed_thresh * classwise_acc[gt_labels-1]).long()  # linear
+        sampled_inds = gt_scores.ge(fixed_thresh * classwise_acc[gt_labels-1]).bool()  # linear
         # Non linear mapping function based on Flexmatch sec3.3
         # sampled_inds = gt_scores.ge(fixed_thresh * (classwise_acc[gt_labels-1] / (2. - classwise_acc[gt_labels-1]))).long()  # convex
 
