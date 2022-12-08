@@ -453,7 +453,7 @@ class RoIHeadTemplate(nn.Module):
                 # NOTE (shashank) : Uses inplace operation to compute rcnn_cls_labels
                 _, rcnn_cls_labels[index] = sampler_type(self.forward_ret_dict, index)
                 # TODO (shashank) : remove this afterwards, only for debugging 
-                cls_pred_target = torch.cat((rcnn_cls_preds.view(rcnn_cls_preds.shape[1], -1), rcnn_cls_labels.view(rcnn_cls_labels.shape[1], -1)), dim=1)
+                cls_pred_target = torch.cat((rcnn_cls_preds.view(rcnn_cls_preds.shape[1], -1), rcnn_cls_labels[index].view(-1, 1)), dim=1)
             self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels[unlabeled_inds]
             
 

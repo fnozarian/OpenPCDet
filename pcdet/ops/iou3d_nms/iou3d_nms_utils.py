@@ -114,3 +114,57 @@ def nms_normal_gpu(boxes, scores, thresh, **kwargs):
     keep = torch.LongTensor(boxes.size(0))
     num_out = iou3d_nms_cuda.nms_normal_gpu(boxes, keep, thresh)
     return order[keep[:num_out].cuda()].contiguous(), None
+
+
+'''
+Soft-NMS :
+It decays the detection score of all other objects as a continuous function 
+    (gaussian) of their overlap with the reference box. Hence, no object
+    is eliminated in this NMS process.
+Implementation adapted from official repo : https://github.com/DocF/Soft-NMS/blob/master/softnms_pytorch.py
+NOTE : it slows down the training!
+'''
+
+def soft_nms(boxes, scores, thresh=0.001, **kwargs):    
+    """
+    Build a pytorch implement of Soft NMS algorithm.
+    # Augments
+        boxes:        boxes coordinate tensor 
+        scores:       box score tensors
+        sigma:       variance of Gaussian function
+        thresh:      score thresh
+    # Return
+        the index of the selected boxes
+    """
+    # Indexes concatenate boxes with the last column
+    N = boxes.shape[0]
+    sigma = kwargs.get("NMS_SIGMA", 0.5)
+
+    indexes = torch.arange(0, N, dtype=torch.float).cuda().view(N, 1)
+    boxes = torch.cat((boxes, indexes), dim=1)
+
+    for i in range(N):
+        # intermediate parameters for later parameters exchange
+        tscore = scores[i].clone()
+        pos = i + 1
+
+        if i != N - 1:
+            maxscore, maxpos = torch.max(scores[pos:], dim=0)
+            if tscore < maxscore:
+                boxes[i], boxes[maxpos.item() + i + 1] = boxes[maxpos.item() + i + 1].clone(), boxes[i].clone()
+                scores[i], scores[maxpos.item() + i + 1] = scores[maxpos.item() + i + 1].clone(), scores[i].clone()
+
+        # 3d-iou  
+        iou3d = boxes_iou3d_gpu(boxes[i,:-1].view(1,-1), boxes[pos:,:-1]) if pos <= (N-1) else torch.empty(0).cuda()
+
+        # Gaussian decay
+        weight = torch.exp(-(iou3d * iou3d) / sigma)
+        scores[pos:] = weight * scores[pos:]
+
+    # filter the boxes based on their final scores using a fixed threshold 
+    # keep = boxes[:, -1][scores > thresh].long()
+
+    sorted_scores, sorted_score_inds = torch.sort(scores, descending=True)
+    sorted_inds = boxes[:,-1][sorted_score_inds]
+
+    return sorted_inds, sorted_scores

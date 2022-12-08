@@ -19,20 +19,20 @@ class PreLossSampler(nn.Module):
     '''
     Apply NMS on rcnn_cls_labels, then perform top-k sampling on decayed scores
     '''
-    def pred_ious_sampler(self, forward_ret_dict, index):
+    def gt_nms_sampler(self, forward_ret_dict, index):
         rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'][index].clone().detach()
         gt_boxes = forward_ret_dict['gt_of_rois_src'][index]
         sampled_inds = torch.zeros_like(rcnn_cls_labels, dtype=torch.bool)
 
         nms_type = getattr(iou3d_nms_utils, self.pred_sampler_cfg.NMS_CONFIG.NMS_TYPE)
-        keep_inds, keep_scores = nms_type(gt_boxes[:, 0:7], rcnn_cls_labels, 
+        nms_inds, _ = nms_type(gt_boxes[:, 0:7], rcnn_cls_labels, 
                             self.pred_sampler_cfg.NMS_CONFIG.NMS_THRESH, **self.pred_sampler_cfg.NMS_CONFIG)
         
-        if nms_type=='soft_nms':
-            #sampled_inds[keep_inds[:self.pred_sampler_cfg.NMS_CONFIG.NMS_POST_MAXSIZE]] = True
-            raise NotImplementedError
-        else:
+        if self.pred_sampler_cfg.NMS_CONFIG.NMS_TYPE == 'soft_nms':
+            keep_inds = nms_inds[:self.pred_sampler_cfg.NMS_CONFIG.NMS_POST_MAXSIZE].long()
             sampled_inds[keep_inds] = True
+        else:
+            sampled_inds[nms_inds] = True
         
         fg_mask = rcnn_cls_labels > self.pred_sampler_cfg.CLS_FG_THRESH
         bg_mask = rcnn_cls_labels < self.pred_sampler_cfg.CLS_BG_THRESH
