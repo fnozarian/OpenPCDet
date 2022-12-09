@@ -198,12 +198,14 @@ MODEL:
             CLS_WEIGHT: 0.35
             CLS_FG_THRESH: 0.75
             CLS_BG_THRESH: 0.25
+            UNLABELED_CLS_FG_THRESH: 0.75
+            UNLABELED_CLS_BG_THRESH: 0.25
             CLS_BG_THRESH_LO: 0.1
             HARD_BG_RATIO: 0.8
 
             REG_FG_THRESH: 0.55
+            UNLABELED_REG_FG_THRESH: 0.9
             UNLABELED_SAMPLER_TYPE: None
-            UNLABELED_REG_FG_THRESH: 0.7
             UNLABELED_SAMPLER_THRESH_WARMUP: True # for flexmatch_classwise_adapative_thresholds_sampler
 
             PRE_LOSS_SAMPLER_TYPE: gt_nms_sampler
