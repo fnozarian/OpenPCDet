@@ -20,8 +20,18 @@ class PreLossSampler(nn.Module):
     Apply NMS on rcnn_cls_labels, then perform top-k sampling on decayed scores
     '''
     def gt_nms_sampler(self, forward_ret_dict, index):
+        reg_valid_mask = forward_ret_dict['reg_valid_mask'][index].clone().detach()
         rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'][index].clone().detach()
         gt_boxes = forward_ret_dict['gt_of_rois_src'][index]
+        rcnn_cls_preds = forward_ret_dict['rcnn_cls'].view_as(forward_ret_dict['rcnn_cls_labels'])[index].clone().detach()
+        rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds).unsqueeze(0)
+        
+        # ----------- REG_VALID_MASK -----------
+        reg_fg_thresh = self.pred_sampler_cfg.UNLABELED_REG_FG_THRESH
+        filtering_mask = (rcnn_cls_preds > reg_fg_thresh) & (rcnn_cls_labels > reg_fg_thresh)
+        reg_valid_mask = filtering_mask.long()
+
+        # ----------- RCNN_CLS_LABELS -----------
         sampled_inds = torch.zeros_like(rcnn_cls_labels, dtype=torch.bool)
 
         nms_type = getattr(iou3d_nms_utils, self.pred_sampler_cfg.NMS_CONFIG.NMS_TYPE)
@@ -41,7 +51,7 @@ class PreLossSampler(nn.Module):
         rcnn_cls_labels[bg_mask] = 0
         rcnn_cls_labels[ignore_mask] = -1
 
-        return sampled_inds, rcnn_cls_labels
+        return reg_valid_mask, rcnn_cls_labels
 
     # Confidence-based samplers ========================================================================================
     '''
@@ -49,9 +59,19 @@ class PreLossSampler(nn.Module):
     '''
     def classwise_hybrid_thresholds_sampler(self, forward_ret_dict, index):
         # (mis?) using pseudo-label objectness scores as a proxy for iou!
+        reg_valid_mask = forward_ret_dict['reg_valid_mask'][index].clone().detach()
         rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'][index].clone().detach()
         gt_boxes = forward_ret_dict['gt_of_rois_src'][index]
         roi_scores = torch.sigmoid(forward_ret_dict['roi_scores'][index])
+        rcnn_cls_preds = forward_ret_dict['rcnn_cls'].view_as(forward_ret_dict['rcnn_cls_labels'])[index].clone().detach()
+        rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds).unsqueeze(0)
+        
+        # ----------- REG_VALID_MASK -----------
+        reg_fg_thresh = self.pred_sampler_cfg.UNLABELED_REG_FG_THRESH
+        filtering_mask = (rcnn_cls_preds > reg_fg_thresh) & (rcnn_cls_labels > reg_fg_thresh)
+        reg_valid_mask = filtering_mask.long()
+
+        # ----------- RCNN_CLS_LABELS -----------
         sampled_inds = torch.zeros_like(rcnn_cls_labels, dtype=torch.bool)
 
         # Ignore rcnn_cls_labels based on semantic scores, assign hard labels based on objectness scrores
@@ -66,7 +86,7 @@ class PreLossSampler(nn.Module):
         rcnn_cls_labels[bg_mask] = 0
         rcnn_cls_labels[ignore_mask] = -1
 
-        return sampled_inds, rcnn_cls_labels
+        return reg_valid_mask, rcnn_cls_labels
 
     '''
     # Sample based on Teacher's (pseudo boxes) objectness score using Flexmatch idea 
@@ -76,9 +96,19 @@ class PreLossSampler(nn.Module):
     Adapted from : https://github.com/TorchSSL/TorchSSL
     '''
     def classwise_adapative_thresholds_sampler(self, forward_ret_dict, index):
+        reg_valid_mask = forward_ret_dict['reg_valid_mask'][index].clone().detach()
         rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'][index].clone().detach()
         gt_boxes = forward_ret_dict['gt_of_rois_src'][index]
         gt_labels = gt_boxes[:, -1].long()
+        rcnn_cls_preds = forward_ret_dict['rcnn_cls'].view_as(forward_ret_dict['rcnn_cls_labels'])[index].clone().detach()
+        rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds).unsqueeze(0)
+        
+        # ----------- REG_VALID_MASK -----------
+        reg_fg_thresh = self.pred_sampler_cfg.UNLABELED_REG_FG_THRESH
+        filtering_mask = (rcnn_cls_preds > reg_fg_thresh) & (rcnn_cls_labels > reg_fg_thresh)
+        reg_valid_mask = filtering_mask.long()
+
+        # ----------- RCNN_CLS_LABELS -----------
         sampled_inds = torch.zeros_like(rcnn_cls_labels, dtype=torch.bool)
 
         fixed_thresh = self.pred_sampler_cfg.UNLABELED_REG_FG_THRESH
@@ -113,7 +143,7 @@ class PreLossSampler(nn.Module):
         rcnn_cls_labels[bg_mask] = 0
         rcnn_cls_labels[ignore_mask] = -1
             
-        return sampled_inds, rcnn_cls_labels
+        return reg_valid_mask, rcnn_cls_labels
 
     '''
     Increased TEST:NMS_POST_MAXSIZE form 100->256 to perform this sampling.
@@ -121,9 +151,19 @@ class PreLossSampler(nn.Module):
     It further truncates those classwise top-k inds based on the proportion of rois predicted for each of those classes originally.
     '''
     def classwise_top_k_sampler(self, forward_ret_dict, index):
+        reg_valid_mask = forward_ret_dict['reg_valid_mask'][index].clone().detach()
         roi_labels = forward_ret_dict['roi_labels'][index]       
         rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'][index].clone().detach()
         gt_boxes = forward_ret_dict['gt_of_rois_src'][index]
+        rcnn_cls_preds = forward_ret_dict['rcnn_cls'].view_as(forward_ret_dict['rcnn_cls_labels'])[index].clone().detach()
+        rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds).unsqueeze(0)
+        
+        # ----------- REG_VALID_MASK -----------
+        reg_fg_thresh = self.pred_sampler_cfg.UNLABELED_REG_FG_THRESH
+        filtering_mask = (rcnn_cls_preds > reg_fg_thresh) & (rcnn_cls_labels > reg_fg_thresh)
+        reg_valid_mask = filtering_mask.long()
+
+        # ----------- RCNN_CLS_LABELS -----------
         sampled_inds = torch.zeros_like(rcnn_cls_labels, dtype=torch.bool)
 
         classwise_topk_inds = []
@@ -162,7 +202,7 @@ class PreLossSampler(nn.Module):
         rcnn_cls_labels[bg_mask] = 0
         rcnn_cls_labels[ignore_mask] = -1
 
-        return sampled_inds, rcnn_cls_labels
+        return reg_valid_mask, rcnn_cls_labels
 
     def roi_scores_sampler(self, **kwargs):
         roi_scores = kwargs.get("roi_scores")
@@ -174,7 +214,17 @@ class PreLossSampler(nn.Module):
     # TODO (shashank) : Fix appropriate PREDS_PER_IMAGE
     '''
     def gt_score_sampler(self, forward_ret_dict, index):
+        reg_valid_mask = forward_ret_dict['reg_valid_mask'][index].clone().detach()
         rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'][index].clone().detach()
+        rcnn_cls_preds = forward_ret_dict['rcnn_cls'].view_as(forward_ret_dict['rcnn_cls_labels'])[index].clone().detach()
+        rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds).unsqueeze(0)
+        
+        # ----------- REG_VALID_MASK -----------
+        reg_fg_thresh = self.pred_sampler_cfg.UNLABELED_REG_FG_THRESH
+        filtering_mask = (rcnn_cls_preds > reg_fg_thresh) & (rcnn_cls_labels > reg_fg_thresh)
+        reg_valid_mask = filtering_mask.long()
+
+        # ----------- RCNN_CLS_LABELS -----------
         sampled_inds = torch.zeros_like(rcnn_cls_labels, dtype=torch.bool)
         
         keep_inds = self.subsample_preds(max_overlaps=rcnn_cls_labels)
@@ -187,7 +237,7 @@ class PreLossSampler(nn.Module):
         rcnn_cls_labels[bg_mask] = 0
         rcnn_cls_labels[ignore_mask] = -1
 
-        return sampled_inds, rcnn_cls_labels
+        return reg_valid_mask, rcnn_cls_labels
 
     def subsample_preds(self, max_overlaps, preds_per_image=None):
         preds_per_image = self.pred_sampler_cfg.PREDS_PER_IMAGE if preds_per_image is None else preds_per_image

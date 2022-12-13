@@ -422,23 +422,21 @@ class RoIHeadTemplate(nn.Module):
 
     def pre_loss_filtering(self):
         unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
-        rcnn_cls_labels = self.forward_ret_dict['rcnn_cls_labels'].clone().detach()
-        rcnn_cls_preds = self.forward_ret_dict['rcnn_cls'].view_as(rcnn_cls_labels).clone().detach()
-        rcnn_cls_labels = rcnn_cls_labels[unlabeled_inds]
-        rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds)[unlabeled_inds]
-
-        # ----------- REG_VALID_MASK -----------
-        reg_valid_mask = (rcnn_cls_labels > self.model_cfg.TARGET_CONFIG.UNLABELED_REG_FG_THRESH).long()
-        pred_thresh = self.model_cfg.get('CONSISTENCY_PRE_LOSS_CLS_PRED_FILTERING_THRESH', [0.9])
-        label_thresh = self.model_cfg.get('CONSISTENCY_PRE_LOSS_CLS_LABEL_FILTERING_THRESH', [0.9])
-        # TODO(farzad) make thresholds classwise
-        filtering_mask = (rcnn_cls_preds > pred_thresh[0]) & (rcnn_cls_labels > label_thresh[0])
-        self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] = reg_valid_mask & filtering_mask
-
-        # ----------- RCNN_CLS_LABELS -----------
         sampler_type = getattr(self.preloss_sampler, self.model_cfg.TARGET_CONFIG.PRE_LOSS_SAMPLER_TYPE, None)
+        
         # default sampler for rcnn_cls_label
         if sampler_type is None:
+            rcnn_cls_labels = self.forward_ret_dict['rcnn_cls_labels'].clone().detach()
+            rcnn_cls_preds = self.forward_ret_dict['rcnn_cls'].view_as(rcnn_cls_labels).clone().detach()
+            rcnn_cls_labels = rcnn_cls_labels[unlabeled_inds]
+            rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds)[unlabeled_inds]
+
+            # ----------- REG_VALID_MASK -----------
+            reg_fg_thresh = self.model_cfg.TARGET_CONFIG.UNLABELED_REG_FG_THRESH
+            filtering_mask = (rcnn_cls_preds > reg_fg_thresh) & (rcnn_cls_labels > reg_fg_thresh)
+            self.forward_ret_dict['reg_valid_mask'][unlabeled_inds] = filtering_mask.long()
+
+            # ----------- RCNN_CLS_LABELS -----------
             fg_mask = rcnn_cls_labels > self.model_cfg.TARGET_CONFIG.CLS_FG_THRESH
             bg_mask = rcnn_cls_labels < self.model_cfg.TARGET_CONFIG.CLS_BG_THRESH
             ignore_mask = torch.eq(self.forward_ret_dict['gt_of_rois'][unlabeled_inds], 0).all(dim=-1)
@@ -446,16 +444,11 @@ class RoIHeadTemplate(nn.Module):
             rcnn_cls_labels[bg_mask] = 0
             rcnn_cls_labels[ignore_mask] = -1
             self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels
+        
         else:
-            # TODO : check with hgiher batch size
-            rcnn_cls_labels = self.forward_ret_dict['rcnn_cls_labels'].clone().detach()
+            # TODO (shashank) : avoid looping over inds, collate into a single function call
             for index in unlabeled_inds:
-                # NOTE (shashank) : Uses inplace operation to compute rcnn_cls_labels
-                _, rcnn_cls_labels[index] = sampler_type(self.forward_ret_dict, index)
-                # TODO (shashank) : remove this afterwards, only for debugging 
-                cls_pred_target = torch.cat((rcnn_cls_preds.view(rcnn_cls_preds.shape[1], -1), rcnn_cls_labels[index].view(-1, 1)), dim=1)
-            self.forward_ret_dict['rcnn_cls_labels'][unlabeled_inds] = rcnn_cls_labels[unlabeled_inds]
-            
+                self.forward_ret_dict['reg_valid_mask'][index], self.forward_ret_dict['rcnn_cls_labels'][index] = sampler_type(self.forward_ret_dict, index)
 
     def get_loss(self, tb_dict=None, scalar=True):
         tb_dict = {} if tb_dict is None else tb_dict
