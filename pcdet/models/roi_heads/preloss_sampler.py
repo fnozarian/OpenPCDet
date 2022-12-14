@@ -3,12 +3,20 @@ import numpy as np
 import torch
 import torch.nn as nn
 from collections import Counter
+import pandas as pd
 from ...ops.iou3d_nms import iou3d_nms_utils
 
 class PreLossSampler(nn.Module):
     def __init__(self, pred_sampler_cfg):
         super().__init__()
         self.pred_sampler_cfg = pred_sampler_cfg
+        
+        # NOTE (shashank) : Fetching test time score_fgs as pseudo train fgs to set classwise iteration dependent thresholds
+        # (This is only for testing purpose, later we should use the actualy train time score_fgs)
+        pseudo_train_score_fgs = pd.read_csv('/mnt/data/shag01/pcdet-st-reliable/OpenPCDet/tb_extractor/tb_pseudo_train_score_fgs.csv')
+        self.class_score_fgs = {'car': [], 'ped': [], 'cyc': []}
+        for cls in self.class_score_fgs.keys():
+            self.class_score_fgs[cls] = pseudo_train_score_fgs['ip_score_fgs_' + cls].tolist()
 
     # Localization-based samplers ======================================================================================
     # Should be focused more since the localization loss is x3 significant than the cls loss!
@@ -208,6 +216,39 @@ class PreLossSampler(nn.Module):
         roi_scores = kwargs.get("roi_scores")
         reg_valid_mask = torch.ge(roi_scores, 0.7).long()
         raise NotImplementedError
+
+    def fg_score_sampler(self, forward_ret_dict, index):
+        reg_valid_mask = forward_ret_dict['reg_valid_mask'][index].clone().detach()
+        reg_valid_mask = forward_ret_dict['reg_valid_mask'][index].clone().detach()
+        rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'][index].clone().detach()
+        gt_boxes = forward_ret_dict['gt_of_rois_src'][index]
+        gt_labels = gt_boxes[:, -1].long()
+        rcnn_cls_preds = forward_ret_dict['rcnn_cls'].view_as(forward_ret_dict['rcnn_cls_labels'])[index].clone().detach()
+        rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds).unsqueeze(0)
+        
+        cur_class_thresh = {'car': [], 'ped': [], 'cyc': []}
+        for cls in cur_class_thresh.keys():
+            cur_class_thresh[cls] = self.class_score_fgs[cls].pop(0)
+        
+        # ----------- REG_VALID_MASK -----------
+        # reg_fg_thresh = self.pred_sampler_cfg.UNLABELED_REG_FG_THRESH
+
+        # Mapping score_fgs to their respective gt_labels to use them as thresholds
+        reg_fg_thresh = torch.tensor(list(cur_class_thresh.values()), device=gt_labels.device).unsqueeze(
+                    0).repeat(len(gt_labels), 1).gather(dim=1, index=(gt_labels - 1).unsqueeze(-1)).view_as(rcnn_cls_preds)
+
+        filtering_mask = (rcnn_cls_preds > reg_fg_thresh) & (rcnn_cls_labels > reg_fg_thresh)
+        reg_valid_mask = filtering_mask.long()
+
+        # ----------- RCNN_CLS_LABELS -----------
+        fg_mask = rcnn_cls_labels > self.model_cfg.TARGET_CONFIG.CLS_FG_THRESH
+        bg_mask = rcnn_cls_labels < self.model_cfg.TARGET_CONFIG.CLS_BG_THRESH
+        ignore_mask = torch.eq(self.forward_ret_dict['gt_of_rois'][index], 0).all(dim=-1)
+        rcnn_cls_labels[fg_mask] = 1
+        rcnn_cls_labels[bg_mask] = 0
+        rcnn_cls_labels[ignore_mask] = -1
+
+        return reg_valid_mask, rcnn_cls_labels
 
     '''
     Samples teacher's final predictions(rcnn labels) based on FG:BG ratio
