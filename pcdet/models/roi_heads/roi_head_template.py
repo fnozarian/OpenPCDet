@@ -185,13 +185,18 @@ class RoIHeadTemplate(nn.Module):
             targets_dict['gt_of_rois_var'][unlabeled_inds, :num_rois_ema, :-1] = batch_dict['pred_boxes_ema_var'][
                 unlabeled_inds]
 
-    def update_metrics(self, targets_dict, mask_type='reg', pred_type='pred'):
+    def update_metrics(self, targets_dict, mask_type='cls', vis_type='pred_gt', pred_type='pred_gt', update_roi_pl=False):
         metric_registry = targets_dict['metric_registry']
         tag = f'rcnn_{pred_type}_metrics_{mask_type}'
         metrics = metric_registry.get(tag)
         unlabeled_inds = targets_dict['unlabeled_inds']
 
-        sample_preds, sample_pred_scores, sample_gts, sample_rois, sample_roi_scores, sample_targets, sample_target_scores = [], [], [], [], [], [], []
+        sample_preds, sample_pred_scores = [], []
+        sample_rois, sample_roi_scores = [], []
+        sample_targets, sample_target_scores = [], []
+        sample_pls, sample_pl_scores = [], []
+        ema_preds_of_std_rois, ema_pred_scores_of_std_rois = [], []
+        sample_gts = []
         for i, uind in enumerate(unlabeled_inds):
             mask = (targets_dict['reg_valid_mask'][uind] > 0) if mask_type == 'reg' else (
                         targets_dict['rcnn_cls_labels'][uind] >= 0)
@@ -204,7 +209,7 @@ class RoIHeadTemplate(nn.Module):
             sample_rois.append(roi_labeled_boxes)
             sample_roi_scores.append(roi_scores)
 
-            # (Pseudo labels) Target info
+            # Target info
             target_labeled_boxes = targets_dict['gt_of_rois_src'][uind][mask].detach().clone()
             target_scores = targets_dict['rcnn_cls_labels'][uind][mask].detach().clone()
             sample_targets.append(target_labeled_boxes)
@@ -221,28 +226,45 @@ class RoIHeadTemplate(nn.Module):
             gt_labeled_boxes = targets_dict['ori_unlabeled_boxes'][i]
             sample_gts.append(gt_labeled_boxes)
 
+            # (Pseudo labels) PL info
+            pl_labeled_boxes = targets_dict['pl_boxes'][uind]
+            pl_scores = targets_dict['pl_scores'][i]
+            sample_pls.append(pl_labeled_boxes)
+            sample_pl_scores.append(pl_scores)
+
             if self.model_cfg.get('ENABLE_VIS', False):
                 points_mask = targets_dict['points'][:, 0] == uind
                 points = targets_dict['points'][points_mask, 1:]
-                if pred_type == 'roi':
+                gt_boxes = gt_labeled_boxes[:, :-1]  # Default GT option
+                if vis_type == 'roi_gt':
                     vis_pred_boxes = roi_labeled_boxes[:, :-1]
                     vis_pred_scores = roi_scores
-                elif pred_type == 'pl':
+                elif vis_type == 'roi_pl':
+                    vis_pred_boxes = roi_labeled_boxes[:, :-1]
+                    vis_pred_scores = roi_scores
+                    gt_boxes = pl_labeled_boxes[:, :-1]
+                elif vis_type == 'target_gt':
                     vis_pred_boxes = target_labeled_boxes[:, :-1]
                     vis_pred_scores = target_scores
-                elif pred_type == 'pred':
+                elif vis_type == 'pred_gt':
                     vis_pred_boxes = pred_boxes
                     vis_pred_scores = pred_scores
                 else:
-                    raise ValueError(pred_type)
+                    raise ValueError(vis_type)
 
-                V.vis(points, gt_boxes=gt_labeled_boxes[:, :-1], pred_boxes=vis_pred_boxes,
+                V.vis(points, gt_boxes=gt_boxes, pred_boxes=vis_pred_boxes,
                       pred_scores=vis_pred_scores, pred_labels=roi_labels.view(-1),
-                      filename=f'vis_{pred_type}_{uind}.png')
+                      filename=f'vis_{vis_type}_{uind}.png')
 
         metric_inputs = {'preds': sample_preds, 'pred_scores': sample_pred_scores, 'rois': sample_rois, 'roi_scores': sample_roi_scores,
                          'ground_truths': sample_gts, 'targets': sample_targets, 'target_scores': sample_target_scores}
         metrics.update(**metric_inputs)
+
+        if update_roi_pl:
+            tag = f'rcnn_roi_pl_metrics_{mask_type}'
+            metrics_roi_pl = metric_registry.get(tag)
+            metric_inputs_roi_pl = {'preds': sample_rois, 'pred_scores': sample_roi_scores, 'ground_truths': sample_pls}
+            metrics_roi_pl.update(**metric_inputs_roi_pl)
 
     def assign_targets(self, batch_dict):
 
@@ -445,7 +467,7 @@ class RoIHeadTemplate(nn.Module):
             self.pre_loss_filtering()
 
         # self.update_metrics(self.forward_ret_dict, mask_type='reg')
-        self.update_metrics(self.forward_ret_dict, mask_type='cls')
+        self.update_metrics(self.forward_ret_dict, mask_type='cls', pred_type='pred_gt', vis_type='roi_pl', update_roi_pl=True)
 
         rcnn_loss_cls, cls_tb_dict = self.get_box_cls_layer_loss(self.forward_ret_dict, scalar=scalar)
         rcnn_loss_reg, reg_tb_dict = self.get_box_reg_layer_loss(self.forward_ret_dict, scalar=scalar)

@@ -325,6 +325,11 @@ class PVRCNN_SSL(Detector3DTemplate):
 
                 batch_dict = cur_module(batch_dict)
 
+            # For metrics calculation
+            self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = unlabeled_inds
+            self.pv_rcnn.roi_head.forward_ret_dict['pl_boxes'] = batch_dict['gt_boxes']
+            self.pv_rcnn.roi_head.forward_ret_dict['pl_scores'] = pseudo_scores
+
             disp_dict = {}
             loss_rpn_cls, loss_rpn_box, tb_dict = self.pv_rcnn.dense_head.get_loss(scalar=False)
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
