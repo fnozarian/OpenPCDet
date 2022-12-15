@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from collections import Counter
 import pandas as pd
+from pcdet.config import cfg
 from ...ops.iou3d_nms import iou3d_nms_utils
 
 class PreLossSampler(nn.Module):
@@ -13,7 +14,8 @@ class PreLossSampler(nn.Module):
         
         # NOTE (shashank) : Fetching test time score_fgs as pseudo train fgs to set classwise iteration dependent thresholds
         # (This is only for testing purpose, later we should use the actualy train time score_fgs)
-        pseudo_train_score_fgs = pd.read_csv('/mnt/data/shag01/pcdet-st-reliable/OpenPCDet/tb_extractor/tb_pseudo_train_score_fgs.csv')
+        csv_path = cfg.ROOT_DIR / "tb_extractor/tb_pseudo_train_score_fgs.csv"
+        pseudo_train_score_fgs = pd.read_csv(csv_path)
         self.class_score_fgs = {'car': [], 'ped': [], 'cyc': []}
         for cls in self.class_score_fgs.keys():
             self.class_score_fgs[cls] = pseudo_train_score_fgs['ip_score_fgs_' + cls].tolist()
@@ -217,8 +219,10 @@ class PreLossSampler(nn.Module):
         reg_valid_mask = torch.ge(roi_scores, 0.7).long()
         raise NotImplementedError
 
-    def fg_score_sampler(self, forward_ret_dict, index):
-        reg_valid_mask = forward_ret_dict['reg_valid_mask'][index].clone().detach()
+    '''
+    This sampler uses test time score_fgs trend to set adaptive thresholds and filter rcnn_cls_labels
+    '''
+    def score_fgs_adaptive_sampler(self, forward_ret_dict, index):
         reg_valid_mask = forward_ret_dict['reg_valid_mask'][index].clone().detach()
         rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'][index].clone().detach()
         gt_boxes = forward_ret_dict['gt_of_rois_src'][index]
@@ -241,11 +245,66 @@ class PreLossSampler(nn.Module):
         reg_valid_mask = filtering_mask.long()
 
         # ----------- RCNN_CLS_LABELS -----------
-        fg_mask = rcnn_cls_labels > self.model_cfg.TARGET_CONFIG.CLS_FG_THRESH
-        bg_mask = rcnn_cls_labels < self.model_cfg.TARGET_CONFIG.CLS_BG_THRESH
-        ignore_mask = torch.eq(self.forward_ret_dict['gt_of_rois'][index], 0).all(dim=-1)
+        fg_mask = rcnn_cls_labels > self.pred_sampler_cfg.CLS_FG_THRESH
+        bg_mask = rcnn_cls_labels < self.pred_sampler_cfg.CLS_BG_THRESH
+        ignore_mask = torch.eq(gt_boxes, 0).all(dim=-1)
         rcnn_cls_labels[fg_mask] = 1
         rcnn_cls_labels[bg_mask] = 0
+        rcnn_cls_labels[ignore_mask] = -1
+
+        return reg_valid_mask, rcnn_cls_labels
+
+    '''
+    This sampler avoids unreliable PLs based on their RCNN scores (rcnn_cls_labels)
+    Use hard and soft thresholds for FG/BG, ignore all rcnn_cls_labels which do not cross hard/soft thresholds
+    rcnn_cls_labels > Hard FG thresh : assigned 1
+    rcnn_cls_labels < Hard BG thresh : assigned 0
+    Those between hard and soft FG/BG thresh are used as soft labels
+    '''
+    def multi_thresh_fg_bg_sampler(self, forward_ret_dict, index):
+        reg_valid_mask = forward_ret_dict['reg_valid_mask'][index].clone().detach()
+        rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'][index].clone().detach()
+        gt_boxes = forward_ret_dict['gt_of_rois_src'][index]
+        gt_labels = gt_boxes[:, -1].long()
+        rcnn_cls_preds = forward_ret_dict['rcnn_cls'].view_as(forward_ret_dict['rcnn_cls_labels'])[index].clone().detach()
+        rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds).unsqueeze(0)
+        
+        # ----------- REG_VALID_MASK -----------
+        reg_fg_thresh = self.pred_sampler_cfg.UNLABELED_REG_FG_THRESH
+        filtering_mask = (rcnn_cls_preds > reg_fg_thresh) & (rcnn_cls_labels > reg_fg_thresh)
+        reg_valid_mask = filtering_mask.long()
+
+        # ----------- RCNN_CLS_LABELS -----------
+        # Below thresholds are based on score_fgs of rcnn_pred_cls_metrics
+        # TODO (shashank) : thresh values hard coded currently
+        # fg_thresh = {"hard": [0.85, 0.75, 0.75], "soft": [0.75, 0.65, 0.65]}
+        # bg_thresh = {"hard": [0.2, 0.05, 0.05], "soft": [0.3, 0.15, 0.15]}
+
+        fg_hard_thresh = self.pred_sampler_cfg.MULTI_FG_BG_THRESH.FG.HARD
+        fg_soft_thresh = self.pred_sampler_cfg.MULTI_FG_BG_THRESH.FG.SOFT
+        bg_hard_thresh = self.pred_sampler_cfg.MULTI_FG_BG_THRESH.BG.HARD
+        bg_soft_thresh = self.pred_sampler_cfg.MULTI_FG_BG_THRESH.BG.SOFT
+
+        hard_fg_thresh_map = torch.tensor(fg_hard_thresh, device=gt_labels.device).unsqueeze(
+            0).repeat(len(gt_labels), 1).gather(dim=1, index=(gt_labels - 1).unsqueeze(-1)).squeeze(1)
+
+        soft_fg_thresh_map = torch.tensor(fg_soft_thresh, device=gt_labels.device).unsqueeze(
+            0).repeat(len(gt_labels), 1).gather(dim=1, index=(gt_labels - 1).unsqueeze(-1)).squeeze(1)
+
+        hard_bg_thresh_map = torch.tensor(bg_hard_thresh, device=gt_labels.device).unsqueeze(
+            0).repeat(len(gt_labels), 1).gather(dim=1, index=(gt_labels - 1).unsqueeze(-1)).squeeze(1)
+
+        soft_bg_thresh_map = torch.tensor(bg_soft_thresh, device=gt_labels.device).unsqueeze(
+            0).repeat(len(gt_labels), 1).gather(dim=1, index=(gt_labels - 1).unsqueeze(-1)).squeeze(1)
+        
+        hard_fg_mask = rcnn_cls_labels > hard_fg_thresh_map
+        rcnn_cls_labels[hard_fg_mask] = 1
+
+        hard_bg_mask = rcnn_cls_labels < hard_bg_thresh_map
+        rcnn_cls_labels[hard_bg_mask] = 0
+
+        unreliable_mask = (soft_fg_thresh_map > rcnn_cls_labels) & (rcnn_cls_labels > soft_bg_thresh_map)
+        ignore_mask = (unreliable_mask | torch.eq(gt_boxes, 0).all(dim=-1))
         rcnn_cls_labels[ignore_mask] = -1
 
         return reg_valid_mask, rcnn_cls_labels
