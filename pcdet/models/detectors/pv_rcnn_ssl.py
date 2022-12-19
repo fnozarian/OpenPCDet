@@ -325,6 +325,11 @@ class PVRCNN_SSL(Detector3DTemplate):
 
                 batch_dict = cur_module(batch_dict)
 
+            # For metrics calculation
+            self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = unlabeled_inds
+            self.pv_rcnn.roi_head.forward_ret_dict['pl_boxes'] = batch_dict['gt_boxes']
+            self.pv_rcnn.roi_head.forward_ret_dict['pl_scores'] = pseudo_scores
+
             disp_dict = {}
             loss_rpn_cls, loss_rpn_box, tb_dict = self.pv_rcnn.dense_head.get_loss(scalar=False)
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
@@ -385,9 +390,10 @@ class PVRCNN_SSL(Detector3DTemplate):
             pseudo_boxes_list = [torch.cat([pred_dict['pred_boxes'], pred_dict['pred_labels'].unsqueeze(-1)], dim=-1)
                                  for pred_dict in pred_dicts]
             pseudo_scores = [pred_dict['pred_scores'] for pred_dict in pred_dicts]
+            gt_boxes = [gt_box for gt_box in batch_dict['gt_boxes']]
             metric_inputs = {'preds': pseudo_boxes_list,
                              'pred_scores': pseudo_scores,
-                             'ground_truths': batch_dict['gt_boxes']}
+                             'ground_truths': gt_boxes}
 
             self.metric_registry.get('test').update(**metric_inputs)
 
@@ -604,16 +610,21 @@ class PVRCNN_SSL(Detector3DTemplate):
         )
 
         return batch_dict
-    
-    def reverse_augmentation(self, batch_dict, batch_dict_org, unlabeled_inds, key = 'rois'):
+
+    def reverse_augmentation(self, batch_dict, batch_dict_org, unlabeled_inds, key='rois'):
         batch_dict[key][unlabeled_inds] = global_scaling_bbox(
-            batch_dict[key][unlabeled_inds], batch_dict_org['scale'][unlabeled_inds])
+            batch_dict[key][unlabeled_inds], 1.0 / batch_dict_org['scale'][unlabeled_inds])
         batch_dict[key][unlabeled_inds] = global_rotation_bbox(
-            batch_dict[key][unlabeled_inds], batch_dict_org['rot_angle'][unlabeled_inds])
+            batch_dict[key][unlabeled_inds], - batch_dict_org['rot_angle'][unlabeled_inds])
         batch_dict[key][unlabeled_inds] = random_flip_along_y_bbox(
             batch_dict[key][unlabeled_inds], batch_dict_org['flip_y'][unlabeled_inds])
         batch_dict[key][unlabeled_inds] = random_flip_along_x_bbox(
             batch_dict[key][unlabeled_inds], batch_dict_org['flip_x'][unlabeled_inds])
+
+        batch_dict[key][unlabeled_inds, :, 6] = common_utils.limit_period(
+            batch_dict[key][unlabeled_inds, :, 6], offset=0.5, period=2 * np.pi
+        )
+
         return batch_dict
 
     def get_supervised_training_loss(self):

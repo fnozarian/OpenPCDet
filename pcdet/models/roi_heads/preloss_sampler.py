@@ -103,8 +103,8 @@ class PreLossSampler(nn.Module):
         subsampled_inds = self.subsample_preds(max_overlaps=rcnn_cls_labels[thresh_inds], preds_per_image = len(thresh_inds))
         sampled_inds[thresh_inds[subsampled_inds]] = True
         
-        fg_mask = rcnn_cls_labels > self.pred_sampler_cfg.CLS_FG_THRESH
-        bg_mask = rcnn_cls_labels < self.pred_sampler_cfg.CLS_BG_THRESH
+        fg_mask = rcnn_cls_labels > self.pred_sampler_cfg.UNLABELED_CLS_FG_THRESH
+        bg_mask = rcnn_cls_labels < self.pred_sampler_cfg.UNLABELED_CLS_BG_THRESH
         ignore_mask = (~sampled_inds | torch.eq(gt_boxes, 0).all(dim=-1))
         rcnn_cls_labels[fg_mask] = 1
         rcnn_cls_labels[bg_mask] = 0
@@ -160,8 +160,8 @@ class PreLossSampler(nn.Module):
         # Non linear mapping function based on Flexmatch sec3.3
         # sampled_inds = gt_scores.ge(fixed_thresh * (classwise_acc[gt_labels-1] / (2. - classwise_acc[gt_labels-1]))).long()  # convex
         
-        fg_mask = rcnn_cls_labels > self.pred_sampler_cfg.CLS_FG_THRESH
-        bg_mask = rcnn_cls_labels < self.pred_sampler_cfg.CLS_BG_THRESH
+        fg_mask = rcnn_cls_labels > self.pred_sampler_cfg.UNLABELED_CLS_FG_THRESH
+        bg_mask = rcnn_cls_labels < self.pred_sampler_cfg.UNLABELED_CLS_BG_THRESH
         ignore_mask = (~sampled_inds | torch.eq(gt_boxes, 0).all(dim=-1))
         rcnn_cls_labels[fg_mask] = 1
         rcnn_cls_labels[bg_mask] = 0
@@ -217,8 +217,8 @@ class PreLossSampler(nn.Module):
         sampled_inds[keep_inds] = True
 
         # filter GT labels based on FG/BG thresholds 
-        iou_fg_thresh = self.pred_sampler_cfg.CLS_FG_THRESH
-        iou_bg_thresh = self.pred_sampler_cfg.CLS_BG_THRESH
+        iou_fg_thresh = self.pred_sampler_cfg.UNLABELED_CLS_FG_THRESH
+        iou_bg_thresh = self.pred_sampler_cfg.UNLABELED_CLS_BG_THRESH
         fg_mask = rcnn_cls_labels > iou_fg_thresh
         bg_mask = rcnn_cls_labels < iou_bg_thresh
         ignore_mask = (~sampled_inds | torch.eq(gt_boxes, 0).all(dim=-1))
@@ -264,8 +264,8 @@ class PreLossSampler(nn.Module):
         reg_valid_mask = filtering_mask.long()
 
         # ----------- RCNN_CLS_LABELS -----------
-        fg_mask = rcnn_cls_labels > self.pred_sampler_cfg.CLS_FG_THRESH
-        bg_mask = rcnn_cls_labels < self.pred_sampler_cfg.CLS_BG_THRESH
+        fg_mask = rcnn_cls_labels > self.pred_sampler_cfg.UNLABELED_CLS_FG_THRESH
+        bg_mask = rcnn_cls_labels < self.pred_sampler_cfg.UNLABELED_CLS_BG_THRESH
         ignore_mask = torch.eq(gt_boxes, 0).all(dim=-1)
         rcnn_cls_labels[fg_mask] = 1
         rcnn_cls_labels[bg_mask] = 0
@@ -383,8 +383,8 @@ class PreLossSampler(nn.Module):
         keep_inds = self.subsample_preds(max_overlaps=rcnn_cls_labels)
         sampled_inds[keep_inds] = True
 
-        fg_mask = rcnn_cls_labels > self.pred_sampler_cfg.CLS_FG_THRESH
-        bg_mask = rcnn_cls_labels < self.pred_sampler_cfg.CLS_BG_THRESH
+        fg_mask = rcnn_cls_labels > self.pred_sampler_cfg.UNLABELED_CLS_FG_THRESH
+        bg_mask = rcnn_cls_labels < self.pred_sampler_cfg.UNLABELED_CLS_BG_THRESH
         ignore_mask = (~sampled_inds | torch.eq(forward_ret_dict['gt_of_rois'][index], 0).all(dim=-1)) 
         rcnn_cls_labels[fg_mask] = 1
         rcnn_cls_labels[bg_mask] = 0
@@ -396,6 +396,7 @@ class PreLossSampler(nn.Module):
         preds_per_image = self.pred_sampler_cfg.PREDS_PER_IMAGE if preds_per_image is None else preds_per_image
         # sample fg, easy_bg, hard_bg
         fg_preds_per_image = int(np.round(self.pred_sampler_cfg.FG_RATIO * preds_per_image))
+        # TODO(farzad) NOTE that unlabeled thresholds are NOT used here, both for REG and CLS. Use with caution!
         fg_thresh = min(self.pred_sampler_cfg.REG_FG_THRESH, self.pred_sampler_cfg.CLS_FG_THRESH)
 
         fg_inds = ((max_overlaps >= fg_thresh)).nonzero().view(-1)  # > 0.55
