@@ -15,7 +15,7 @@ from ...utils.stats_utils import KITTIEvalMetrics, PredQualityMetrics
 from torchmetrics.collections import MetricCollection
 import torch.distributed as dist
 from visual_utils import visualize_utils as V
-
+import pickle as pkl
 def _to_dict_of_tensors(list_of_dicts, agg_mode='stack'):
     new_dict = {}
     for k in list_of_dicts[0].keys():
@@ -147,8 +147,11 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.supervise_mode = model_cfg.SUPERVISE_MODE
         cls_bg_thresh = model_cfg.ROI_HEAD.TARGET_CONFIG.CLS_BG_THRESH
         self.metric_registry = MetricRegistry(dataset=self.dataset, cls_bg_thresh=cls_bg_thresh)
+        self.gt_sampler_for_pseudo_labels= None
 
-    def forward(self, batch_dict):
+    def forward(self, batch_dict, cur_epoch=None):
+
+
         if self.training:
             labeled_mask = batch_dict['labeled_mask'].view(-1)
             labeled_inds = torch.nonzero(labeled_mask).squeeze(1).long()
@@ -255,6 +258,22 @@ class PVRCNN_SSL(Detector3DTemplate):
             ################################
             pseudo_boxes, pseudo_scores, pseudo_sem_scores, pseudo_boxes_var, pseudo_scores_var = \
                 self._filter_pseudo_labels(pred_dicts_ens, unlabeled_inds)
+
+
+            # if cur_epoch==2:
+            #     print("create db_infos for unlabeled samples")
+            #     #self.dataset.set_split('train')
+            #     kitti_infos_train = self.dataset.get_infos(num_workers=workers, has_label=False, count_inside_pts=True)
+            #     with open(train_filename, 'wb') as f:
+            #         pickle.dump(kitti_infos_train, f)
+            #     print('Kitti info train file is saved to %s' % train_filename)
+            # for db_info_pl_path in self.sampler_cfg.DB_INFO_PL_PATH:
+            #     db_info_pl_path = self.root_path.resolve() / db_info_pl_path
+
+            # PL_INFOS = {} # should be similar to db infos 
+            # with open("/mnt/data/dash01/DA-35-soft-teacher/data/kitti/pl_infos.pkl", 'wb') as f:
+            #     pkl.dump(PL_INFOS, f)
+
 
             self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, unlabeled_inds, labeled_inds)
 
