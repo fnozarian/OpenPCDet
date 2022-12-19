@@ -40,6 +40,8 @@ class PredQualityMetrics(Metric):
 
     def update(self, preds: [torch.Tensor], ground_truths: [torch.Tensor], pred_scores: [torch.Tensor],
                rois=None, roi_scores=None, targets=None, target_scores=None) -> None:
+        assert isinstance(preds, list) and isinstance(ground_truths, list) and isinstance(pred_scores, list)
+        assert all([pred.dim() == 2 for pred in preds]) and all([pred.dim() == 2 for pred in ground_truths]) and all([pred.dim() == 1 for pred in pred_scores])
         assert all([pred.shape[-1] == 8 for pred in preds]) and all([gt.shape[-1] == 8 for gt in ground_truths])
         if roi_scores is not None:
             assert len(pred_scores) == len(roi_scores)
@@ -126,6 +128,7 @@ class PredQualityMetrics(Metric):
                     # Using clamp with min=1 in the denominator makes the final results zero when there's no FG,
                     # while without clamp it is N/A, which makes more sense.
                     if valid_roi_scores is not None:
+                        valid_roi_scores = torch.sigmoid(valid_roi_scores)
                         cls_sem_score_fg = (valid_roi_scores.squeeze() * fg_mask.float() * correctly_classified_cls_mask.float()).sum() \
                                            / (fg_mask & correctly_classified_cls_mask).sum()
                         classwise_metrics['sem_score_fgs'][cind] = cls_sem_score_fg
