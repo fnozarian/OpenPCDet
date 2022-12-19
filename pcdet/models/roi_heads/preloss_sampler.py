@@ -32,6 +32,7 @@ class PreLossSampler(nn.Module):
     def gt_nms_sampler(self, forward_ret_dict, index):
         reg_valid_mask = forward_ret_dict['reg_valid_mask'][index].clone().detach()
         rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'][index].clone().detach()
+        pred_boxes = forward_ret_dict['batch_box_preds'][index].clone().detach()
         gt_boxes = forward_ret_dict['gt_of_rois_src'][index]
         rcnn_cls_preds = forward_ret_dict['rcnn_cls'].view_as(forward_ret_dict['rcnn_cls_labels'])[index].clone().detach()
         rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds).unsqueeze(0)
@@ -54,12 +55,25 @@ class PreLossSampler(nn.Module):
         else:
             sampled_inds[nms_inds] = True
         
-        fg_mask = rcnn_cls_labels > self.pred_sampler_cfg.CLS_FG_THRESH
-        bg_mask = rcnn_cls_labels < self.pred_sampler_cfg.CLS_BG_THRESH
-        ignore_mask = (~sampled_inds | torch.eq(gt_boxes, 0).all(dim=-1))
-        rcnn_cls_labels[fg_mask] = 1
-        rcnn_cls_labels[bg_mask] = 0
-        rcnn_cls_labels[ignore_mask] = -1
+        # filter post nms gt boxes
+        gt_boxes[~sampled_inds] = torch.zeros(gt_boxes.shape[-1]).cuda()
+
+        # find IoU between filtered GT boxes and student preds and fetch the max overlapped GT boxes with each student pred
+        iou3d = iou3d_nms_utils.boxes_iou3d_gpu(pred_boxes[:, 0:7], gt_boxes[:, 0:7])  # (M, N)
+        max_overlaps, gt_assignment = torch.max(iou3d, dim=1)
+        
+        # Assign the 
+        fg_mask = max_overlaps > self.pred_sampler_cfg.CLS_FG_THRESH
+        bg_mask = max_overlaps < self.pred_sampler_cfg.CLS_BG_THRESH
+        max_overlaps[fg_mask] = 1
+        max_overlaps[bg_mask] = 0
+
+        # fg_mask = rcnn_cls_labels > self.pred_sampler_cfg.CLS_FG_THRESH
+        # bg_mask = rcnn_cls_labels < self.pred_sampler_cfg.CLS_BG_THRESH
+        # ignore_mask = (~sampled_inds | torch.eq(gt_boxes, 0).all(dim=-1))
+        # rcnn_cls_labels[fg_mask] = 1
+        # rcnn_cls_labels[bg_mask] = 0
+        # rcnn_cls_labels[ignore_mask] = -1
 
         return reg_valid_mask, rcnn_cls_labels
 
@@ -230,9 +244,14 @@ class PreLossSampler(nn.Module):
         rcnn_cls_preds = forward_ret_dict['rcnn_cls'].view_as(forward_ret_dict['rcnn_cls_labels'])[index].clone().detach()
         rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds).unsqueeze(0)
         
-        cur_class_thresh = {'car': [], 'ped': [], 'cyc': []}
+        cur_class_thresh = {'car': None, 'ped': None, 'cyc': None}
         for cls in cur_class_thresh.keys():
-            cur_class_thresh[cls] = self.class_score_fgs[cls].pop(0)
+            # If train iterations are still running but test time score_fgs are exhausted, 
+            # use the last value as the threshold for remaining itr
+            if len(self.class_score_fgs[cls]) > 1:
+                cur_class_thresh[cls] = self.class_score_fgs[cls].pop(0)
+            else:
+                cur_class_thresh[cls] = self.class_score_fgs[cls]
         
         # ----------- REG_VALID_MASK -----------
         # reg_fg_thresh = self.pred_sampler_cfg.UNLABELED_REG_FG_THRESH
@@ -276,10 +295,6 @@ class PreLossSampler(nn.Module):
 
         # ----------- RCNN_CLS_LABELS -----------
         # Below thresholds are based on score_fgs of rcnn_pred_cls_metrics
-        # TODO (shashank) : thresh values hard coded currently
-        # fg_thresh = {"hard": [0.85, 0.75, 0.75], "soft": [0.75, 0.65, 0.65]}
-        # bg_thresh = {"hard": [0.2, 0.05, 0.05], "soft": [0.3, 0.15, 0.15]}
-
         fg_hard_thresh = self.pred_sampler_cfg.MULTI_FG_BG_THRESH.FG.HARD
         fg_soft_thresh = self.pred_sampler_cfg.MULTI_FG_BG_THRESH.FG.SOFT
         bg_hard_thresh = self.pred_sampler_cfg.MULTI_FG_BG_THRESH.BG.HARD
@@ -308,6 +323,44 @@ class PreLossSampler(nn.Module):
         rcnn_cls_labels[ignore_mask] = -1
 
         return reg_valid_mask, rcnn_cls_labels
+
+    def filter_iou_sampler(self, forward_ret_dict, index):
+        reg_valid_mask = forward_ret_dict['reg_valid_mask'][index].clone().detach()
+        rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'][index].clone().detach()
+        roi_scores = torch.sigmoid(forward_ret_dict['roi_scores'][index])
+        pred_boxes = forward_ret_dict['batch_box_preds'][index].clone().detach()
+        gt_boxes = forward_ret_dict['gt_of_rois_src'][index]
+        gt_labels = gt_boxes[:, -1].long()
+        rcnn_cls_preds = forward_ret_dict['rcnn_cls'].view_as(forward_ret_dict['rcnn_cls_labels'])[index].clone().detach()
+        rcnn_cls_preds = torch.sigmoid(rcnn_cls_preds).unsqueeze(0)
+        
+        # ----------- REG_VALID_MASK -----------
+        reg_fg_thresh = self.pred_sampler_cfg.UNLABELED_REG_FG_THRESH
+        filtering_mask = (rcnn_cls_preds > reg_fg_thresh) & (rcnn_cls_labels > reg_fg_thresh)
+        reg_valid_mask = filtering_mask.long()
+
+        # ----------- RCNN_CLS_LABELS -----------
+        pl_conf_thresh = [0.7, 0.5, 0.5]
+        pl_sem_thresh = 0.4
+
+        pl_conf_thresh_map = torch.tensor(pl_conf_thresh, device=gt_labels.device).unsqueeze(
+            0).repeat(len(gt_labels), 1).gather(dim=1, index=(gt_labels - 1).unsqueeze(-1))
+
+        valid_inds = rcnn_cls_labels > pl_conf_thresh_map.squeeze()
+        valid_inds = valid_inds * (roi_scores > pl_sem_thresh)
+
+        gt_boxes[~valid_inds] = torch.zeros(gt_boxes.shape[-1]).cuda()
+
+        iou3d = iou3d_nms_utils.boxes_iou3d_gpu(pred_boxes[:, 0:7], gt_boxes[:, 0:7])  # (M, N)
+        max_overlaps, gt_assignment = torch.max(iou3d, dim=1)
+        
+        # ignore_mask wont be required here
+        fg_mask = max_overlaps > self.pred_sampler_cfg.CLS_FG_THRESH
+        bg_mask = max_overlaps < self.pred_sampler_cfg.CLS_BG_THRESH
+        max_overlaps[fg_mask] = 1
+        max_overlaps[bg_mask] = 0
+        
+        return reg_valid_mask, max_overlaps
 
     '''
     Samples teacher's final predictions(rcnn labels) based on FG:BG ratio
