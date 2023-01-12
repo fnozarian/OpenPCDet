@@ -35,10 +35,9 @@ class PVRCNN_SSL(Detector3DTemplate):
 
     def forward(self, batch_dict):
         if self.training:
-            mask = batch_dict['mask'].view(-1)
-
-            labeled_mask = torch.nonzero(mask).squeeze(1).long()
-            unlabeled_mask = torch.nonzero(1-mask).squeeze(1).long()
+            labeled_mask = batch_dict['labeled_mask'].view(-1)
+            labeled_inds = torch.nonzero(labeled_mask).squeeze(1).long()
+            unlabeled_inds = torch.nonzero(1-labeled_mask).squeeze(1).long()
             batch_dict_ema = {}
             keys = list(batch_dict.keys())
             for k in keys:
@@ -61,10 +60,10 @@ class PVRCNN_SSL(Detector3DTemplate):
 
                 pseudo_boxes = []
                 pseudo_scores = []
-                pseudo_labels = []
+                pseudo_sem_scores = []
                 max_box_num = batch_dict['gt_boxes'].shape[1]
                 max_pseudo_box_num = 0
-                for ind in unlabeled_mask:
+                for ind in unlabeled_inds:
                     pseudo_score = pred_dicts[ind]['pred_scores']
                     pseudo_box = pred_dicts[ind]['pred_boxes']
                     pseudo_label = pred_dicts[ind]['pred_labels']
@@ -72,6 +71,8 @@ class PVRCNN_SSL(Detector3DTemplate):
 
                     if len(pseudo_label) == 0:
                         pseudo_boxes.append(pseudo_label.new_zeros((0, 8)).float())
+                        pseudo_sem_scores.append(pseudo_label.new_zeros((1,)).float())
+                        pseudo_scores.append(pseudo_label.new_zeros((1,)).float())
                         continue
 
 
@@ -85,6 +86,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                     pseudo_sem_score = pseudo_sem_score[valid_inds]
                     pseudo_box = pseudo_box[valid_inds]
                     pseudo_label = pseudo_label[valid_inds]
+                    pseudo_score = pseudo_score[valid_inds]
 
                     # if len(valid_inds) > max_box_num:
                     #     _, inds = torch.sort(pseudo_score, descending=True)
@@ -93,6 +95,9 @@ class PVRCNN_SSL(Detector3DTemplate):
                     #     pseudo_label = pseudo_label[inds]
 
                     pseudo_boxes.append(torch.cat([pseudo_box, pseudo_label.view(-1, 1).float()], dim=1))
+                    pseudo_sem_scores.append(pseudo_sem_score)
+                    pseudo_scores.append(pseudo_score)
+
                     if pseudo_box.shape[0] > max_pseudo_box_num:
                         max_pseudo_box_num = pseudo_box.shape[0]
                     # pseudo_scores.append(pseudo_score)
@@ -101,19 +106,19 @@ class PVRCNN_SSL(Detector3DTemplate):
                 max_box_num = batch_dict['gt_boxes'].shape[1]
 
                 # assert max_box_num >= max_pseudo_box_num
-                ori_unlabeled_boxes = batch_dict['gt_boxes'][unlabeled_mask, ...]
+                ori_unlabeled_boxes = batch_dict['gt_boxes'][unlabeled_inds, ...]
 
                 if max_box_num >= max_pseudo_box_num:
                     for i, pseudo_box in enumerate(pseudo_boxes):
                         diff = max_box_num - pseudo_box.shape[0]
                         if diff > 0:
                             pseudo_box = torch.cat([pseudo_box, torch.zeros((diff, 8), device=pseudo_box.device)], dim=0)
-                        batch_dict['gt_boxes'][unlabeled_mask[i]] = pseudo_box
+                        batch_dict['gt_boxes'][unlabeled_inds[i]] = pseudo_box
                 else:
                     ori_boxes = batch_dict['gt_boxes']
                     new_boxes = torch.zeros((ori_boxes.shape[0], max_pseudo_box_num, ori_boxes.shape[2]),
                                             device=ori_boxes.device)
-                    for i, inds in enumerate(labeled_mask):
+                    for i, inds in enumerate(labeled_inds):
                         diff = max_pseudo_box_num - ori_boxes[inds].shape[0]
                         new_box = torch.cat([ori_boxes[inds], torch.zeros((diff, 8), device=ori_boxes[inds].device)], dim=0)
                         new_boxes[inds] = new_box
@@ -122,29 +127,31 @@ class PVRCNN_SSL(Detector3DTemplate):
                         diff = max_pseudo_box_num - pseudo_box.shape[0]
                         if diff > 0:
                             pseudo_box = torch.cat([pseudo_box, torch.zeros((diff, 8), device=pseudo_box.device)], dim=0)
-                        new_boxes[unlabeled_mask[i]] = pseudo_box
+                        new_boxes[unlabeled_inds[i]] = pseudo_box
                     batch_dict['gt_boxes'] = new_boxes
 
-                batch_dict['gt_boxes'][unlabeled_mask, ...] = random_flip_along_x_bbox(
-                    batch_dict['gt_boxes'][unlabeled_mask, ...], batch_dict['flip_x'][unlabeled_mask, ...]
+                batch_dict['gt_boxes'][unlabeled_inds, ...] = random_flip_along_x_bbox(
+                    batch_dict['gt_boxes'][unlabeled_inds, ...], batch_dict['flip_x'][unlabeled_inds, ...]
                 )
 
-                batch_dict['gt_boxes'][unlabeled_mask, ...] = random_flip_along_y_bbox(
-                    batch_dict['gt_boxes'][unlabeled_mask, ...], batch_dict['flip_y'][unlabeled_mask, ...]
+                batch_dict['gt_boxes'][unlabeled_inds, ...] = random_flip_along_y_bbox(
+                    batch_dict['gt_boxes'][unlabeled_inds, ...], batch_dict['flip_y'][unlabeled_inds, ...]
                 )
 
-                batch_dict['gt_boxes'][unlabeled_mask, ...] = global_rotation_bbox(
-                    batch_dict['gt_boxes'][unlabeled_mask, ...], batch_dict['rot_angle'][unlabeled_mask, ...]
+                batch_dict['gt_boxes'][unlabeled_inds, ...] = global_rotation_bbox(
+                    batch_dict['gt_boxes'][unlabeled_inds, ...], batch_dict['rot_angle'][unlabeled_inds, ...]
                 )
 
-                batch_dict['gt_boxes'][unlabeled_mask, ...] = global_scaling_bbox(
-                    batch_dict['gt_boxes'][unlabeled_mask, ...], batch_dict['scale'][unlabeled_mask, ...]
+                batch_dict['gt_boxes'][unlabeled_inds, ...] = global_scaling_bbox(
+                    batch_dict['gt_boxes'][unlabeled_inds, ...], batch_dict['scale'][unlabeled_inds, ...]
                 )
 
                 pseudo_ious = []
                 pseudo_accs = []
                 pseudo_fgs = []
-                for i, ind in enumerate(unlabeled_mask):
+                sem_score_fgs = []
+                sem_score_bgs = []
+                for i, ind in enumerate(unlabeled_inds):
                     # statistics
                     anchor_by_gt_overlap = iou3d_nms_utils.boxes_iou3d_gpu(
                         batch_dict['gt_boxes'][ind, ...][:, 0:7],
@@ -154,16 +161,18 @@ class PVRCNN_SSL(Detector3DTemplate):
                     cls_pseudo = cls_pseudo[unzero_inds]
                     if len(unzero_inds) > 0:
                         iou_max, asgn = anchor_by_gt_overlap[unzero_inds, :].max(dim=1)
-                        pseudo_ious.append(iou_max.unsqueeze(0))
+                        pseudo_ious.append(iou_max.mean().unsqueeze(dim=0))
                         acc = (ori_unlabeled_boxes[i][:, 7].gather(dim=0, index=asgn) == cls_pseudo).float().mean()
                         pseudo_accs.append(acc.unsqueeze(0))
                         fg = (iou_max > 0.5).float().sum(dim=0, keepdim=True) / len(unzero_inds)
 
-                        sem_score_fg = (pseudo_sem_score[unzero_inds] * (iou_max > 0.5).float()).sum(dim=0, keepdim=True) \
+                        sem_score_fg = (pseudo_sem_scores[i][unzero_inds] * (iou_max > 0.5).float()).sum(dim=0, keepdim=True) \
                                        / torch.clamp((iou_max > 0.5).float().sum(dim=0, keepdim=True), min=1.0)
-                        sem_score_bg = (pseudo_sem_score[unzero_inds] * (iou_max < 0.5).float()).sum(dim=0, keepdim=True) \
+                        sem_score_bg = (pseudo_sem_scores[i][unzero_inds] * (iou_max < 0.5).float()).sum(dim=0, keepdim=True) \
                                        / torch.clamp((iou_max < 0.5).float().sum(dim=0, keepdim=True), min=1.0)
                         pseudo_fgs.append(fg)
+                        sem_score_fgs.append(sem_score_fg)
+                        sem_score_bgs.append(sem_score_bg)
 
                         # only for 100% label
                         if self.supervise_mode >= 1:
@@ -180,12 +189,14 @@ class PVRCNN_SSL(Detector3DTemplate):
                                                                                      batch_dict['gt_boxes'][ind, ...][
                                                                                      :len(asgn), 3:6]
                     else:
-                        ones = torch.ones((1), device=unlabeled_mask.device)
+                        ones = torch.ones((1), device=unlabeled_inds.device)
                         sem_score_fg = ones
                         sem_score_bg = ones
                         pseudo_ious.append(ones)
                         pseudo_accs.append(ones)
                         pseudo_fgs.append(ones)
+                        sem_score_fgs.append(ones)
+                        sem_score_bgs.append(ones)
 
             for cur_module in self.pv_rcnn.module_list:
                 batch_dict = cur_module(batch_dict)
@@ -196,38 +207,38 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
 
             if not self.unlabeled_supervise_cls:
-                loss_rpn_cls = loss_rpn_cls[labeled_mask, ...].sum()
+                loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].sum()
             else:
-                loss_rpn_cls = loss_rpn_cls[labeled_mask, ...].sum() + loss_rpn_cls[unlabeled_mask, ...].sum() * self.unlabeled_weight
+                loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].sum() + loss_rpn_cls[unlabeled_inds, ...].sum() * self.unlabeled_weight
 
-            loss_rpn_box = loss_rpn_box[labeled_mask, ...].sum() + loss_rpn_box[unlabeled_mask, ...].sum() * self.unlabeled_weight
-            loss_point = loss_point[labeled_mask, ...].sum()
-            loss_rcnn_cls = loss_rcnn_cls[labeled_mask, ...].sum()
+            loss_rpn_box = loss_rpn_box[labeled_inds, ...].sum() + loss_rpn_box[unlabeled_inds, ...].sum() * self.unlabeled_weight
+            loss_point = loss_point[labeled_inds, ...].sum()
+            loss_rcnn_cls = loss_rcnn_cls[labeled_inds, ...].sum()
 
             if not self.unlabeled_supervise_refine:
-                loss_rcnn_box = loss_rcnn_box[labeled_mask, ...].sum()
+                loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].sum()
             else:
-                loss_rcnn_box = loss_rcnn_box[labeled_mask, ...].sum() + loss_rcnn_box[unlabeled_mask, ...].sum() * self.unlabeled_weight
+                loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].sum() + loss_rcnn_box[unlabeled_inds, ...].sum() * self.unlabeled_weight
 
             loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box
             tb_dict_ = {}
             for key in tb_dict.keys():
                 if 'loss' in key:
-                    tb_dict_[key+"_labeled"] = tb_dict[key][labeled_mask, ...].sum()
-                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_mask, ...].sum()
+                    tb_dict_[key+"_labeled"] = tb_dict[key][labeled_inds, ...].sum()
+                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
                 elif 'acc' in key:
-                    tb_dict_[key+"_labeled"] = tb_dict[key][labeled_mask, ...].sum()
-                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_mask, ...].sum()
+                    tb_dict_[key+"_labeled"] = tb_dict[key][labeled_inds, ...].sum()
+                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
                 elif 'point_pos_num' in key:
-                    tb_dict_[key + "_labeled"] = tb_dict[key][labeled_mask, ...].sum()
-                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_mask, ...].sum()
+                    tb_dict_[key + "_labeled"] = tb_dict[key][labeled_inds, ...].sum()
+                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
                 else:
                     tb_dict_[key] = tb_dict[key]
 
             tb_dict_['pseudo_ious'] = torch.cat(pseudo_ious, dim=0).mean()
             tb_dict_['pseudo_accs'] = torch.cat(pseudo_accs, dim=0).mean()
-            tb_dict_['sem_score_fg'] = sem_score_fg.mean()
-            tb_dict_['sem_score_bg'] = sem_score_bg.mean()
+            tb_dict_['sem_score_fg'] = torch.cat(sem_score_fgs, dim=0).mean()
+            tb_dict_['sem_score_bg'] = torch.cat(sem_score_bgs, dim=0).mean()
 
             tb_dict_['max_box_num'] = max_box_num
             tb_dict_['max_pseudo_box_num'] = max_pseudo_box_num
