@@ -8,6 +8,11 @@ from pcdet.ops.iou3d_nms import iou3d_nms_utils
 from .detector3d_template import Detector3DTemplate
 from.pv_rcnn import PVRCNN
 
+def _mean(tensor_list):
+    tensor = torch.cat(tensor_list)
+    tensor = tensor[~torch.isnan(tensor)]
+    mean = tensor.mean() if len(tensor) > 0 else torch.tensor([float('nan')])
+    return mean
 
 class PVRCNN_SSL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -189,14 +194,12 @@ class PVRCNN_SSL(Detector3DTemplate):
                                                                                      batch_dict['gt_boxes'][ind, ...][
                                                                                      :len(asgn), 3:6]
                     else:
-                        ones = torch.ones((1), device=unlabeled_inds.device)
-                        sem_score_fg = ones
-                        sem_score_bg = ones
-                        pseudo_ious.append(ones)
-                        pseudo_accs.append(ones)
-                        pseudo_fgs.append(ones)
-                        sem_score_fgs.append(ones)
-                        sem_score_bgs.append(ones)
+                        nan = torch.tensor([float('nan')], device=unlabeled_inds.device)
+                        sem_score_fgs.append(nan)
+                        sem_score_bgs.append(nan)
+                        pseudo_ious.append(nan)
+                        pseudo_accs.append(nan)
+                        pseudo_fgs.append(nan)
 
             for cur_module in self.pv_rcnn.module_list:
                 batch_dict = cur_module(batch_dict)
@@ -207,38 +210,38 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
 
             if not self.unlabeled_supervise_cls:
-                loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].sum()
+                loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].mean()
             else:
-                loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].sum() + loss_rpn_cls[unlabeled_inds, ...].sum() * self.unlabeled_weight
+                loss_rpn_cls = loss_rpn_cls[labeled_inds, ...].mean() + loss_rpn_cls[unlabeled_inds, ...].mean() * self.unlabeled_weight
 
-            loss_rpn_box = loss_rpn_box[labeled_inds, ...].sum() + loss_rpn_box[unlabeled_inds, ...].sum() * self.unlabeled_weight
-            loss_point = loss_point[labeled_inds, ...].sum()
-            loss_rcnn_cls = loss_rcnn_cls[labeled_inds, ...].sum()
+            loss_rpn_box = loss_rpn_box[labeled_inds, ...].mean() + loss_rpn_box[unlabeled_inds, ...].mean() * self.unlabeled_weight
+            loss_point = loss_point[labeled_inds, ...].mean()
+            loss_rcnn_cls = loss_rcnn_cls[labeled_inds, ...].mean()
 
             if not self.unlabeled_supervise_refine:
-                loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].sum()
+                loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].mean()
             else:
-                loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].sum() + loss_rcnn_box[unlabeled_inds, ...].sum() * self.unlabeled_weight
+                loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].mean() + loss_rcnn_box[unlabeled_inds, ...].mean() * self.unlabeled_weight
 
             loss = loss_rpn_cls + loss_rpn_box + loss_point + loss_rcnn_cls + loss_rcnn_box
             tb_dict_ = {}
             for key in tb_dict.keys():
                 if 'loss' in key:
-                    tb_dict_[key+"_labeled"] = tb_dict[key][labeled_inds, ...].sum()
-                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
+                    tb_dict_[key+"_labeled"] = tb_dict[key][labeled_inds, ...].mean()
+                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].mean()
                 elif 'acc' in key:
-                    tb_dict_[key+"_labeled"] = tb_dict[key][labeled_inds, ...].sum()
-                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
+                    tb_dict_[key+"_labeled"] = tb_dict[key][labeled_inds, ...].mean()
+                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].mean()
                 elif 'point_pos_num' in key:
-                    tb_dict_[key + "_labeled"] = tb_dict[key][labeled_inds, ...].sum()
-                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
+                    tb_dict_[key + "_labeled"] = tb_dict[key][labeled_inds, ...].mean()
+                    tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].mean()
                 else:
                     tb_dict_[key] = tb_dict[key]
 
-            tb_dict_['pseudo_ious'] = torch.cat(pseudo_ious, dim=0).mean()
-            tb_dict_['pseudo_accs'] = torch.cat(pseudo_accs, dim=0).mean()
-            tb_dict_['sem_score_fg'] = torch.cat(sem_score_fgs, dim=0).mean()
-            tb_dict_['sem_score_bg'] = torch.cat(sem_score_bgs, dim=0).mean()
+            tb_dict_['pseudo_ious'] = _mean(pseudo_ious)
+            tb_dict_['pseudo_accs'] = _mean(pseudo_accs)
+            tb_dict_['sem_score_fg'] = _mean(sem_score_fgs)
+            tb_dict_['sem_score_bg'] = _mean(sem_score_bgs)
 
             tb_dict_['max_box_num'] = max_box_num
             tb_dict_['max_pseudo_box_num'] = max_pseudo_box_num
