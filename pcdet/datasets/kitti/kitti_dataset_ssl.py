@@ -36,7 +36,7 @@ class KittiDatasetSSL(DatasetTemplate):
         else:
             self.sample_id_list = [x.strip().split(' ')[0] for x in
                                open(split_dir).readlines()] if split_dir.exists() else None
-            self.sample_index_list = [int(x.strip().split(' ')[1]) for x in
+            self.sample_index_list = [x.strip().split(' ')[1] for x in
                                   open(split_dir).readlines()] if split_dir.exists() else None
 
         self.kitti_infos = []
