@@ -219,7 +219,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             # Adding supervision of objectness score for unlabeled data as an ablation (not a part of original 3diou, default is False)
             if self.model_cfg.get('UNLABELED_SUPERVISE_OBJ', False):
                 loss_rcnn_cls = loss_rcnn_cls[labeled_inds, ...].sum() + loss_rcnn_cls[unlabeled_inds, ...].sum() * self.unlabeled_weight
-
+            else:
+                loss_rcnn_cls = loss_rcnn_cls[labeled_inds, ...].sum()
             if not self.unlabeled_supervise_refine:
                 loss_rcnn_box = loss_rcnn_box[labeled_inds, ...].sum()
             else:
