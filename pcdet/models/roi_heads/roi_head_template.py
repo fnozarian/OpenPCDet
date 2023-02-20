@@ -624,6 +624,14 @@ class RoIHeadTemplate(nn.Module):
             if metrics_pred_types is not None:
                 self.update_metrics(self.forward_ret_dict, mask_type='cls', pred_type=metrics_pred_types, vis_type='roi_pl')
 
+        if self.model_cfg.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
+            adaptive_thresh_metric = self.forward_ret_dict['adaptive_thresh_metric']
+            unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
+            batch_roi_labels = self.forward_ret_dict['roi_labels'][unlabeled_inds].detach().clone()
+            batch_roi_ious = self.forward_ret_dict['gt_iou_of_rois'][unlabeled_inds].detach().clone()
+            metric_inputs = {'batch_roi_labels': batch_roi_labels, 'batch_iou_wrt_pl': batch_roi_ious}
+            adaptive_thresh_metric.update(**metric_inputs)
+
         rcnn_loss_cls, cls_tb_dict = self.get_box_cls_layer_loss(self.forward_ret_dict, scalar=scalar)
         rcnn_loss_reg, reg_tb_dict = self.get_box_reg_layer_loss(self.forward_ret_dict, scalar=scalar)
         ulb_loss_cls_dist, cls_dist_dict = self.get_ulb_cls_dist_loss(self.forward_ret_dict)

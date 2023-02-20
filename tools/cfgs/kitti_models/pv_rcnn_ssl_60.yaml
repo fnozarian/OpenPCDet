@@ -165,6 +165,11 @@ MODEL:
         ENABLE_SOFT_TEACHER: False
         ENABLE_ULB_CLS_DIST_LOSS: False
         ENABLE_EVAL: True
+        ADAPTIVE_THRESH_CONFIG:
+            ENABLE: False
+            PERCENT: 0.1
+            PRE_FILTERING_THRESH: 0.25
+            RESET_STATE_INTERVAL: 256
         METRICS_PRED_TYPES: [roi_pl_gt, pl_gt_metrics_before_filtering]
         SHARED_FC: [256, 256]
         CLS_FC: [256, 256]

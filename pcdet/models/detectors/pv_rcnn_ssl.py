@@ -11,7 +11,7 @@ from ...utils import common_utils
 from .detector3d_template import Detector3DTemplate
 from collections import defaultdict
 from.pv_rcnn import PVRCNN
-from ...utils.stats_utils import KITTIEvalMetrics, PredQualityMetrics
+from ...utils.stats_utils import KITTIEvalMetrics, PredQualityMetrics, AdaptiveThreshMetrics
 from torchmetrics.collections import MetricCollection
 import torch.distributed as dist
 from visual_utils import visualize_utils as V
@@ -148,6 +148,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.supervise_mode = model_cfg.SUPERVISE_MODE
         cls_bg_thresh = model_cfg.ROI_HEAD.TARGET_CONFIG.CLS_BG_THRESH
         self.metric_registry = MetricRegistry(dataset=self.dataset, model_cfg=model_cfg)
+        self.adaptive_thresh_metric = AdaptiveThreshMetrics(**model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG)
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'weights', 'class_labels', 'iteration']
         self.val_dict = {val: [] for val in vals_to_store}
 
@@ -262,6 +263,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             # self.metrics['after_filtering'].update(**metric_inputs)  # commented to reduce complexity.
 
             batch_dict['metric_registry'] = self.metric_registry
+            batch_dict['adaptive_thresh_metric'] = self.adaptive_thresh_metric
             batch_dict['ori_unlabeled_boxes'] = ori_unlabeled_boxes
             for cur_module in self.pv_rcnn.module_list:
                 if cur_module.model_cfg['NAME'] == 'PVRCNNHead' and self.model_cfg['ROI_HEAD'].get('ENABLE_RCNN_CONSISTENCY', False):
@@ -445,6 +447,14 @@ class PVRCNN_SSL(Detector3DTemplate):
             for key in self.metric_registry.tags():
                 metrics = self.compute_metrics(tag=key)
                 tb_dict_.update(metrics)
+
+            # Metrics for adaptive thresholding
+            if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
+                adaptive_metrics = self.adaptive_thresh_metric.compute()
+                if adaptive_metrics:
+                    tb_dict_.update({'roi_iou_pl_densities': adaptive_metrics['adapt_threshs_fig']})
+                    threshs = {c: t for c, t in zip(['Car', 'Pedestrian', 'Cyclist'], adaptive_metrics['adapt_threshs'])}
+                    tb_dict_.update({'adapt_threshs': threshs})
 
             if dist.is_initialized():
                 rank = os.getenv('RANK')

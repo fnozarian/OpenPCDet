@@ -160,6 +160,7 @@ class PVRCNNHead(RoIHeadTemplate):
             # TODO(farzad) refactor this with global registry,
             #  accessible in different places, not via passing through batch_dict
             targets_dict['metric_registry'] = batch_dict['metric_registry']
+            targets_dict['adaptive_thresh_metric'] = batch_dict['adaptive_thresh_metric']
 
         # RoI aware pooling
         pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)

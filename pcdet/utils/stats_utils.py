@@ -15,10 +15,66 @@ import math
 from pcdet.config import cfg
 from matplotlib import pyplot as plt
 import torch.nn.functional as F
+from scipy.stats import norm
+
 # TODO(farzad): Pass only scores and labels?
 #               Calculate overlap inside update or compute?
 #               Change the states to TP, FP, FN, etc?
 #               Calculate incrementally based on summarized value?
+
+
+class AdaptiveThreshMetrics(Metric):
+    full_state_update: bool = False
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.reset_state_interval = kwargs.get('RESET_STATE_INTERVAL', 256)
+        self.percent = kwargs.get('PERCENT', 0.1)
+        self.pre_filter_thresh = kwargs.get('PRE_FILTERING_THRESH', 0.25)
+
+        # TODO(farzad) To be cautious with dist mode I impl. it simple. Refactor it later to be more general.
+        self.add_state("roi_ious_car", default=[], dist_reduce_fx='cat')
+        self.add_state("roi_ious_ped", default=[], dist_reduce_fx='cat')
+        self.add_state("roi_ious_cyc", default=[], dist_reduce_fx='cat')
+        self.add_state("global_sample_count", default=torch.tensor(0, dtype=torch.int), dist_reduce_fx="sum")
+
+    def update(self, batch_roi_labels: torch.Tensor, batch_iou_wrt_pl: torch.Tensor) -> None:
+
+        assert batch_roi_labels.ndim == 2
+
+        self.roi_ious_car.append(batch_iou_wrt_pl[batch_roi_labels == 1].view(-1))
+        self.roi_ious_ped.append(batch_iou_wrt_pl[batch_roi_labels == 2].view(-1))
+        self.roi_ious_cyc.append(batch_iou_wrt_pl[batch_roi_labels == 3].view(-1))
+        self.global_sample_count += batch_roi_labels.shape[0]
+
+    def compute(self):
+        results = {}
+        threshs = []
+        if self.global_sample_count >= self.reset_state_interval:
+            fig, axs = plt.subplots(1, 3, figsize=(10, 3), gridspec_kw={'wspace': 0.5})
+            for i, mstate in enumerate([self.roi_ious_car, self.roi_ious_ped, self.roi_ious_cyc]):
+                if isinstance(mstate, torch.Tensor):
+                    mstate = [mstate]
+                roi_ious_pl = torch.cat(mstate, dim=0)
+                filter_mask = roi_ious_pl > self.pre_filter_thresh
+                roi_ious_pl = roi_ious_pl[filter_mask]
+                if roi_ious_pl.shape[0] == 0:
+                    threshs.append(0.0)
+                    continue
+                # Fit a Gaussian and draw densities
+                mu, sigma = norm.fit(roi_ious_pl.cpu().numpy())
+                thresh = norm.ppf(self.percent, loc=mu, scale=sigma)
+                threshs.append(thresh)
+                axs[i].hist(roi_ious_pl.cpu().numpy(), density=True, alpha=0.6, color='g')
+                x = np.linspace(0, 1, 100)
+                p = norm.pdf(x, mu, sigma)
+                axs[i].plot(x, p, 'k', alpha=0.5)
+
+            results['adapt_threshs_fig'] = fig.get_figure()
+            results['adapt_threshs'] = threshs
+
+            self.reset()
+        return results
 
 
 class PredQualityMetrics(Metric):
