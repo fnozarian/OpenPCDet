@@ -122,20 +122,54 @@ def init_dist_slurm(tcp_port, local_rank, backend='nccl'):
 
     """
     proc_id = int(os.environ['SLURM_PROCID'])
-    ntasks = int(os.environ['SLURM_NTASKS'])
+    # ntasks = int(os.environ['SLURM_NTASKS'])
     node_list = os.environ['SLURM_NODELIST']
     num_gpus = torch.cuda.device_count()
-    torch.cuda.set_device(proc_id % num_gpus)
-    addr = subprocess.getoutput('scontrol show hostname {} | head -n1'.format(node_list))
-    os.environ['MASTER_PORT'] = str(tcp_port)
-    os.environ['MASTER_ADDR'] = addr
-    os.environ['WORLD_SIZE'] = str(ntasks)
-    os.environ['RANK'] = str(proc_id)
-    dist.init_process_group(backend=backend)
+    try:
+        dist_vars_1 = """ SLURM_NODELIST: %s
 
-    total_gpus = dist.get_world_size()
-    rank = dist.get_rank()
-    return total_gpus, rank
+                                cuda.device_count: %s
+
+                                SLURM_NTASKS: %s
+                                WORLD_SIZE: %s
+
+                                LOCAL_RANK: %s
+                                RANK remainder cuda.device_count: %s
+
+                                SLURM_PROCID: %s
+                                RANK: %s
+                                \n
+                            """ % (os.environ["SLURM_NODELIST"],
+
+                                   str(torch.cuda.device_count()),
+
+                                   os.environ["SLURM_NTASKS"],
+                                   os.environ["WORLD_SIZE"],
+
+                                   os.environ["LOCAL_RANK"],
+                                   str(int(os.environ["RANK"]) % int(torch.cuda.device_count())),
+
+                                   os.environ["SLURM_PROCID"],
+                                   os.environ["RANK"])
+        print(dist_vars_1)
+        torch.cuda.set_device(proc_id % num_gpus)
+        # addr = subprocess.getoutput('scontrol show hostname {} | head -n1'.format(node_list))
+        # os.environ['MASTER_PORT'] = str(tcp_port)
+        # os.environ['MASTER_ADDR'] = addr
+        # os.environ['WORLD_SIZE'] = str(ntasks)
+        # os.environ['RANK'] = str(proc_id)
+        dist.init_process_group(backend=backend)
+        rank = int(os.environ['RANK'])
+        total_gpus = dist.get_world_size()
+        return total_gpus, rank
+    except:
+
+        dist_vars_2 = """
+                        dist.get_rank: %s
+                        dist.get_world_size: %s
+                        \n
+                        """ % (str(dist.get_rank()), str(dist.get_world_size()))
+        print(dist_vars_2)
 
 
 def init_dist_pytorch(tcp_port, local_rank, backend='nccl'):
@@ -146,15 +180,15 @@ def init_dist_pytorch(tcp_port, local_rank, backend='nccl'):
     torch.cuda.set_device(local_rank % num_gpus)
     dist.init_process_group(
         backend=backend,
-        init_method='tcp://127.0.0.1:%d' % tcp_port,
-        rank=local_rank,
-        world_size=num_gpus
+        # init_method='tcp://127.0.0.1:%d' % tcp_port,
+        # rank=local_rank,
+        # world_size=num_gpus
     )
     rank = dist.get_rank()
     return num_gpus, rank
 
 
-def get_dist_info():
+def get_dist_info(return_gpu_per_machine=False):
     if torch.__version__ < '1.0':
         initialized = dist._initialized
     else:
@@ -168,6 +202,11 @@ def get_dist_info():
     else:
         rank = 0
         world_size = 1
+
+    if return_gpu_per_machine:
+        gpu_per_machine = torch.cuda.device_count()
+        return rank, world_size, gpu_per_machine
+
     return rank, world_size
 
 

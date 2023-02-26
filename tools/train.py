@@ -16,7 +16,15 @@ from pcdet.models import build_network, model_fn_decorator
 from pcdet.utils import common_utils
 from train_utils.optimization import build_optimizer, build_scheduler
 from train_utils.train_utils import train_model
+import subprocess
 
+
+def get_git_commit_number():
+    if not os.path.exists('../.git'):
+        return '0000000'
+    cmd_out = subprocess.run(['git', 'rev-parse', 'HEAD'], stdout=subprocess.PIPE)
+    git_commit_number = cmd_out.stdout.decode('utf-8')[:7]
+    return git_commit_number
 
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
@@ -25,7 +33,7 @@ def parse_config():
     parser.add_argument('--batch_size', type=int, default=None, required=False, help='batch size for training')
     parser.add_argument('--eval_batch_size', type=int, default=None, required=False, help='batch size for testing')
     parser.add_argument('--epochs', type=int, default=None, required=False, help='number of epochs to train for')
-    parser.add_argument('--workers', type=int, default=8, help='number of workers for dataloader')
+    parser.add_argument('--workers', type=int, default=4, help='number of workers for dataloader')
     parser.add_argument('--extra_tag', type=str, default='default', help='extra tag for this experiment')
     parser.add_argument('--ckpt', type=str, default=None, help='checkpoint to start from')
     parser.add_argument('--pretrained_model', type=str, default=None, help='pretrained_model')
@@ -43,7 +51,7 @@ def parse_config():
     parser.add_argument('--max_waiting_mins', type=int, default=0, help='max waiting minutes')
     parser.add_argument('--start_epoch', type=int, default=0, help='')
     parser.add_argument('--save_to_file', action='store_true', default=False, help='')
-    parser.add_argument('--split', type=str, default='train')
+    parser.add_argument('--split', type=str, default='train_0.01_1')
     parser.add_argument('--repeat', type=int, default=1)
     parser.add_argument('--thresh', type=str, default='0.5, 0.25, 0.25')
     parser.add_argument('--sem_thresh', type=str, default='0.4, 0.0, 0.0')
@@ -78,6 +86,9 @@ def parse_config():
     cfg.MODEL.UNLABELED_WEIGHT = args.unlabeled_weight
     cfg.MODEL.NO_NMS = args.no_nms
     cfg.MODEL.SUPERVISE_MODE = args.supervise_mode
+
+    rev = get_git_commit_number()
+    args.extra_tag = args.extra_tag + "_" + str(rev)
 
     if args.lr > 0.0:
         cfg.OPTIMIZATION.LR = args.lr
