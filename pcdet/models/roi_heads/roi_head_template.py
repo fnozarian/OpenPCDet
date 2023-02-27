@@ -357,13 +357,20 @@ class RoIHeadTemplate(nn.Module):
 
         ulb_inds = forward_ret_dict['unlabeled_inds']
         ulb_cls_labels = forward_ret_dict['roi_labels'][ulb_inds]
+        ulb_roi_scores = forward_ret_dict['roi_scores'][ulb_inds].sigmoid()
+        agg_roi_scores = []
+        agg_mean = []
+        for i in range(1,4):
+            cls_mask = ulb_cls_labels == i
+            agg_roi_scores.append(ulb_roi_scores[cls_mask].sum().item())
+        agg_roi_scores = torch.tensor(agg_roi_scores,device=cls_mask.device)
         ulb_num_cls = torch.bincount(ulb_cls_labels.view(-1), minlength=4)[1:].float()
-        ulb_cls_dist = ulb_num_cls / ulb_num_cls.sum()
-
+        mean_score = (agg_roi_scores/ulb_num_cls) + 1e-6
+        mean_score = mean_score.nan_to_num(nan=1e-4)
         # calculate kl divergence between lbl_cls_dist and cls_dist_batch
-        ulb_cls_dist = ulb_cls_dist + 1e-6
-        lbl_cls_dist = lbl_cls_dist + 1e-6
-        ulb_cls_dist_loss = torch.sum(lbl_cls_dist * torch.log(lbl_cls_dist / ulb_cls_dist))
+        lbl_cls_dist = lbl_cls_dist + 1e-4
+        mean_score = mean_score + 1e-4
+        ulb_cls_dist_loss = torch.sum(lbl_cls_dist * torch.log(lbl_cls_dist / mean_score))
         # clamp ulb_cls_dist_loss
         ulb_cls_dist_loss = torch.clamp(ulb_cls_dist_loss, min=0.0, max=2.0)
         ulb_cls_dist_loss = ulb_cls_dist_loss * loss_cfgs.LOSS_WEIGHTS['ulb_cls_dist_weight']
