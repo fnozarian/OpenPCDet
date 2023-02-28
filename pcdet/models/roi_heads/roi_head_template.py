@@ -359,7 +359,6 @@ class RoIHeadTemplate(nn.Module):
         ulb_cls_labels = forward_ret_dict['roi_labels'][ulb_inds]
         ulb_roi_scores = forward_ret_dict['roi_scores'][ulb_inds].sigmoid()
         agg_roi_scores = []
-        agg_mean = []
         for i in range(1,4):
             cls_mask = ulb_cls_labels == i
             agg_roi_scores.append(ulb_roi_scores[cls_mask].sum().item())
@@ -370,14 +369,16 @@ class RoIHeadTemplate(nn.Module):
         # calculate kl divergence between lbl_cls_dist and cls_dist_batch
         lbl_cls_dist = lbl_cls_dist + 1e-4
         mean_score = mean_score + 1e-4
+        cls_wise = lbl_cls_dist * torch.log(lbl_cls_dist / mean_score)
         ulb_cls_dist_loss = torch.sum(lbl_cls_dist * torch.log(lbl_cls_dist / mean_score))
         # clamp ulb_cls_dist_loss
         ulb_cls_dist_loss = torch.clamp(ulb_cls_dist_loss, min=0.0, max=2.0)
         ulb_cls_dist_loss = ulb_cls_dist_loss * loss_cfgs.LOSS_WEIGHTS['ulb_cls_dist_weight']
-
+        
         tb_dict = {
             # For consistency with other losses
-            'ulb_cls_dist_loss': ulb_cls_dist_loss.unsqueeze(0).repeat(forward_ret_dict['roi_labels'].shape[0], 1)
+            'ulb_cls_dist_loss': ulb_cls_dist_loss.unsqueeze(0).repeat(forward_ret_dict['roi_labels'].shape[0], 1),
+            'ulb_cls_dist_classwise':{'Car':cls_wise[0], 'Pedestrian':cls_wise[1], 'Cyclist': cls_wise[2] }
         }
         return ulb_cls_dist_loss, tb_dict
 
