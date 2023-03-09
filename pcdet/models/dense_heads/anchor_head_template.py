@@ -157,49 +157,28 @@ class AnchorHeadTemplate(nn.Module):
         ulb_inds = self.forward_ret_dict['unlabeled_inds']
         
         ulb_cls_preds = self.forward_ret_dict['cls_preds'][ulb_inds]
-        ulb_cls_preds = ulb_cls_preds.view(-1, self.num_class)
-
-        ulb_anchor_scores,ulb_anchor_labels = torch.max(ulb_cls_preds,dim=1)
-        ulb_anchor_scores = ulb_anchor_scores.sigmoid()
-
-        ulb_anchor_labels = ulb_anchor_labels
-        box_cls_labels = self.forward_ret_dict['box_cls_labels'][ulb_inds].view(-1)
-
-        positive = box_cls_labels > 0
-        anchor_scores = ulb_anchor_scores[positive]
-        agg_anchor_labels = ulb_anchor_labels[positive]
-
-        agg_anchor_scores = []
-
-        for i in range(0,3):
-            cls_mask = agg_anchor_labels == i
-            agg_anchor_scores.append(anchor_scores[cls_mask].sum().item())
-        agg_anchor_scores = torch.tensor(agg_anchor_scores,device=cls_mask.device)
-        ulb_num_cls = torch.bincount(agg_anchor_labels.view(-1), minlength=3).float()
-        mean_score = (agg_anchor_scores/ulb_num_cls)
-        mean_score = mean_score.nan_to_num(nan=1e-4)
+        ulb_cls_preds = ulb_cls_preds.view(-1, self.num_class).sigmoid()
+        mean_cls_scores = ulb_cls_preds.mean(dim=0)
 
         # # calculate kl divergence between lbl_cls_dist and cls_dist_batch
-        lbl_cls_dist = lbl_cls_dist + 1e-4
-        mean_score = mean_score + 1e-4
-        cls_wise = lbl_cls_dist * torch.log(lbl_cls_dist / mean_score)
-        ulb_cls_dist_loss = torch.sum(lbl_cls_dist * torch.log(lbl_cls_dist / mean_score))
+        lbl_cls_dist = lbl_cls_dist + 1e-6
+        mean_cls_scores = mean_cls_scores + 1e-6
+        cls_wise = lbl_cls_dist * torch.log(lbl_cls_dist / mean_cls_scores)
+        ulb_cls_dist_loss = cls_wise.sum()
 
         # clamp ulb_cls_dist_loss
-        ulb_cls_dist_loss = torch.clamp(ulb_cls_dist_loss, min=0.0, max=2.0)
+        # ulb_cls_dist_loss = torch.clamp(ulb_cls_dist_loss, min=0.0, max=2.0)
         ulb_cls_dist_loss = ulb_cls_dist_loss * loss_cfgs.LOSS_WEIGHTS['ulb_cls_dist_weight']
         
         tb_dict = {
             # For consistency with other losses
             'ulb_cls_dist_loss_rpn': ulb_cls_dist_loss.unsqueeze(0).repeat(self.forward_ret_dict['cls_preds'].shape[0], 1),
-            'ulb_cls_dist_classwise_rpn':{'Car':cls_wise[0], 'Pedestrian':cls_wise[1], 'Cyclist': cls_wise[2] }
+            'ulb_cls_dist_classwise_rpn': {'Car': cls_wise[0].item(),
+                                           'Pedestrian': cls_wise[1].item(),
+                                           'Cyclist': cls_wise[2].item()
+                                           }
         }
         return ulb_cls_dist_loss, tb_dict
-
-
-
-       
-
 
     @staticmethod
     def add_sin_difference(boxes1, boxes2, dim=6):
@@ -290,7 +269,7 @@ class AnchorHeadTemplate(nn.Module):
     def get_loss(self, scalar=True):
         cls_loss, tb_dict = self.get_cls_layer_loss(scalar=scalar)
         box_loss, tb_dict_box = self.get_box_reg_layer_loss(scalar=scalar)
-        ulb_dist_loss,tb_dict_ulb = self.ulb_dist_loss()
+        ulb_dist_loss, tb_dict_ulb = self.ulb_dist_loss()
         tb_dict.update(tb_dict_box)
         tb_dict.update(tb_dict_ulb)
         rpn_loss = cls_loss + box_loss + ulb_dist_loss
@@ -300,7 +279,7 @@ class AnchorHeadTemplate(nn.Module):
             return rpn_loss, tb_dict
         else:
             tb_dict['rpn_loss'] = rpn_loss
-            return cls_loss, box_loss, ulb_dist_loss,tb_dict
+            return cls_loss, box_loss, ulb_dist_loss, tb_dict
 
     def generate_predicted_boxes(self, batch_size, cls_preds, box_preds, dir_cls_preds=None):
         """

@@ -55,6 +55,7 @@ MODEL:
         NAME: AnchorHeadSingle
         CLASS_AGNOSTIC: False
 
+        ENABLE_ULB_CLS_DIST_LOSS: True
         USE_DIRECTION_CLASSIFIER: True
         DIR_OFFSET: 0.78539
         DIR_LIMIT_OFFSET: 0.0
@@ -164,7 +165,6 @@ MODEL:
         ENABLE_RELIABILITY: False
         ENABLE_RCNN_CONSISTENCY: False
         ENABLE_SOFT_TEACHER: False
-        ENABLE_ULB_CLS_DIST_LOSS: False
         ENABLE_EVAL: True
         METRICS_PRED_TYPES: [roi_pl_gt, pl_gt_metrics_before_filtering]
         SHARED_FC: [256, 256]
