@@ -165,7 +165,7 @@ class Detector3DTemplate(nn.Module):
     def forward(self, **kwargs):
         raise NotImplementedError
 
-    def post_processing(self, batch_dict, no_recall_dict=False, override_thresh=None, no_nms=False):
+    def post_processing(self, batch_dict, no_recall_dict=False, override_thresh=None, no_nms_for_unlabeled=False):
         """
         Args:
             batch_dict:
@@ -247,7 +247,7 @@ class Detector3DTemplate(nn.Module):
                 else:
                     label_preds = label_preds + 1
 
-                if no_nms:
+                if no_nms_for_unlabeled:
                     selected = torch.arange(len(cls_preds), device=cls_preds.device)
                     selected_scores = cls_preds
                 else:
