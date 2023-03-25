@@ -1,30 +1,12 @@
 import glob
 import os
-
+import math
 import torch
 import tqdm
 from torch.nn.utils import clip_grad_norm_
-from matplotlib import pyplot as plt
 
-def log_tb_dict(tb_log, tb_dict, accumulated_iter):
-    for key, val in tb_dict.items():
-        if val is None or (isinstance(val, torch.Tensor) and torch.isnan(val)):
-            continue
-        # print(key, val)
-        subkeys = key.split("/")
-        cat, key = (subkeys[0] + "/", subkeys[1]) if len(subkeys) > 1 else ('train/', key)
-        if key in ['bs']:
-            cat = 'meta_data/'
-        if isinstance(val, dict):
-            tb_log.add_scalars(cat + key, val, accumulated_iter)
-        elif isinstance(val, plt.Figure):
-            tb_log.add_figure(cat + key, val, accumulated_iter)
-        else:
-            tb_log.add_scalar(cat + key, val, accumulated_iter)
-
-
-def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
-                    rank, tbar, total_it_each_epoch, dataloader_iter, cur_epoch, ckpt_save_dir, tb_log=None, leave_pbar=False):
+def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, cur_epoch, optim_cfg,
+                    rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False):
     if total_it_each_epoch == len(train_loader):
         dataloader_iter = iter(train_loader)
 
@@ -38,9 +20,6 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
             dataloader_iter = iter(train_loader)
             batch = next(dataloader_iter)
             print('new iters')
-        # adding iteration, epoch number in batch dict
-        batch['cur_iteration'], batch['cur_epoch'] = accumulated_iter, cur_epoch
-        batch['ckpt_save_dir'] = ckpt_save_dir
 
         lr_scheduler.step(accumulated_iter)
 
@@ -54,6 +33,11 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
 
         model.train()
         optimizer.zero_grad()
+
+        # use temperature for radius search
+        if optim_cfg.get('USE_TEMPERATURE', False):
+            cur_temperature = calculate_temperature_decay(cur_epoch, optim_cfg)
+            batch['temperature'] = cur_temperature
 
         loss, tb_dict, disp_dict = model_func(model, batch)
 
@@ -74,12 +58,11 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
             if tb_log is not None:
                 tb_log.add_scalar('train/loss', loss, accumulated_iter)
                 tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
-                log_tb_dict(tb_log, tb_dict, accumulated_iter)
-
+                for key, val in tb_dict.items():
+                    tb_log.add_scalar('train/' + key, val, accumulated_iter)
     if rank == 0:
         pbar.close()
     return accumulated_iter
-
 
 def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_cfg,
                 start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, train_sampler=None,
@@ -106,8 +89,10 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
             accumulated_iter = train_one_epoch(
                 model, optimizer, train_loader, model_func,
                 lr_scheduler=cur_scheduler,
-                accumulated_iter=accumulated_iter, optim_cfg=optim_cfg,
-                rank=rank, tbar=tbar, tb_log=tb_log, cur_epoch=cur_epoch, ckpt_save_dir=ckpt_save_dir,
+                accumulated_iter=accumulated_iter,
+                cur_epoch = cur_epoch,
+                optim_cfg=optim_cfg,
+                rank=rank, tbar=tbar, tb_log=tb_log,
                 leave_pbar=(cur_epoch + 1 == total_epochs),
                 total_it_each_epoch=total_it_each_epoch,
                 dataloader_iter=dataloader_iter
@@ -161,13 +146,26 @@ def save_checkpoint(state, filename='checkpoint'):
         optimizer_state = state['optimizer_state']
         state.pop('optimizer_state', None)
         optimizer_filename = '{}_optim.pth'.format(filename)
-        if torch.__version__ >= '1.4':
-            torch.save({'optimizer_state': optimizer_state}, optimizer_filename, _use_new_zipfile_serialization=False)
-        else:
-            torch.save({'optimizer_state': optimizer_state}, optimizer_filename)
+        torch.save({'optimizer_state': optimizer_state}, optimizer_filename)
 
     filename = '{}.pth'.format(filename)
-    if torch.__version__ >= '1.4':
-        torch.save(state, filename, _use_new_zipfile_serialization=False)
+    torch.save(state, filename)
+
+def calculate_temperature_decay(cur_epoch, optim_cfg):
+    start_epoch, end_epoch = optim_cfg.DECAY_EPOCH
+    start_temperature, end_temperature = optim_cfg.DECAY_TEMPERATURE
+
+    if optim_cfg.DECAY_MODE == 'exp':
+        if cur_epoch < start_epoch:
+            return start_temperature
+        elif cur_epoch > end_epoch:
+            return end_temperature
+        else:
+            duration = end_epoch - start_epoch
+            ratio = end_temperature / start_temperature
+            factor = math.log(ratio)  # neg
+            factor = factor / duration
+            cur_temperature = start_temperature * math.exp(factor * (cur_epoch - start_epoch))
+            return cur_temperature
     else:
-        torch.save(state, filename)
+        raise NotImplementedError

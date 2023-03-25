@@ -77,6 +77,33 @@ def global_scaling(gt_boxes, points, scale_range, scale_=None):
     gt_boxes[:, :6] *= noise_scale
     return gt_boxes, points, noise_scale
 
+def global_translation(gt_boxes, points, noise_translate_std):
+    """
+    Apply global translation to gt_boxes and points.
+    Args:
+        gt_boxes: (N, 7), [x, y, z, dx, dy, dz, heading]
+        points: (M, 3 + C),
+        noise_translate_std: [std_x, std_y, std_z]
+    Returns:
+    """
+    if not isinstance(noise_translate_std, (list, tuple, np.ndarray)):
+        noise_translate_std = np.array(
+            [noise_translate_std, noise_translate_std, noise_translate_std]
+        )
+    if all([e == 0 for e in noise_translate_std]):
+        return gt_boxes, points
+    noise_translate = np.array(
+        [
+            np.random.normal(0, noise_translate_std[0], 1),
+            np.random.normal(0, noise_translate_std[1], 1),
+            np.random.normal(0, noise_translate_std[2], 1),
+        ]
+    ).T
+
+    points[:, :3] += noise_translate
+    gt_boxes[:, :3] += noise_translate
+
+    return gt_boxes, points
 
 def random_flip_along_x_bbox(gt_boxes, enables):
     """

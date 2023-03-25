@@ -14,3 +14,5 @@ data/kitti/testing/
 work_dirs/
 output/
 demo/
+data/
+

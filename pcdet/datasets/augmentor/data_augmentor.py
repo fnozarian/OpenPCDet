@@ -78,6 +78,17 @@ class DataAugmentor(object):
         data_dict['rot_angle'] = noise_rotation
         return data_dict
 
+    def random_world_translation(self, data_dict=None, config=None):
+        if data_dict is None:
+            return partial(self.random_world_translation, config=config)
+        gt_boxes, points = augmentor_utils.global_translation(
+            data_dict['gt_boxes'], data_dict['points'], config['WORLD_TRANSLATE_STD']
+        )
+        data_dict['gt_boxes'] = gt_boxes
+        data_dict['points'] = points
+        return data_dict
+    
+    
     def random_world_scaling(self, data_dict=None, config=None):
         if data_dict is None:
             return partial(self.random_world_scaling, config=config)
