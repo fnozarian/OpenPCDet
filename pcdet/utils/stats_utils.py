@@ -325,7 +325,7 @@ class KITTIEvalMetrics(Metric):
 
             num_gts = valid_gts_mask.sum()
             num_preds = valid_preds_mask.sum()
-            overlap = valid_gts_mask.new_zeros((num_preds, num_gts))
+            overlap= torch.cuda.FloatTensor(torch.Size((num_preds, num_gts))).zero_()  # (N, M)
             if num_gts > 0 and num_preds > 0:
                 overlap = iou3d_nms_utils.boxes_iou3d_gpu(valid_pred_boxes[:, 0:7], valid_gt_boxes[:, 0:7])
 
@@ -338,8 +338,11 @@ class KITTIEvalMetrics(Metric):
         if (len(self.detections) >= self.reset_state_interval) and cfg.MODEL.POST_PROCESSING.ENABLE_KITTI_EVAL:
             # eval_class() takes ~45ms for each sample and linearly increasing
             # => ~1.7s for one epoch or 37 samples (if only called once at the end of epoch).
-            kitti_eval_metrics = eval_class(self.groundtruths, self.detections, self.current_classes,
-                                 self.metric, self.min_overlaps, self.overlaps)
+            groundtruths = [i.clone().detach() for i in self.groundtruths]
+            detections = [i.clone().detach() for i in self.detections]
+            overlaps = [i.clone().detach() for i in self.overlaps]
+            kitti_eval_metrics = eval_class(groundtruths, detections, self.current_classes,
+                                self.metric, self.min_overlaps, overlaps)
             mAP_3d = get_mAP(kitti_eval_metrics["precision"])
             mAP_3d_R40 = get_mAP_R40(kitti_eval_metrics["precision"])
             kitti_eval_metrics.update({"mAP_3d": mAP_3d, "mAP_3d_R40": mAP_3d_R40})
@@ -350,7 +353,7 @@ class KITTIEvalMetrics(Metric):
             # Therefore, mean over several zero values results in low final value.
             # detailed_stats shape (3, 1, 41, 5) where last dim is
             # {0: 'tp', 1: 'fp', 2: 'fn', 3: 'similarity', 4: 'precision thresholds'}
-            total_num_samples = max(len(self.detections), 1)
+            total_num_samples = max(len(detections), 1)
             detailed_stats = kitti_eval_metrics['detailed_stats']
             raw_metrics_classwise = {}
             for m, metric_name in enumerate(
@@ -378,7 +381,7 @@ class KITTIEvalMetrics(Metric):
             num_ulb_samples = total_num_samples
             ulb_lbl_ratio = num_ulb_samples / num_lbl_samples
             pred_labels, pred_scores = [], []
-            for sample_dets in self.detections:
+            for sample_dets in detections:
                 if len(sample_dets) == 0:
                     continue
                 pred_labels.append(sample_dets[:, -2])
@@ -452,7 +455,7 @@ class KITTIEvalMetrics(Metric):
 
             prec_rec_fig = fig.get_figure()
             kitti_eval_metrics['prec_rec_fig'] = prec_rec_fig
-
+            plt.close()
             kitti_eval_metrics.pop('recall')
             kitti_eval_metrics.pop('precision')
             kitti_eval_metrics.pop('raw_recall')
@@ -771,7 +774,7 @@ def cal_tp_metric(tp_boxes, gt_boxes):
     aligned_tp_boxes[:, 0:3] = gt_boxes[:, 0:3]
     # align their angle
     aligned_tp_boxes[:, 6] = gt_boxes[:, 6]
-    iou_matrix = iou3d_nms_utils.boxes_iou3d_gpu(aligned_tp_boxes[:, 0:7], gt_boxes[:, 0:7])
+    iou_matrix = iou3d_nms_utils.boxes_iou3d_gpu(aligned_tp_boxes[:, 0:7], gt_boxes[:, 0:7]).clone().detach()
     max_ious, _ = torch.max(iou_matrix, dim=1)
     scale_err = (1 - max_ious).sum().item()
 
