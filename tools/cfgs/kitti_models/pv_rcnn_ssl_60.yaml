@@ -159,7 +159,13 @@ MODEL:
     ROI_HEAD:
         NAME: PVRCNNHead
         CLASS_AGNOSTIC: True
-
+        ENABLE_EVAL: True
+        ADAPTIVE_THRESH_CONFIG:
+            ENABLE: True
+            PERCENT: 0.1
+            PRE_FILTERING_THRESH: 0.25
+            RESET_STATE_INTERVAL: 64
+        METRICS_PRED_TYPES: [roi_pl_gt, pl_gt_metrics_before_filtering, pl_gt_metrics_after_filtering]
         SHARED_FC: [256, 256]
         CLS_FC: [256, 256]
         REG_FC: [256, 256]
@@ -193,7 +199,8 @@ MODEL:
 
             SAMPLE_ROI_BY_EACH_CLASS: True
             CLS_SCORE_TYPE: roi_iou
-
+            UNLABELED_CLS_FG_THRESH: [0.65, 0.45, 0.4]
+            UNLABELED_CLS_BG_THRESH: 0.25
             CLS_FG_THRESH: 0.75
             CLS_BG_THRESH: 0.25
             CLS_BG_THRESH_LO: 0.1
@@ -216,7 +223,7 @@ MODEL:
         RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
         SCORE_THRESH: 0.1
         OUTPUT_RAW_SCORE: False
-
+        ENABLE_KITTI_EVAL: False
         EVAL_METRIC: kitti
 
         NMS_CONFIG:
@@ -234,6 +241,7 @@ MODEL:
     SEM_THRESH: [0.2, 0.0, 0.0]
     SUPERVISE_MODE: 0
     NO_NMS: False
+    STORE_SCORES_IN_PKL: False
 
 
 OPTIMIZATION:
