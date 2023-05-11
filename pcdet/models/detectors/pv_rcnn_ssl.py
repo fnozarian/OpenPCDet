@@ -10,6 +10,7 @@ from ...utils.stats_utils import KITTIEvalMetrics, PredQualityMetrics
 from torchmetrics.collections import MetricCollection
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 import torch.distributed as dist
+# from ...utils.softmatch import AdaptiveThresholding
 
 class MetricRegistry(object):
     def __init__(self, **kwargs):
@@ -32,6 +33,21 @@ class MetricRegistry(object):
 
     def tags(self):
         return self._tag_metrics.keys()
+class Adaptive_Thresh(object):
+    def __init__(self, **kwargs):
+        self._tag_metrics = {}
+        self.dataset = kwargs.get('dataset', None)
+        self.model_cfg = kwargs.get('model_cfg', None)
+
+    def get(self, tag=None):
+        if tag is None:
+            tag = 'default'
+        if tag in self._tag_metrics.keys():
+            metric = self._tag_metrics[tag]
+        else:
+            metric = AdaptiveThresholding(tag=tag, dataset=self.dataset, config=self.model_cfg)
+            self._tag_metrics[tag] = metric
+        return metric
     
 class PVRCNN_SSL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -57,7 +73,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
         self.metric_registry = MetricRegistry(dataset=self.dataset, model_cfg=model_cfg)
-        # self.adaptive_thresh_metric = AdaptiveThreshMetrics(dataset=self.dataset, model_cfg=model_cfg)
+        self.adaptive_thresholding = Adaptive_Thresh(dataset=self.dataset, model_cfg=model_cfg)
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores', 
                         'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels',
                         'iteration']
@@ -117,6 +133,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             #         metrics.update(**metric_inputs)
 
             # batch_dict['adaptive_thresh_metric'] = self.adaptive_thresh_metric
+            batch_dict['adaptive_thresh'] = self.adaptive_thresholding
             batch_dict['metric_registry'] = self.metric_registry
             batch_dict['ori_unlabeled_boxes'] = ori_unlabeled_boxes
             batch_dict['store_scores_in_pkl'] = self.model_cfg.STORE_SCORES_IN_PKL
@@ -166,6 +183,13 @@ class PVRCNN_SSL(Detector3DTemplate):
                     tb_dict_[key + "_unlabeled"] = tb_dict[key][unlabeled_inds, ...].sum()
                 else:
                     tb_dict_[key] = tb_dict[key]
+
+            if self.model_cfg.ROI_HEAD.TARGET_CONFIG.UNLABELED_SAMPLER_TYPE == 'subsample_unlabeled_rois_tr_gaussian':
+                    softmatch = self.adaptive_thresholding.get(tag=f'softmatch')
+                    self.val_dict['batch_mean'].extend(softmatch.batch_mean.clone().detach())
+                    self.val_dict['batch_var'].extend(softmatch.batch_var.clone().detach())
+                    self.val_dict['ema_mean'].extend(softmatch.st_mean.clone().detach())
+                    self.val_dict['ema_var'].extend(softmatch.st_var.clone().detach())
             if self.model_cfg.get('STORE_SCORES_IN_PKL', False) :
                 # Store different types of scores over all itrs and epochs and dump them in a pickle for offline modeling 
                 # TODO (shashank) : Can be optimized later to save computational time, currently takes about 0.002sec
@@ -232,9 +256,12 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pickle.dump(self.val_dict, open(file_path, 'wb'))
 
             for key in self.metric_registry.tags():
-                metrics = self.compute_metrics(tag=key)
+                metrics = self.compute_metrics(registry=self.metric_registry,tag=key)
                 tb_dict_.update(metrics)
-
+                
+            if self.model_cfg.ROI_HEAD.TARGET_CONFIG.UNLABELED_SAMPLER_TYPE == 'subsample_unlabeled_rois_tr_gaussian':
+                adaptive_metrics = self.compute_metrics(registry=self.adaptive_thresholding,tag=f'softmatch')
+                tb_dict_.update(adaptive_metrics)
             # Metrics for adaptive thresholding
             # if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
                 # adaptive_metrics = self.adaptive_thresh_metric.compute()
@@ -295,8 +322,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             metrics.update(**metric_inputs)
             batch_dict.pop('pseudo_boxes_prefilter')
 
-    def compute_metrics(self, tag):
-        results = self.metric_registry.get(tag).compute()
+    def compute_metrics(self,registry,tag):
+        results = registry.get(tag).compute()
         tag = tag + "/" if tag else ''
         metrics = {tag + key: val for key, val in results.items()}
         return metrics

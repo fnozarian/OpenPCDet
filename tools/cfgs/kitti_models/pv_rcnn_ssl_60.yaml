@@ -201,6 +201,7 @@ MODEL:
             CLS_SCORE_TYPE: roi_iou
             UNLABELED_CLS_FG_THRESH: [0.65, 0.45, 0.4]
             UNLABELED_CLS_BG_THRESH: 0.25
+            UNLABELED_SAMPLER_TYPE: 'subsample_labeled_rois'
             CLS_FG_THRESH: 0.75
             CLS_BG_THRESH: 0.25
             CLS_BG_THRESH_LO: 0.1
@@ -238,6 +239,7 @@ MODEL:
     UNLABELED_SUPERVISE_REFINE: True
     UNLABELED_SUPERVISE_OBJ: False
     UNLABELED_WEIGHT: 1.0
+    
     SEM_THRESH: [0.2, 0.0, 0.0]
     SUPERVISE_MODE: 0
     NO_NMS: False
