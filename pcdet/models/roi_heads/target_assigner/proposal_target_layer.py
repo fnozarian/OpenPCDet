@@ -312,8 +312,10 @@ class ProposalTargetLayer(nn.Module):
         scaler = self.roi_sampler_cfg.SOFTMATCH_SCALER
         scaled_var = scaler*torch.square(self.st_var[cur_roi_labels[sampled_inds]-1])
         weights = torch.exp(-diff/scaled_var)
-        # cls_labels[interval_mask] = weights[interval_mask]
-        cls_labels[interval_mask] = (roi_ious[interval_mask] - iou_bg_thresh) / (iou_fg_thresh[interval_mask] - iou_bg_thresh)
+        if self.roi_sampler_cfg.SOFTMATCH_WEIGHTS:
+            cls_labels[interval_mask] = weights[interval_mask]
+        else:
+            cls_labels[interval_mask] = (roi_ious[interval_mask] - iou_bg_thresh) / (iou_fg_thresh[interval_mask] - iou_bg_thresh)
         ignore_mask = torch.eq(cur_gt_boxes[gt_assignment[sampled_inds]], 0).all(dim=-1)
         cls_labels[ignore_mask] = -1
         metrics = {'roi_labels': cur_roi_labels,
