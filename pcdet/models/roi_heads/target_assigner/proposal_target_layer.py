@@ -62,6 +62,7 @@ class ProposalTargetLayer(nn.Module):
         batch_reg_valid_mask = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
         batch_cls_labels = -rois.new_ones(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
         interval_mask = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, dtype=torch.bool)
+        batch_weights = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
 
         for index in range(batch_size):
             # TODO(farzad) WARNING!!! The index for cur_gt_boxes was missing and caused an error. FIX this in other branches.
@@ -79,13 +80,15 @@ class ProposalTargetLayer(nn.Module):
                 if self.roi_sampler_cfg.UNLABELED_SAMPLER_TYPE is None:
                     sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = self.subsample_labeled_rois(batch_dict, index)
                 else:
-                    sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = subsample_unlabeled_rois(batch_dict, index)
+                    sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask,weights = subsample_unlabeled_rois(batch_dict, index)
                 cur_roi = batch_dict['rois'][index][sampled_inds]
                 cur_roi_scores = batch_dict['roi_scores'][index][sampled_inds]
                 cur_roi_labels = batch_dict['roi_labels'][index][sampled_inds]
                 batch_roi_ious[index] = roi_ious
+                batch_weights[index] = weights
                 # batch_gt_scores[index] = batch_dict['pred_scores_ema'][index][sampled_inds]
                 batch_gt_of_rois[index] = cur_gt_boxes[gt_assignment[sampled_inds]]
+
             else:
                 sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = self.subsample_labeled_rois(batch_dict, index)
                 cur_roi = batch_dict['rois'][index][sampled_inds]
@@ -105,7 +108,8 @@ class ProposalTargetLayer(nn.Module):
                         'roi_scores': batch_roi_scores, 'roi_labels': batch_roi_labels,
                         'reg_valid_mask': batch_reg_valid_mask,
                         'rcnn_cls_labels': batch_cls_labels,
-                        'interval_mask': interval_mask}
+                        'interval_mask': interval_mask,
+                        'softmatch_weights':batch_weights}
 
         return targets_dict
     
@@ -319,8 +323,8 @@ class ProposalTargetLayer(nn.Module):
         ignore_mask = torch.eq(cur_gt_boxes[gt_assignment[sampled_inds]], 0).all(dim=-1)
         cls_labels[ignore_mask] = -1
         metrics = {'roi_labels': cur_roi_labels,
-                   'iou_wrt_pl': max_overlaps
+                   'iou_wrt_pl': max_overlaps,
         }
         self.adaptive_thresh.update(**metrics)
 
-        return sampled_inds, reg_valid_mask, cls_labels, roi_ious, gt_assignment, interval_mask
+        return sampled_inds, reg_valid_mask, cls_labels, roi_ious, gt_assignment, interval_mask,weights

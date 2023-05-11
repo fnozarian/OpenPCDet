@@ -43,7 +43,8 @@ class PredQualityMetrics(Metric):
                              "pred_weight_uc", "pred_fn_rate", "pred_tp_rate", "pred_fp_ratio", "pred_ious_wrt_pl_fg",
                              "pred_ious_wrt_pl_fn", "pred_ious_wrt_pl_fp", "pred_ious_wrt_pl_tp", "score_fgs_tp",
                              "score_fgs_fn", "score_fgs_fp", "target_score_fn", "target_score_tp", "target_score_fp",
-                             "pred_weight_fn", "pred_weight_tp", "pred_weight_fp"]
+                             "pred_weight_fn", "pred_weight_tp", "pred_weight_fp",'softmatch_bg','softmatch_uc','softmatch_fg',
+                             "softmatch_weights_fn","softmatch_weights_fp","softmatch_weights_tp"]
         self.min_overlaps = np.array([0.7, 0.5, 0.5, 0.7, 0.5, 0.7])
         self.class_agnostic_fg_thresh = 0.7
 
@@ -53,14 +54,15 @@ class PredQualityMetrics(Metric):
 
     def update(self, preds: [torch.Tensor], ground_truths: [torch.Tensor], pred_scores: [torch.Tensor],
                rois=None, roi_scores=None, targets=None, target_scores=None, pred_weights=None,
-               pseudo_labels=None, pseudo_label_scores=None, pred_iou_wrt_pl=None) -> None:
+               pseudo_labels=None, pseudo_label_scores=None, pred_iou_wrt_pl=None,softmatch_weights=None) -> None:
         
         assert isinstance(preds, list) and isinstance(ground_truths, list) and isinstance(pred_scores, list)
         assert all([pred.dim() == 2 for pred in preds]) and all([pred.dim() == 2 for pred in ground_truths]) and all([pred.dim() == 1 for pred in pred_scores])
         assert all([pred.shape[-1] == 8 for pred in preds]) and all([gt.shape[-1] == 8 for gt in ground_truths])
         if roi_scores is not None:
             assert len(pred_scores) == len(roi_scores)
-
+        
+        softmatch_weights = [weights.clone().detach() for weights in softmatch_weights] if softmatch_weights is not None else None
         roi_scores = [score.clone().detach() for score in roi_scores] if roi_scores is not None else None
         preds = [pred_box.clone().detach() for pred_box in preds]
         pred_scores = [ps_score.clone().detach() for ps_score in pred_scores]
@@ -77,6 +79,7 @@ class PredQualityMetrics(Metric):
 
             valid_pred_scores = pred_scores[i][valid_preds_mask.nonzero().view(-1)]
             valid_roi_scores = roi_scores[i][valid_preds_mask.nonzero().view(-1)] if roi_scores else None
+            valid_softmatch_weights = softmatch_weights[i][valid_preds_mask.nonzero().view(-1)] if softmatch_weights else None
             valid_target_scores = target_scores[i][valid_preds_mask.nonzero().view(-1)] if target_scores else None
             valid_pred_weights = pred_weights[i][valid_preds_mask.nonzero().view(-1)] if pred_weights else None
             valid_pred_iou_wrt_pl = pred_iou_wrt_pl[i][valid_preds_mask.nonzero().view(-1)].squeeze() if pred_iou_wrt_pl else None
@@ -161,6 +164,14 @@ class PredQualityMetrics(Metric):
                         classwise_metrics['pred_weight_uc'][cind] = cls_pred_weight_uc
                         cls_pred_weight_fg = (valid_pred_weights * cc_fg_mask.float()).sum() / cc_fg_mask.sum()
                         classwise_metrics['pred_weight_fg'][cind] = cls_pred_weight_fg
+                    
+                    if valid_softmatch_weights is not None:
+                        cls_pred_weight_bg = (valid_softmatch_weights * cls_bg_mask.float()).sum() / cls_bg_mask.float().sum()
+                        classwise_metrics['softmatch_bg'][cind] = cls_pred_weight_bg
+                        cls_pred_weight_uc = (valid_softmatch_weights * cc_uc_mask.float()).sum() / cc_uc_mask.float().sum()
+                        classwise_metrics['softmatch_uc'][cind] = cls_pred_weight_uc
+                        cls_pred_weight_fg = (valid_softmatch_weights * cc_fg_mask.float()).sum() / cc_fg_mask.sum()
+                        classwise_metrics['softmatch_fg'][cind] = cls_pred_weight_fg
 
                     if valid_pred_iou_wrt_pl is not None:
                         fg_threshs = self.config.ROI_HEAD.TARGET_CONFIG.UNLABELED_CLS_FG_THRESH
@@ -190,6 +201,14 @@ class PredQualityMetrics(Metric):
                         classwise_metrics['score_fgs_tp'][cind] = cls_score_fg_tp
                         classwise_metrics['score_fgs_fn'][cind] = cls_score_fg_fn
                         classwise_metrics['score_fgs_fp'][cind] = cls_score_fg_fp
+
+                        if valid_softmatch_weights is not None:
+                            cls_target_score_fn = (valid_softmatch_weights * fn_mask.float()).sum() / fn_mask.sum()
+                            classwise_metrics['softmatch_weights_fn'][cind] = cls_target_score_fn
+                            cls_target_score_tp = (valid_softmatch_weights * tp_mask.float()).sum() / tp_mask.sum()
+                            classwise_metrics['softmatch_weights_tp'][cind] = cls_target_score_tp
+                            cls_target_score_fp = (valid_softmatch_weights * fp_mask.float()).sum() / fp_mask.sum()
+                            classwise_metrics['softmatch_weights_fp'][cind] = cls_target_score_fp                            
                         if valid_target_scores is not None:
                             cls_target_score_fn = (valid_target_scores * fn_mask.float()).sum() / fn_mask.sum()
                             classwise_metrics['target_score_fn'][cind] = cls_target_score_fn

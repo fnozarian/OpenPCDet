@@ -92,7 +92,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.adaptive_thresholding = Adaptive_Thresh(dataset=self.dataset, model_cfg=model_cfg)
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores', 
                         'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels',
-                        'iteration','batch_mean','batch_var','ema_mean','ema_var','rcnn_cls_targets']
+                        'iteration','batch_mean','batch_var','ema_mean','ema_var','rcnn_cls_targets','softmatch_weights']
         self.val_dict = {val: [] for val in vals_to_store}
 
     def forward(self, batch_dict):
@@ -249,6 +249,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                         cur_pred_score = torch.sigmoid(batch_dict['batch_cls_preds'][cur_unlabeled_ind]).squeeze()
                         self.val_dict['pred_scores'].extend(cur_pred_score.tolist())
 
+                        cur_softmatch_weights = self.pv_rcnn.roi_head.forward_ret_dict['softmatch_weights'][cur_unlabeled_ind].squeeze()
+                        self.val_dict['softmatch_weights'].extend(cur_softmatch_weights.tolist())
                         # if 'rcnn_cls_score_teacher' in self.pv_rcnn.roi_head.forward_ret_dict:
                         #     cur_teacher_pred_score = self.pv_rcnn.roi_head.forward_ret_dict['rcnn_cls_score_teacher'][cur_unlabeled_ind]
                         #     self.val_dict['teacher_pred_scores'].extend(cur_teacher_pred_score.tolist())

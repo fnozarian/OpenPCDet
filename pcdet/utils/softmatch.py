@@ -13,7 +13,6 @@ class AdaptiveThresholding(Metric):
     def __init__(self, **kwargs):
 
         super().__init__(**kwargs)
-        self.reset_state_interval = kwargs.get('RESET_STATE_INTERVAL', 8)
         self.percent = kwargs.get('PERCENT', 0.1)
         self.pre_filter_thresh = kwargs.get('PRE_FILTERING_THRESH', 0.25)
         self.tag = kwargs.get('tag', None)
@@ -24,7 +23,7 @@ class AdaptiveThresholding(Metric):
         self.metrics_name = ['batchwise_mean','batchwise_variance','ema_mean','ema_variance']
         self.config = kwargs['config']
         self.bg_thresh = self.config.ROI_HEAD.TARGET_CONFIG.CLS_BG_THRESH
-
+        self.reset_state_interval = self.config.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.RESET_STATE_INTERVAL
         if self.dataset is not None:
             self.class_names  = self.dataset.class_names
             if isinstance(self.class_names, list):
@@ -46,9 +45,10 @@ class AdaptiveThresholding(Metric):
         if roi_labels.ndim == 1: # Unsqueeze for DDP
             roi_labels=roi_labels.unsqueeze(dim=0)
         if iou_wrt_pl.ndim == 1: # Unsqueeze for DDP
-            iou_wrt_pl=iou_wrt_pl.unsqueeze(dim=0)
+            iou_wrt_pl=iou_wrt_pl.unsqueeze(dim=0)            
         self.iou_scores.append(iou_wrt_pl)
         self.labels.append(roi_labels)    
+
 
     def compute(self):
         results = {}
