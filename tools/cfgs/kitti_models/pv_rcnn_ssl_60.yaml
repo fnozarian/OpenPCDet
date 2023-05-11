@@ -206,7 +206,8 @@ MODEL:
             CLS_BG_THRESH: 0.25
             CLS_BG_THRESH_LO: 0.1
             HARD_BG_RATIO: 0.8
-
+            UNLABELED_REG_FG_THRESH: [0.55, 0.55, 0.55]
+            SOFTMATCH_SCALER: 4
             REG_FG_THRESH: 0.55
 
         LOSS_CONFIG:
