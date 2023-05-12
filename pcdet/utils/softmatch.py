@@ -89,10 +89,10 @@ class AdaptiveThresholding(Metric):
             for metric_name in self.metrics_name:
                 classwise_metrics[metric_name] = all_iou[0].new_zeros(self.num_classes).fill_(float('nan'))
             for cind in range(num_classes):
-                classwise_metrics['batchwise_mean'][cind] = self.batch_mean[cind].item()
-                classwise_metrics['batchwise_variance'][cind] = self.batch_var[cind].item()
-                classwise_metrics['ema_mean'][cind] = self.st_mean[cind].item()
-                classwise_metrics['ema_variance'][cind] = self.st_var[cind].item()
+                classwise_metrics['batchwise_mean'][cind] = self.batch_mean[cind]
+                classwise_metrics['batchwise_variance'][cind] = self.batch_var[cind]
+                classwise_metrics['ema_mean'][cind] = self.st_mean[cind]
+                classwise_metrics['ema_variance'][cind] = self.st_var[cind]
             self.reset()
 
         else:
@@ -107,7 +107,7 @@ class AdaptiveThresholding(Metric):
                 if torch.all(classwise_metrics[key].isnan() == True):
                     results[key] = self.iou_scores[0].new_zeros(1).fill_(float('nan'))
                 else:
-                    classwise_results[cls] = classwise_metrics[key][cind]
+                    classwise_results[cls] = classwise_metrics[key][cind].item()
                     results[key] = classwise_results
         return results
 

@@ -162,7 +162,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = unlabeled_inds
             self.pv_rcnn.roi_head.forward_ret_dict['pl_boxes'] = batch_dict['gt_boxes']
             self.pv_rcnn.roi_head.forward_ret_dict['pl_scores'] = pseudo_scores
-
+            self.pv_rcnn.roi_head.forward_ret_dict['softmatch'] = self.adaptive_thresholding.get(tag=f'softmatch')
+            
             disp_dict = {}
             loss_rpn_cls, loss_rpn_box, tb_dict = self.pv_rcnn.dense_head.get_loss(scalar=False)
             loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
@@ -200,20 +201,11 @@ class PVRCNN_SSL(Detector3DTemplate):
                 else:
                     tb_dict_[key] = tb_dict[key]
 
-            if self.model_cfg.ROI_HEAD.TARGET_CONFIG.UNLABELED_SAMPLER_TYPE == 'subsample_unlabeled_rois_tr_gaussian':
-                    softmatch = self.adaptive_thresholding.get(tag=f'softmatch')
-                    self.val_dict['batch_mean'].extend(softmatch.batch_mean.clone().detach())
-                    self.val_dict['batch_var'].extend(softmatch.batch_var.clone().detach())
-                    self.val_dict['ema_mean'].extend(softmatch.st_mean.clone().detach())
-                    self.val_dict['ema_var'].extend(softmatch.st_var.clone().detach())
             if self.model_cfg.get('STORE_SCORES_IN_PKL', False) :
                 # Store different types of scores over all itrs and epochs and dump them in a pickle for offline modeling 
                 # TODO (shashank) : Can be optimized later to save computational time, currently takes about 0.002sec
-                softmatch = self.adaptive_thresholding.get(tag=f'softmatch')
-                self.val_dict['batch_mean'].extend(softmatch.batch_mean.tolist())
-                self.val_dict['batch_var'].extend(softmatch.batch_var.tolist())
-                self.val_dict['ema_mean'].extend(softmatch.st_mean.tolist())
-                self.val_dict['ema_var'].extend(softmatch.st_var.tolist())
+
+
                 batch_roi_labels = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'][unlabeled_inds]
                 batch_roi_labels = [roi_labels.clone().detach() for roi_labels in batch_roi_labels]
 
@@ -272,6 +264,13 @@ class PVRCNN_SSL(Detector3DTemplate):
 
                         cur_iteration = torch.ones_like(preds_iou_max) * (batch_dict['cur_iteration'])
                         self.val_dict['iteration'].extend(cur_iteration.tolist())
+
+                        if self.model_cfg.ROI_HEAD.TARGET_CONFIG.UNLABELED_SAMPLER_TYPE == 'subsample_unlabeled_rois_tr_gaussian':
+                            softmatch = self.adaptive_thresholding.get(tag=f'softmatch')
+                            self.val_dict['batch_mean'].extend(softmatch.batch_mean.tolist())
+                            self.val_dict['batch_var'].extend(softmatch.batch_var.tolist())
+                            self.val_dict['ema_mean'].extend(softmatch.st_mean.tolist())
+                            self.val_dict['ema_var'].extend(softmatch.st_var.tolist())
 
                 # replace old pickle data (if exists) with updated one 
                 output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
