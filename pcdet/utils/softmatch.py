@@ -35,7 +35,7 @@ class AdaptiveThresholding(Metric):
 
         self.add_state("iou_scores", default=[], dist_reduce_fx='cat')
         self.add_state("labels", default=[], dist_reduce_fx='cat')
-        self.st_mean = torch.ones(self.num_classes) / self.num_classes     
+        self.st_mean = torch.ones(self.num_classes) / 2  
         self.st_var = torch.ones(self.num_classes)
 
         self.batch_mean = torch.zeros(self.num_classes) 
@@ -76,13 +76,14 @@ class AdaptiveThresholding(Metric):
                     cls_wise_iou_mean_.append(cls_wise_thresholded[i].mean().clone())
                     cls_wise_iou_var_.append(cls_wise_thresholded[i].var(unbiased=True).clone())
             #NOTE: mean of empty tensor is nan,common among tail classes
-            self.batch_mean = torch.stack(cls_wise_iou_mean_).nan_to_num(nan=0.0).clone()
+            self.batch_mean = torch.stack(cls_wise_iou_mean_).clone()
             self.batch_var = torch.stack(cls_wise_iou_var_).clone()
             for cind in range(num_classes):
                 self.batch_var[cind] = self.batch_var[cind].nan_to_num(nan=self.st_var[cind])
+                self.batch_mean[cind] = self.batch_mean[cind].nan_to_num(nan=self.st_mean[cind])
 
             self.st_mean = self.momentum*(self.st_mean) + (1-self.momentum)*self.batch_mean
-            self.st_var = self.momentum*(self.st_var) + (1-self.momentum)*self.batch_var
+            self.st_var = self.momentum*(self.st_var) + ((self.reset_state_interval/(self.reset_state_interval-1))*(1-self.momentum)*self.batch_var)
             self.st_mean = torch.clamp(self.st_mean, min=0.25,max=0.90).clone()
             self.st_var = torch.clamp(self.st_var,min=0.0).clone()
             classwise_metrics={}
