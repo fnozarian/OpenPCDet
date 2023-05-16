@@ -78,6 +78,7 @@ class AdaptiveThresholding(Metric):
             #NOTE: mean of empty tensor is nan,common among tail classes
             self.batch_mean = torch.stack(cls_wise_iou_mean_).clone()
             self.batch_var = torch.stack(cls_wise_iou_var_).clone()
+            #NOTE: replace nan with previous dynamic threshold. replacing nan with zero reduces the dyn threshold value
             for cind in range(num_classes):
                 self.batch_var[cind] = self.batch_var[cind].nan_to_num(nan=self.st_var[cind])
                 self.batch_mean[cind] = self.batch_mean[cind].nan_to_num(nan=self.st_mean[cind])

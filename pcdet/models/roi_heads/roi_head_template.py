@@ -153,6 +153,9 @@ class RoIHeadTemplate(nn.Module):
             sample_pls.append(pl_labeled_boxes)
             sample_pl_scores.append(pl_scores)
 
+            pred_weights = targets_dict['rcnn_cls_weights'][uind][mask].detach().clone()
+            sample_pred_weights.append(pred_weights)
+            
             # Teacher refinements (Preds) of student's rois
             if 'ema_gt' in pred_type and self.get('ENABLE_SOFT_TEACHER', False):
                 pred_boxes_ema = targets_dict['batch_box_preds_teacher'][uind][mask].detach().clone()
@@ -254,9 +257,11 @@ class RoIHeadTemplate(nn.Module):
         gt_iou_of_rois = self.forward_ret_dict['gt_iou_of_rois'][unlabeled_inds].detach().clone()
         roi_labels = self.forward_ret_dict['roi_labels'][unlabeled_inds].detach().clone() - 1
         softmatch = self.forward_ret_dict['softmatch']
+        
         fg_thresh = gt_iou_of_rois.new_tensor(softmatch.st_mean.to(gt_iou_of_rois.device)).reshape(1,1,-1).repeat(*ul_weights.shape[:2],1)
         cls_fg_thresh = torch.gather(fg_thresh, dim=-1, index=roi_labels.unsqueeze(-1)).squeeze(-1)
         
+        #NOTE: Interval weighting happens here
         ul_weights[~self.forward_ret_dict['interval_mask'][unlabeled_inds]] = 1
         self.forward_ret_dict['rcnn_cls_weights'] = torch.ones_like(self.forward_ret_dict['rcnn_cls_labels'])
         self.forward_ret_dict['rcnn_cls_weights'][unlabeled_inds] = ul_weights

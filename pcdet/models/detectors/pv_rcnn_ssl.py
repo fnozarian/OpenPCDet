@@ -247,8 +247,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                         #     cur_teacher_pred_score = self.pv_rcnn.roi_head.forward_ret_dict['rcnn_cls_score_teacher'][cur_unlabeled_ind]
                         #     self.val_dict['teacher_pred_scores'].extend(cur_teacher_pred_score.tolist())
 
-                            # cur_weight = self.pv_rcnn.roi_head.forward_ret_dict['rcnn_cls_weights'][cur_unlabeled_ind]
-                            # self.val_dict['weights'].extend(cur_weight.tolist())
+                        cur_weight = self.pv_rcnn.roi_head.forward_ret_dict['rcnn_cls_weights'][cur_unlabeled_ind]
+                        self.val_dict['weights'].extend(cur_weight.tolist())
 
                         cur_roi_score =  torch.sigmoid(self.pv_rcnn.roi_head.forward_ret_dict['roi_scores'][cur_unlabeled_ind])
                         self.val_dict['roi_scores'].extend(cur_roi_score.tolist())
