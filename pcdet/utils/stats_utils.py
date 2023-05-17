@@ -44,7 +44,7 @@ class PredQualityMetrics(Metric):
                              "pred_ious_wrt_pl_fn", "pred_ious_wrt_pl_fp", "pred_ious_wrt_pl_tp", "score_fgs_tp",
                              "score_fgs_fn", "score_fgs_fp", "target_score_fn", "target_score_tp", "target_score_fp",
                              "pred_weight_fn", "pred_weight_tp", "pred_weight_fp",'softmatch_bg','softmatch_uc','softmatch_fg',
-                             "softmatch_weights_fn","softmatch_weights_fp","softmatch_weights_tp"]
+                             "softmatch_weights_fn","softmatch_weights_fp","softmatch_weights_tp","softmatch_quantity_fg","softmatch_quality_fg","softmatch_adulteration_fp"]
         self.min_overlaps = np.array([0.7, 0.5, 0.5, 0.7, 0.5, 0.7])
         self.class_agnostic_fg_thresh = 0.7
 
@@ -223,6 +223,12 @@ class PredQualityMetrics(Metric):
                             classwise_metrics['pred_weight_tp'][cind] = cls_pred_weight_cc_tp
                             cls_pred_weight_cc_fp = (valid_pred_weights * fp_mask).sum() / fp_mask.float().sum()
                             classwise_metrics['pred_weight_fp'][cind] = cls_pred_weight_cc_fp
+                            classwise_metrics['softmatch_quantity_fg'][cind] = valid_pred_weights.sum() / pred_cls_mask.sum()
+                            softmatch_quality_prefiltering =  valid_pred_weights / valid_pred_weights.sum() 
+                            softmatch_quality = softmatch_quality_prefiltering[tp_mask].sum()
+                            classwise_metrics['softmatch_quality_fg'][cind] = softmatch_quality
+                            classwise_metrics['softmatch_adulteration_fp'][cind] = softmatch_quality_prefiltering[fp_mask].sum()
+
 
             for key, val in classwise_metrics.items():
                 # Note that unsqueeze is necessary because torchmetric performs the dist cat on dim 0.
