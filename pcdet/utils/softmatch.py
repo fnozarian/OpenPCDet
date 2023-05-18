@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from matplotlib import pyplot as plt
 from scipy.stats import norm
-
+import copy
 from torchmetrics import Metric
 from pcdet.config import cfg
 
@@ -81,7 +81,7 @@ class AdaptiveThresholding(Metric):
             #NOTE: replace nan with previous dynamic threshold. replacing nan with zero reduces the dyn threshold value
             for cind in range(num_classes):
                 self.batch_var[cind] = self.batch_var[cind].nan_to_num(nan=self.st_var[cind])
-                self.batch_mean[cind] = self.batch_mean[cind].nan_to_num(nan=self.st_mean[cind])
+                self.batch_mean[cind] = self.batch_mean[cind].nan_to_num(nan=0.00)
 
             self.st_mean = self.momentum*(self.st_mean) + (1-self.momentum)*self.batch_mean
             self.st_var = self.momentum*(self.st_var) + ((self.reset_state_interval/(self.reset_state_interval-1))*(1-self.momentum)*self.batch_var)
@@ -102,15 +102,15 @@ class AdaptiveThresholding(Metric):
             for metric_name in self.metrics_name:
                classwise_metrics[metric_name] = self.iou_scores[0].new_zeros(num_classes).fill_(float('nan'))
 
-        classwise_results = {}
         for key in self.metrics_name: 
-            for cind,cls in enumerate(self.dataset.class_names):
-                #if all values are nan, then return a list with nan values(gets filtered in train_utils)
-                if torch.all(classwise_metrics[key].isnan() == True):
-                    results[key] = self.iou_scores[0].new_zeros(1).fill_(float('nan'))
-                else:
+            classwise_results = {}
+            #if all values are nan, then return a list with nan values(gets filtered in train_utils)
+            if torch.all(classwise_metrics[key].isnan() == True):
+                results[key] = self.iou_scores[0].new_zeros(1).fill_(float('nan'))
+            else:
+                for cind,cls in enumerate(self.dataset.class_names):
                     classwise_results[cls] = classwise_metrics[key][cind].item()
-                    results[key] = classwise_results
+                results[key] = copy.deepcopy(classwise_results)                   
         return results
 
 

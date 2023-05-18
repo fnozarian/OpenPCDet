@@ -106,7 +106,7 @@ class RoIHeadTemplate(nn.Module):
     def update_metrics(self, targets_dict, mask_type='cls', vis_type='pred_gt', pred_type=None):
         metric_registry = targets_dict['metric_registry']
         unlabeled_inds = targets_dict['unlabeled_inds']
-
+        softmatch = targets_dict['softmatch']
         sample_preds, sample_pred_scores, sample_pred_weights = [], [], []
         sample_rois, sample_roi_scores = [], []
         sample_targets, sample_target_scores = [], []
@@ -205,7 +205,8 @@ class RoIHeadTemplate(nn.Module):
                              'ground_truths': sample_gts, 'targets': sample_targets,
                              'pseudo_labels': sample_pls, 'pseudo_label_scores': sample_pl_scores,
                              'target_scores': sample_target_scores, 'pred_weights': sample_pred_weights,
-                             'pred_iou_wrt_pl': sample_gt_iou_of_rois,'softmatch_weights':sample_softmatch_weights}
+                             'pred_iou_wrt_pl': sample_gt_iou_of_rois,'softmatch_weights':sample_softmatch_weights,
+                             'softmatch_thresh':softmatch.st_mean}
             metrics.update(**metric_inputs)
 
     def assign_targets(self, batch_dict):
