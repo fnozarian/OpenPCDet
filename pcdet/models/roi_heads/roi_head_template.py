@@ -114,7 +114,7 @@ class RoIHeadTemplate(nn.Module):
         ema_preds_of_std_rois, ema_pred_scores_of_std_rois = [], []
         sample_gts = []
         sample_gt_iou_of_rois = []
-        sample_softmatch_weights = []
+        sample_softmatch_weights,sample_objective,sample_valid_mask = [],[],[]
         for i, uind in enumerate(unlabeled_inds):
             mask = (targets_dict['reg_valid_mask'][uind] > 0) if mask_type == 'reg' else (
                         targets_dict['rcnn_cls_labels'][uind] >= 0)
@@ -156,6 +156,14 @@ class RoIHeadTemplate(nn.Module):
             pred_weights = targets_dict['rcnn_cls_weights'][uind][mask].detach().clone()
             sample_pred_weights.append(pred_weights)
             
+            batch_loss_cls = F.binary_cross_entropy(pred_scores, target_scores.float(), reduction='none')
+            cls_valid_mask = (target_scores >= 0).float()
+            # rcnn_loss_cls_norm = (cls_valid_mask * pred_weights).sum(-1)
+            rcnn_loss_cls = (batch_loss_cls * pred_weights) 
+            sample_objective.append(rcnn_loss_cls)
+            sample_valid_mask.append(cls_valid_mask)
+
+
             # Teacher refinements (Preds) of student's rois
             if 'ema_gt' in pred_type and self.get('ENABLE_SOFT_TEACHER', False):
                 pred_boxes_ema = targets_dict['batch_box_preds_teacher'][uind][mask].detach().clone()
@@ -206,7 +214,7 @@ class RoIHeadTemplate(nn.Module):
                              'pseudo_labels': sample_pls, 'pseudo_label_scores': sample_pl_scores,
                              'target_scores': sample_target_scores, 'pred_weights': sample_pred_weights,
                              'pred_iou_wrt_pl': sample_gt_iou_of_rois,'softmatch_weights':sample_softmatch_weights,
-                             'softmatch_thresh':softmatch.st_mean}
+                             'softmatch_thresh':softmatch.st_mean, 'objective':sample_objective, 'loss_mask':sample_valid_mask}
             metrics.update(**metric_inputs)
 
     def assign_targets(self, batch_dict):

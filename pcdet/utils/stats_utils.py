@@ -45,7 +45,8 @@ class PredQualityMetrics(Metric):
                              "score_fgs_fn", "score_fgs_fp", "target_score_fn", "target_score_tp", "target_score_fp",
                              "pred_weight_fn", "pred_weight_tp", "pred_weight_fp",'softmatch_bg','softmatch_uc','softmatch_fg',
                              "softmatch_weights_fn","softmatch_weights_fp","softmatch_weights_tp","softmatch_quantity_fg","softmatch_quality_fg",
-                             "softmatch_adulteration_fp","softmatch_adulteration_fn","softmatch_adulteration","softmatch_quantity_uc","softmatch_quantity_bg"]
+                             "softmatch_adulteration_fp","softmatch_adulteration_fn","softmatch_adulteration","softmatch_quantity_uc","softmatch_quantity_bg",
+                             "softmatch_quantity_all","softmatch_quality"]
         self.min_overlaps = np.array([0.7, 0.5, 0.5, 0.7, 0.5, 0.7])
         self.class_agnostic_fg_thresh = 0.7
 
@@ -55,7 +56,7 @@ class PredQualityMetrics(Metric):
 
     def update(self, preds: [torch.Tensor], ground_truths: [torch.Tensor], pred_scores: [torch.Tensor],
                rois=None, roi_scores=None, targets=None, target_scores=None, pred_weights=None,
-               pseudo_labels=None, pseudo_label_scores=None, pred_iou_wrt_pl=None,softmatch_weights=None,softmatch_thresh=None) -> None:
+               pseudo_labels=None, pseudo_label_scores=None, pred_iou_wrt_pl=None,softmatch_weights=None,softmatch_thresh=None,objective=None,loss_mask=None) -> None:
         
         assert isinstance(preds, list) and isinstance(ground_truths, list) and isinstance(pred_scores, list)
         assert all([pred.dim() == 2 for pred in preds]) and all([pred.dim() == 2 for pred in ground_truths]) and all([pred.dim() == 1 for pred in pred_scores])
@@ -227,15 +228,20 @@ class PredQualityMetrics(Metric):
                             classwise_metrics['pred_weight_tp'][cind] = cls_pred_weight_cc_tp
                             cls_pred_weight_cc_fp = (valid_pred_weights * fp_mask).sum() / fp_mask.float().sum()
                             classwise_metrics['pred_weight_fp'][cind] = cls_pred_weight_cc_fp
+                            classwise_metrics['softmatch_quantity_all'][cind] = valid_pred_weights[pred_cls_mask].sum() / pred_cls_mask.sum()
                             classwise_metrics['softmatch_quantity_fg'][cind] = valid_pred_weights[fg_mask_wrt_pl].sum() / pred_cls_mask.sum()
                             classwise_metrics['softmatch_quantity_uc'][cind] = valid_pred_weights[uc_mask_wrt_pl].sum() / pred_cls_mask.sum()
                             classwise_metrics['softmatch_quantity_bg'][cind] = valid_pred_weights[bg_mask_wrt_pl].sum() / pred_cls_mask.sum()
-                            softmatch_quality_prefiltering =  valid_pred_weights / valid_pred_weights.sum() 
-                            softmatch_quality = softmatch_quality_prefiltering[tp_mask].sum()
-                            classwise_metrics['softmatch_quality_fg'][cind] = softmatch_quality
-                            classwise_metrics['softmatch_adulteration_fp'][cind] = softmatch_quality_prefiltering[fp_mask].sum() 
-                            classwise_metrics['softmatch_adulteration_fn'][cind] = softmatch_quality_prefiltering[fn_mask].sum()
-                            classwise_metrics['softmatch_adulteration'][cind] = softmatch_quality_prefiltering[fp_mask].sum() + softmatch_quality_prefiltering[fn_mask].sum()
+                            softmatch_quality_prefiltering =  valid_pred_weights[pred_cls_mask] / valid_pred_weights.sum() 
+                            softmatch_quality = softmatch_quality_prefiltering[[tp_mask[pred_cls_mask]]].sum()
+                            classwise_metrics['softmatch_quality'][cind] = softmatch_quality
+                            classwise_metrics['softmatch_adulteration_fp'][cind] = softmatch_quality_prefiltering[fp_mask[pred_cls_mask]].sum() 
+                            classwise_metrics['softmatch_adulteration_fn'][cind] = softmatch_quality_prefiltering[fn_mask[pred_cls_mask]].sum()
+                            classwise_metrics['softmatch_adulteration'][cind] =  classwise_metrics['softmatch_adulteration_fp'][cind]  + classwise_metrics['softmatch_adulteration_fn'][cind]
+                            # classwise_metrics['softmatch_objective_tp_ratio'][cind] = objective[loss_mask][tp_mask[loss_mask]]
+                            # classwise_metrics['softmatch_objective_fp_ratio'][cind] = objective[loss_mask][fp_mask[loss_mask]]
+                            # classwise_metrics['softmatch_objective_fn_ratio'][cind] = objective[loss_mask][fn_mask[loss_mask]]
+
             for key, val in classwise_metrics.items():
                 # Note that unsqueeze is necessary because torchmetric performs the dist cat on dim 0.
                 getattr(self, key).append(val.unsqueeze(dim=0))
