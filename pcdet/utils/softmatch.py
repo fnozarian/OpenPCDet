@@ -20,7 +20,7 @@ class AdaptiveThresholding(Metric):
         self.quantile= kwargs.get('quantile', False)
         self.momentum= kwargs.get('momentum', 0.9)
         self.enable_clipping = kwargs.get('enable_clipping', True)
-        self.metrics_name = ['batchwise_mean','batchwise_variance','ema_mean','ema_variance']
+        self.metrics_name = ['batchwise_mean','batchwise_variance','ema_mean','ema_variance','non_linear_mean']
         self.config = kwargs['config']
         self.bg_thresh = self.config.ROI_HEAD.TARGET_CONFIG.CLS_BG_THRESH
         self.reset_state_interval = self.config.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.RESET_STATE_INTERVAL
@@ -35,9 +35,9 @@ class AdaptiveThresholding(Metric):
 
         self.add_state("iou_scores", default=[], dist_reduce_fx='cat')
         self.add_state("labels", default=[], dist_reduce_fx='cat')
-        self.st_mean = torch.ones(self.num_classes) / 2  
+        self.raw_mean = torch.ones(self.num_classes) / self.num_classes  
         self.st_var = torch.ones(self.num_classes)
-
+        self.st_mean = self.raw_mean / 2 - self.raw_mean
         self.batch_mean = torch.zeros(self.num_classes) 
         self.batch_var = torch.ones(self.num_classes)
 
@@ -81,19 +81,21 @@ class AdaptiveThresholding(Metric):
             #NOTE: replace nan with previous dynamic threshold. replacing nan with zero reduces the dyn threshold value
             for cind in range(num_classes):
                 self.batch_var[cind] = self.batch_var[cind].nan_to_num(nan=self.st_var[cind])
-                self.batch_mean[cind] = self.batch_mean[cind].nan_to_num(nan=0.00)
+                self.batch_mean[cind] = self.batch_mean[cind].nan_to_num(nan=self.raw_mean[cind])
 
-            self.st_mean = self.momentum*(self.st_mean) + (1-self.momentum)*self.batch_mean
+            self.raw_mean = self.momentum*(self.raw_mean) + (1-self.momentum)*self.batch_mean
             self.st_var = self.momentum*(self.st_var) + ((self.reset_state_interval/(self.reset_state_interval-1))*(1-self.momentum)*self.batch_var)
-            self.st_mean = torch.clamp(self.st_mean, min=0.25,max=0.90).clone()
+            self.raw_mean = torch.clamp(self.raw_mean, min=0.25,max=0.90).clone()
             self.st_var = torch.clamp(self.st_var,min=0.0).clone()
+            self.st_mean = self.raw_mean / 2 - self.raw_mean
             classwise_metrics={}
             for metric_name in self.metrics_name:
                 classwise_metrics[metric_name] = all_iou[0].new_zeros(self.num_classes).fill_(float('nan'))
             for cind in range(num_classes):
+                classwise_metrics['non_linear_mean'][cind] = self.st_mean[cind]
                 classwise_metrics['batchwise_mean'][cind] = self.batch_mean[cind]
                 classwise_metrics['batchwise_variance'][cind] = self.batch_var[cind]
-                classwise_metrics['ema_mean'][cind] = self.st_mean[cind]
+                classwise_metrics['ema_mean'][cind] = self.raw_mean[cind]
                 classwise_metrics['ema_variance'][cind] = self.st_var[cind]
             self.reset()
 
