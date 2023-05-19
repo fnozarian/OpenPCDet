@@ -87,7 +87,7 @@ class AdaptiveThresholding(Metric):
             self.st_var = self.momentum*(self.st_var) + ((self.reset_state_interval/(self.reset_state_interval-1))*(1-self.momentum)*self.batch_var)
             self.raw_mean = torch.clamp(self.raw_mean, min=0.25,max=0.90).clone()
             self.st_var = torch.clamp(self.st_var,min=0.0).clone()
-            self.st_mean = self.raw_mean / 2 - self.raw_mean
+            self.st_mean = self.raw_mean*(2 - self.raw_mean)
             classwise_metrics={}
             for metric_name in self.metrics_name:
                 classwise_metrics[metric_name] = all_iou[0].new_zeros(self.num_classes).fill_(float('nan'))

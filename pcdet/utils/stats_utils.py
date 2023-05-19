@@ -47,6 +47,7 @@ class PredQualityMetrics(Metric):
                              "softmatch_weights_fn","softmatch_weights_fp","softmatch_weights_tp","softmatch_quantity_fg","softmatch_quality_fg",
                              "softmatch_adulteration_fp","softmatch_adulteration_fn","softmatch_adulteration","softmatch_quantity_uc","softmatch_quantity_bg",
                              "softmatch_quantity_all","softmatch_quality"]
+        self.class_ag_metrics =["softmatch_quality_ag","softmatch_quantity_ag","softmatch_adulteration_ag"]
         self.min_overlaps = np.array([0.7, 0.5, 0.5, 0.7, 0.5, 0.7])
         self.class_agnostic_fg_thresh = 0.7
 
@@ -103,8 +104,19 @@ class PredQualityMetrics(Metric):
             num_preds = valid_preds_mask.sum()
 
             classwise_metrics = {}
+            class_ag_metrics = {}
             for metric_name in self.metrics_name:
                 classwise_metrics[metric_name] = sample_tensor.new_zeros(num_classes + 1).fill_(float('nan'))
+
+            for metric_name in self.class_ag_metrics:
+                class_ag_metrics[metric_name] = sample_tensor.new_zeros(1).fill_(float('nan'))
+            
+            # if softmatch_thresh is not None:
+            #         overlap = iou3d_nms_utils.boxes_iou3d_gpu(valid_pred_boxes[:, 0:7], valid_gt_boxes[:, 0:7])
+            #         preds_iou_max, assigned_gt_inds = overlap.max(dim=1)
+            #         classwise_thresh = valid_pred_scores.new_tensor(softmatch_thresh[0, self.metric]).unsqueeze(0).repeat(
+            #         len(pred_labels), 1).gather(dim=-1, index=pred_labels.unsqueeze(-1)).view(-1)
+
 
             for cind in range(num_classes):
                 pred_cls_mask = pred_labels == cind
@@ -236,7 +248,7 @@ class PredQualityMetrics(Metric):
                             softmatch_quality = softmatch_quality_prefiltering[[tp_mask[pred_cls_mask]]].sum()
                             classwise_metrics['softmatch_quality'][cind] = softmatch_quality
                             classwise_metrics['softmatch_adulteration_fp'][cind] = softmatch_quality_prefiltering[fp_mask[pred_cls_mask]].sum() * 100.0
-                            classwise_metrics['softmatch_adulteration_fn'][cind] = softmatch_quality_prefiltering[fn_mask[pred_cls_mask]].sum() * 100*0
+                            classwise_metrics['softmatch_adulteration_fn'][cind] = softmatch_quality_prefiltering[fn_mask[pred_cls_mask]].sum() * 100.0
                             classwise_metrics['softmatch_adulteration'][cind] =  (classwise_metrics['softmatch_adulteration_fp'][cind]  + classwise_metrics['softmatch_adulteration_fn'][cind])*100
                             # classwise_metrics['softmatch_objective_tp_ratio'][cind] = objective[loss_mask][tp_mask[loss_mask]]
                             # classwise_metrics['softmatch_objective_fp_ratio'][cind] = objective[loss_mask][fp_mask[loss_mask]]
