@@ -37,7 +37,7 @@ class AdaptiveThresholding(Metric):
         self.add_state("labels", default=[], dist_reduce_fx='cat')
         self.raw_mean = torch.ones(self.num_classes) / self.num_classes  
         self.st_var = torch.ones(self.num_classes)
-        self.st_mean = self.raw_mean / 2 - self.raw_mean
+        self.st_mean = self.raw_mean*(2 - self.raw_mean)
         self.batch_mean = torch.zeros(self.num_classes) 
         self.batch_var = torch.ones(self.num_classes)
 

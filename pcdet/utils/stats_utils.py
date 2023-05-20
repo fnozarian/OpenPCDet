@@ -29,7 +29,7 @@ class PredQualityMetrics(Metric):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.reset_state_interval = kwargs.get('reset_state_interval', 64)
+        self.reset_state_interval = kwargs.get('reset_state_interval', 8)
         self.tag = kwargs.get('tag', None)
         self.dataset = kwargs.get('dataset', None)
         self.config = kwargs.get('config', None)
@@ -53,7 +53,8 @@ class PredQualityMetrics(Metric):
 
         for metric_name in self.metrics_name:
             self.add_state(metric_name, default=[], dist_reduce_fx='cat')
-
+        for metric_name in self.class_ag_metrics:
+            self.add_state(metric_name, default=[], dist_reduce_fx='cat')
 
     def update(self, preds: [torch.Tensor], ground_truths: [torch.Tensor], pred_scores: [torch.Tensor],
                rois=None, roi_scores=None, targets=None, target_scores=None, pred_weights=None,
@@ -111,12 +112,28 @@ class PredQualityMetrics(Metric):
             for metric_name in self.class_ag_metrics:
                 class_ag_metrics[metric_name] = sample_tensor.new_zeros(1).fill_(float('nan'))
             
-            # if softmatch_thresh is not None:
-            #         overlap = iou3d_nms_utils.boxes_iou3d_gpu(valid_pred_boxes[:, 0:7], valid_gt_boxes[:, 0:7])
-            #         preds_iou_max, assigned_gt_inds = overlap.max(dim=1)
-            #         classwise_thresh = valid_pred_scores.new_tensor(softmatch_thresh[0, self.metric]).unsqueeze(0).repeat(
-            #         len(pred_labels), 1).gather(dim=-1, index=pred_labels.unsqueeze(-1)).view(-1)
-
+            
+            if softmatch_thresh is not None and len(valid_pred_weights):
+                    overlap = iou3d_nms_utils.boxes_iou3d_gpu(valid_pred_boxes[:, 0:7], valid_gt_boxes[:, 0:7])
+                    preds_iou_max, assigned_gt_inds = overlap.max(dim=1)
+                    classwise_thresh = valid_pred_scores.new_tensor(softmatch_thresh.to(valid_pred_boxes.device)).unsqueeze(0).repeat(valid_pred_scores.shape[0],1).gather(dim=-1, index=pred_labels.type(torch.int64).unsqueeze(-1)).view(-1)
+                    cc_mask = assigned_gt_inds == pred_labels
+                    fg_mask = preds_iou_max >= classwise_thresh
+                    bg_mask = preds_iou_max <= self.config.ROI_HEAD.TARGET_CONFIG.UNLABELED_CLS_BG_THRESH
+                    fg_tp_mask = cc_mask & fg_mask
+                    fg_uc_pl_mask = valid_pred_iou_wrt_pl > self.config.ROI_HEAD.TARGET_CONFIG.UNLABELED_CLS_BG_THRESH
+                    
+                    cc_uc_mask = ~(bg_mask | fg_mask) & cc_mask  # uncertain mask
+                    fg_uc_gt_mask = cc_uc_mask | fg_tp_mask
+                    
+                    if len(valid_pred_weights[fg_uc_pl_mask]): # to avoid zero division error
+                        quantity = valid_pred_weights[fg_uc_pl_mask].sum() / len(valid_pred_weights[fg_uc_pl_mask])
+                    else:
+                        quantity = 0
+                    # valid_pred_weights[fg_uc_pl_mask].sum() => total weight going to fg_uc region
+                    norm = valid_pred_weights / valid_pred_weights[fg_uc_pl_mask].sum()
+                    quality = norm[fg_uc_gt_mask].sum()
+                    quality = quality.nan_to_num(0.00)
 
             for cind in range(num_classes):
                 pred_cls_mask = pred_labels == cind
@@ -240,16 +257,16 @@ class PredQualityMetrics(Metric):
                             classwise_metrics['pred_weight_tp'][cind] = cls_pred_weight_cc_tp
                             cls_pred_weight_cc_fp = (valid_pred_weights * fp_mask).sum() / fp_mask.float().sum()
                             classwise_metrics['pred_weight_fp'][cind] = cls_pred_weight_cc_fp
-                            classwise_metrics['softmatch_quantity_all'][cind] = (valid_pred_weights[pred_cls_mask].sum() / pred_cls_mask.sum()) * 100.0
+                            classwise_metrics['softmatch_quantity_all'][cind] = (valid_pred_weights[pred_cls_mask].sum() / pred_cls_mask.sum()) 
                             # classwise_metrics['softmatch_quantity_fg'][cind] = valid_pred_weights[fg_mask_wrt_pl].sum() / pred_cls_mask.sum() * 100.0
                             # classwise_metrics['softmatch_quantity_uc'][cind] = valid_pred_weights[uc_mask_wrt_pl].sum() / pred_cls_mask.sum() * 100.0
                             # classwise_metrics['softmatch_quantity_bg'][cind] = valid_pred_weights[bg_mask_wrt_pl].sum() / pred_cls_mask.sum() * 100.0
                             softmatch_quality_prefiltering =  valid_pred_weights[pred_cls_mask] / valid_pred_weights.sum() 
                             softmatch_quality = softmatch_quality_prefiltering[[tp_mask[pred_cls_mask]]].sum()
                             classwise_metrics['softmatch_quality'][cind] = softmatch_quality
-                            classwise_metrics['softmatch_adulteration_fp'][cind] = softmatch_quality_prefiltering[fp_mask[pred_cls_mask]].sum() * 100.0
-                            classwise_metrics['softmatch_adulteration_fn'][cind] = softmatch_quality_prefiltering[fn_mask[pred_cls_mask]].sum() * 100.0
-                            classwise_metrics['softmatch_adulteration'][cind] =  (classwise_metrics['softmatch_adulteration_fp'][cind]  + classwise_metrics['softmatch_adulteration_fn'][cind])*100
+                            classwise_metrics['softmatch_adulteration_fp'][cind] = softmatch_quality_prefiltering[fp_mask[pred_cls_mask]].sum()
+                            classwise_metrics['softmatch_adulteration_fn'][cind] = softmatch_quality_prefiltering[fn_mask[pred_cls_mask]].sum()
+                            classwise_metrics['softmatch_adulteration'][cind] =  (classwise_metrics['softmatch_adulteration_fp'][cind]  + classwise_metrics['softmatch_adulteration_fn'][cind])
                             # classwise_metrics['softmatch_objective_tp_ratio'][cind] = objective[loss_mask][tp_mask[loss_mask]]
                             # classwise_metrics['softmatch_objective_fp_ratio'][cind] = objective[loss_mask][fp_mask[loss_mask]]
                             # classwise_metrics['softmatch_objective_fn_ratio'][cind] = objective[loss_mask][fn_mask[loss_mask]]
@@ -258,12 +275,15 @@ class PredQualityMetrics(Metric):
                 # Note that unsqueeze is necessary because torchmetric performs the dist cat on dim 0.
                 getattr(self, key).append(val.unsqueeze(dim=0))
 
+            for key,val in class_ag_metrics.items():
+                getattr(self, key).append(val.unsqueeze(dim=0))
 
         # If no prediction is given all states are filled with nan tensors
         if len(preds) == 0:
             for metric_name in self.metrics_name:
                 getattr(self, metric_name).append(sample_tensor.new_zeros(num_classes + 1).fill_(float('nan')))
-
+            for metric_name in self.class_ag_metrics:
+                getattr(self, metric_name).append(sample_tensor.new_zeros(1).fill_(float('nan')))
 
     def compute(self):
         final_results = {}
@@ -274,14 +294,23 @@ class PredQualityMetrics(Metric):
                 if isinstance(mstate, torch.Tensor):
                     mstate = [mstate]
                 results[mname] = nanmean(torch.cat(mstate, dim=0), dim=0)  # torch.nanmean is not available in pytorch < 1.8
-
+            for mname in self.class_ag_metrics:
+                mstate = getattr(self, mname)
+                if isinstance(mstate, torch.Tensor):
+                    mstate = [mstate]
+                results[mname] = nanmean(torch.cat(mstate, dim=0), dim=0)
+                
             for key, val in results.items():
                 classwise_results = {}
-                for cind, cls in enumerate(self.dataset.class_names + ['cls_agnostic']):
-                    if not torch.isnan(val[cind]):
-                        classwise_results[cls] = val[cind].item()
-                final_results[key] = classwise_results
-
+                if val.shape[0] == 1 :
+                    if not torch.isnan(val):
+                        classwise_results['cls_agn'] = val.item()                    
+                    final_results[key] = classwise_results
+                else:
+                    for cind, cls in enumerate(self.dataset.class_names + ['cls_agnostic']):
+                        if not torch.isnan(val[cind]):
+                            classwise_results[cls] = val[cind].item()
+                    final_results[key] = classwise_results
             # TODO(farzad) Does calling reset in compute make a trouble?
             self.reset()
 
