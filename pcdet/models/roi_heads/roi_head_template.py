@@ -7,6 +7,7 @@ from ...utils import box_coder_utils, common_utils, loss_utils
 from ..model_utils.model_nms_utils import class_agnostic_nms
 from .target_assigner.proposal_target_layer import ProposalTargetLayer
 from ...ops.roiaware_pool3d import roiaware_pool3d_utils
+from pcdet.ops.iou3d_nms import iou3d_nms_utils
 
 
 class RoIHeadTemplate(nn.Module):
@@ -115,6 +116,7 @@ class RoIHeadTemplate(nn.Module):
         sample_gts = []
         sample_gt_iou_of_rois = []
         sample_softmatch_weights,sample_objective,sample_valid_mask = [],[],[]
+        sample_ori_boxes = []
         for i, uind in enumerate(unlabeled_inds):
             mask = (targets_dict['reg_valid_mask'][uind] > 0) if mask_type == 'reg' else (
                         targets_dict['rcnn_cls_labels'][uind] >= 0)
@@ -155,7 +157,7 @@ class RoIHeadTemplate(nn.Module):
 
             pred_weights = targets_dict['rcnn_cls_weights'][uind][mask].detach().clone()
             sample_pred_weights.append(pred_weights)
-            
+
             batch_loss_cls = F.binary_cross_entropy(pred_scores, target_scores.float(), reduction='none')
             cls_valid_mask = (target_scores >= 0).float()
             # rcnn_loss_cls_norm = (cls_valid_mask * pred_weights).sum(-1)
@@ -274,7 +276,8 @@ class RoIHeadTemplate(nn.Module):
         ul_weights[~self.forward_ret_dict['interval_mask'][unlabeled_inds]] = 1
         self.forward_ret_dict['rcnn_cls_weights'] = torch.ones_like(self.forward_ret_dict['rcnn_cls_labels'])
         self.forward_ret_dict['rcnn_cls_weights'][unlabeled_inds] = ul_weights
-
+        # iou3d = iou3d_nms_utils.boxes_iou3d_gpu(cur_roi, cur_gt_boxes[:, 0:7])  # (M, N)
+        # max_overlaps, gt_assignment = torch.max(iou3d, dim=1)
         # self.forward_ret_dict['gt_iou_of_rois']
     def get_box_reg_layer_loss(self, forward_ret_dict, scalar=True):
         loss_cfgs = self.model_cfg.LOSS_CONFIG

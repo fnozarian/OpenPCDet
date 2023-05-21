@@ -114,26 +114,35 @@ class PredQualityMetrics(Metric):
             
             
             if softmatch_thresh is not None and len(valid_pred_weights):
-                    overlap = iou3d_nms_utils.boxes_iou3d_gpu(valid_pred_boxes[:, 0:7], valid_gt_boxes[:, 0:7])
-                    preds_iou_max, assigned_gt_inds = overlap.max(dim=1)
-                    classwise_thresh = valid_pred_scores.new_tensor(softmatch_thresh.to(valid_pred_boxes.device)).unsqueeze(0).repeat(valid_pred_scores.shape[0],1).gather(dim=-1, index=pred_labels.type(torch.int64).unsqueeze(-1)).view(-1)
-                    cc_mask = assigned_gt_inds == pred_labels
-                    fg_mask = preds_iou_max >= classwise_thresh
-                    bg_mask = preds_iou_max <= self.config.ROI_HEAD.TARGET_CONFIG.UNLABELED_CLS_BG_THRESH
-                    fg_tp_mask = cc_mask & fg_mask
-                    fg_uc_pl_mask = valid_pred_iou_wrt_pl > self.config.ROI_HEAD.TARGET_CONFIG.UNLABELED_CLS_BG_THRESH
-                    
-                    cc_uc_mask = ~(bg_mask | fg_mask) & cc_mask  # uncertain mask
-                    fg_uc_gt_mask = cc_uc_mask | fg_tp_mask
-                    
-                    if len(valid_pred_weights[fg_uc_pl_mask]): # to avoid zero division error
-                        quantity = valid_pred_weights[fg_uc_pl_mask].sum() / len(valid_pred_weights[fg_uc_pl_mask])
+                    if num_gts > 0 and num_preds > 0:
+                        overlap = iou3d_nms_utils.boxes_iou3d_gpu(valid_pred_boxes[:, 0:7], valid_gt_boxes[:, 0:7])
+                        preds_iou_max, assigned_gt_inds = overlap.max(dim=1)
+                        classwise_thresh = valid_pred_scores.new_tensor(softmatch_thresh.to(valid_pred_boxes.device)).unsqueeze(0).repeat(valid_pred_scores.shape[0],1).gather(dim=-1, index=pred_labels.type(torch.int64).unsqueeze(-1)).view(-1)
+                        cc_mask = assigned_gt_inds == pred_labels
+                        fg_mask = preds_iou_max >= classwise_thresh
+                        bg_mask = preds_iou_max <= self.config.ROI_HEAD.TARGET_CONFIG.UNLABELED_CLS_BG_THRESH
+                        fg_tp_mask = cc_mask & fg_mask
+                        fg_uc_pl_mask = valid_pred_iou_wrt_pl > self.config.ROI_HEAD.TARGET_CONFIG.UNLABELED_CLS_BG_THRESH
+                        
+                        cc_uc_mask = ~(bg_mask | fg_mask) & cc_mask  # uncertain mask
+                        fg_uc_gt_mask = cc_uc_mask | fg_tp_mask
+                        
+                        if len(valid_pred_weights[fg_uc_pl_mask]): # to avoid zero division error
+                            quantity = valid_pred_weights[fg_uc_pl_mask].sum() / len(valid_pred_weights[fg_uc_pl_mask])
+                        else:
+                            quantity = sample_tensor.new_zeros(1)
+                        # valid_pred_weights[fg_uc_pl_mask].sum() => total weight going to fg_uc region
+                        norm = valid_pred_weights / valid_pred_weights[fg_uc_pl_mask].sum()
+                        quality = norm[fg_uc_gt_mask].sum()
+                        quality = quality.nan_to_num(0.00)
                     else:
-                        quantity = 0
-                    # valid_pred_weights[fg_uc_pl_mask].sum() => total weight going to fg_uc region
-                    norm = valid_pred_weights / valid_pred_weights[fg_uc_pl_mask].sum()
-                    quality = norm[fg_uc_gt_mask].sum()
-                    quality = quality.nan_to_num(0.00)
+                        quantity = sample_tensor.new_zeros(1).fill_(float('nan')).squeeze()
+                        quality = sample_tensor.new_zeros(1).fill_(float('nan')).squeeze()
+                    
+                    class_ag_metrics['softmatch_quality_ag'] = quality.unsqueeze(dim=0) if quality.ndim == 0 else quality
+                    class_ag_metrics['softmatch_quantity_ag'] = quantity.unsqueeze(dim=0) if quantity.ndim == 0 else quantity
+                    
+                        
 
             for cind in range(num_classes):
                 pred_cls_mask = pred_labels == cind
