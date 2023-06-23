@@ -137,10 +137,21 @@ class AnchorHeadTemplate(nn.Module):
                           torch.clamp((cls_targets > 0).view(batch_size, -1).sum(-1).float(), min=1.0)
 
         cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
-
+        labeled_inds = self.forward_ret_dict['labeled_inds']    
+        unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
+        labeled_loss = self.get_classwise_cls_loss(cls_loss_src,cls_targets,labeled_inds)
+        unlabeled_loss = self.get_classwise_cls_loss(cls_loss_src,cls_targets,unlabeled_inds)
+        classwise_loss = {'Bg': torch.stack([labeled_loss[0],unlabeled_loss[0]]).view(-1),
+                        'Car': torch.stack([labeled_loss[1],unlabeled_loss[1]]).view(-1),
+                        'Pedestrian': torch.stack([labeled_loss[2],unlabeled_loss[2]]).view(-1),
+                        'Cyclist': torch.stack([labeled_loss[3],unlabeled_loss[3]]).view(-1)}
         tb_dict = {
             'rpn_loss_cls': cls_loss.item() if scalar else cls_loss,
-            'rpn_acc_cls': rpn_acc_cls.item() if scalar else rpn_acc_cls
+            'rpn_acc_cls': rpn_acc_cls.item() if scalar else rpn_acc_cls,
+            'rpn_loss_cls_Bg': classwise_loss['Bg'],
+            'rpn_loss_cls_Car': classwise_loss['Car'],
+            'rpn_loss_cls_Pedestrian': classwise_loss['Pedestrian'],
+            'rpn_loss_cls_Cyclist': classwise_loss['Cyclist'],
         }
 
         return cls_loss, tb_dict
@@ -292,6 +303,20 @@ class AnchorHeadTemplate(nn.Module):
             )
 
         return batch_cls_preds, batch_box_preds
+    
+    def get_classwise_cls_loss(self,cls_loss_src,cls_targets,inds):
+        cls_targets_flat = cls_targets[inds].view(-1)
+        cls_loss_flat = cls_loss_src[inds].sum(dim=-1).view(-1)
+        classwise_loss_list = []
+        # classwise_loss={'Bg': None,'Car': None,'Pedestrian':None , 'Cyclist': None}
+        # dict_name = {0:'Bg',1:'Car',2:'Pedestrian',3:'Cyclist'}
+        for i in range(4):
+            mask = (cls_targets_flat == i) 
+            if mask.any(): # torch.repeat to match the length of inds, compensated by the mean opearation later
+              classwise_loss_list.append((cls_loss_flat[cls_targets_flat == i].sum() * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']).repeat(inds.shape[-1]).to(cls_targets.device))
+            else:
+                classwise_loss_list.append(torch.zeros((1)).repeat(inds.shape[-1]).to(cls_targets.device))
+        return classwise_loss_list    
 
     def forward(self, **kwargs):
         raise NotImplementedError

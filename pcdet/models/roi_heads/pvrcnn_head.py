@@ -1,9 +1,9 @@
 import torch.nn as nn
-
+import torch
 from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
-
+import torch.nn.functional as F
 
 class PVRCNNHead(RoIHeadTemplate):
     def __init__(self, input_channels, model_cfg, num_class=1,
@@ -172,7 +172,20 @@ class PVRCNNHead(RoIHeadTemplate):
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
         rcnn_reg = self.reg_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
+        
+        # Cosine similarity between shared features and prototype
+        if (self.training or self.print_loss_when_eval) and not disable_gt_roi_when_pseudo_labeling: # cannot do this "if" in line 152 as we don't have shared features at that point
+            shared_features_clone = shared_features.clone().detach().transpose(-2,-1) # cloning and detaching to keep the graph intact, transposing for cosine similarity
+            labels = (targets_dict['roi_labels'].clone().view(-1)) - 1 
+            prototype = batch_dict['shared_feat_prototype'].to(labels.device) 
+            cosine_scores = torch.zeros_like(batch_dict['roi_scores'].view(-1))
 
+            for i,sh in enumerate(shared_features_clone):  # using batch_dict['shared_features'] as its cloned and detached already #NOTE: protype based classifier is to be from non-detached shared features in future
+                cos_score = F.cosine_similarity(sh,prototype[labels[i]])
+                cosine_scores[i] = cos_score
+            targets_dict['cos_scores'] = cosine_scores.view(batch_dict['roi_scores'].shape[0],-1)
+            batch_dict['shared_features'] = shared_features_clone.view(batch_dict['roi_scores'].shape[0],-1,shared_features_clone.shape[-2],shared_features_clone.shape[-1]) # reshaping to batch_wise features
+        
         if not self.training or self.predict_boxes_when_training:
             batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(
                 batch_size=batch_dict['batch_size'], rois=batch_dict['rois'], cls_preds=rcnn_cls, box_preds=rcnn_reg

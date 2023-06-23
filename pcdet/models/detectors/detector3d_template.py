@@ -175,7 +175,7 @@ class Detector3DTemplate(nn.Module):
     def forward(self, **kwargs):
         raise NotImplementedError
 
-    def post_processing(self, batch_dict, no_recall_dict=False, override_thresh=None, no_nms_for_unlabeled=False):
+    def post_processing(self, batch_dict, no_recall_dict=False, override_thresh=None, no_nms_for_unlabeled=False,return_selected=False):
         """
         Args:
             batch_dict:
@@ -307,7 +307,8 @@ class Detector3DTemplate(nn.Module):
                     record_dict['pred_boxes_var'] = final_box_vars
                 if 'batch_cls_preds_var' in batch_dict.keys():
                     record_dict['pred_scores_var'] = final_cls_vars
-
+                if return_selected:
+                    record_dict['selected'] = selected
             pred_dicts.append(record_dict)
 
         return pred_dicts, recall_dict

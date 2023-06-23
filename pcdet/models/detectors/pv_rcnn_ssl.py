@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from pcdet.datasets.augmentor import augmentor_utils
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
-
+import torch.distributed as dist
 from ...utils import common_utils
 from .detector3d_template import Detector3DTemplate
 from collections import defaultdict
@@ -15,6 +15,8 @@ from ...utils.stats_utils import KITTIEvalMetrics, PredQualityMetrics
 from torchmetrics.collections import MetricCollection
 import torch.distributed as dist
 from visual_utils import visualize_utils as V
+from ...utils.dynamic_template import Prototype
+
 
 def _to_dict_of_tensors(list_of_dicts, agg_mode='stack'):
     new_dict = {}
@@ -97,6 +99,26 @@ def _max_score_replacement(batch_dict_a, batch_dict_b, unlabeled_inds, score_key
     for key in keys:
         batch_dict_a[key][unlabeled_inds] = batch_dict_cat[key][unlabeled_inds, ..., max_inds]
 
+class DynamicTemplate(object):
+    def __init__(self, **kwargs):
+        self._tag_metrics = {}
+        self.dataset = kwargs.get('dataset', None)
+        self.cls_bg_thresh = kwargs.get('cls_bg_thresh', None)
+        self.model_cfg = kwargs.get('model_cfg', None)
+    
+    def get(self, tag=None):
+        if tag is None:
+            tag = 'default'
+        if tag in self._tag_metrics.keys():
+            metric = self._tag_metrics[tag]  
+        else:
+            metric = Prototype(tag=tag, dataset=self.dataset, config=self.model_cfg)
+            self._tag_metrics[tag] = metric
+        return metric
+    
+    def tags(self):
+        return self._tag_metrics.keys()
+
 # TODO(farzad) refactor this with global registry, accessible in different places, not via passing through batch_dict
 class MetricRegistry(object):
     def __init__(self, **kwargs):
@@ -136,7 +158,6 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.add_module('pv_rcnn', self.pv_rcnn)
         self.add_module('pv_rcnn_ema', self.pv_rcnn_ema)
         self.accumulated_itr = 0
-
         # self.module_list = self.build_networks()
         # self.module_list_ema = self.build_networks()
         self.thresh = model_cfg.THRESH
@@ -148,10 +169,27 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.supervise_mode = model_cfg.SUPERVISE_MODE
         cls_bg_thresh = model_cfg.ROI_HEAD.TARGET_CONFIG.CLS_BG_THRESH
         self.metric_registry = MetricRegistry(dataset=self.dataset, model_cfg=model_cfg)
+        self.dynamic_template = DynamicTemplate(dataset=self.dataset, model_cfg=model_cfg).get(tag=f'prototype') 
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores', 
                         'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels',
                         'iteration']
         self.val_dict = {val: [] for val in vals_to_store}
+        self.classes = ['Car','Ped','Cyc']
+        # with open('ema_sh4468_0.9.pkl','rb') as f:
+        #     self.rcnn_features = pickle.loads(f.read())
+        # rcnn_sh_mean = []
+        # for cls in self.classes:
+        #     avg = "mean"
+        #     param = "sh"
+        #     rcnn_sh_mean.append(self.rcnn_features[cls][avg][param].unsqueeze(dim=0).detach().cpu())
+        # if dist.is_initialized():
+        #     if dist.get_rank() == 0: # assign the tensor in the GPU 0
+        #         self.rcnn_sh_mean= torch.stack(rcnn_sh_mean)
+        #     dist.barrier() 
+        #     dist.broadcast(self.rcnn_sh_mean, src=0) # broadcast the tensor to all GPUs
+        #     dist.barrier()
+        # else:
+        #     self.rcnn_sh_mean = torch.stack(rcnn_sh_mean) # if no distributed training, just assign the tensor
 
     def forward(self, batch_dict):
         if self.training:
@@ -159,6 +197,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             labeled_inds = torch.nonzero(labeled_mask).squeeze(1).long()
             unlabeled_inds = torch.nonzero(1-labeled_mask).squeeze(1).long()
             batch_dict['unlabeled_inds'] = unlabeled_inds
+            batch_dict['labeled_inds'] = labeled_inds
             batch_dict_ema = {}
             keys = list(batch_dict.keys())
             for k in keys:
@@ -266,6 +305,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict['metric_registry'] = self.metric_registry
             batch_dict['ori_unlabeled_boxes'] = ori_unlabeled_boxes
             batch_dict['store_scores_in_pkl'] = self.model_cfg.STORE_SCORES_IN_PKL
+            batch_dict['shared_feat_prototype'] = self.dynamic_template.rcnn_sh_mean # Get the base prototype loaded from torch.metrics
             for cur_module in self.pv_rcnn.module_list:
                 if cur_module.model_cfg['NAME'] == 'PVRCNNHead' and self.model_cfg['ROI_HEAD'].get('ENABLE_RCNN_CONSISTENCY', False):
                     # Pass teacher's proposal to the student.
@@ -314,7 +354,9 @@ class PVRCNN_SSL(Detector3DTemplate):
             self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = unlabeled_inds
             self.pv_rcnn.roi_head.forward_ret_dict['pl_boxes'] = batch_dict['gt_boxes']
             self.pv_rcnn.roi_head.forward_ret_dict['pl_scores'] = pseudo_scores
-
+    
+            pred_dicts_prototype, recall_dicts_prototype = self.pv_rcnn.post_processing(batch_dict,return_selected=True)
+            self.update_feature_prototype(batch_dict, pred_dicts_prototype, labeled_inds)
             if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False):
                 # using teacher to evaluate student's bg/fg proposals through its rcnn head
                 with torch.no_grad():
@@ -528,6 +570,74 @@ class PVRCNN_SSL(Detector3DTemplate):
         metrics = {tag + key: val for key, val in results.items()}
 
         return metrics
+    
+    def update_feature_prototype(self, batch_dict, pred_dicts, labeled_inds):
+        """
+        Update the feature prototype for labeled data
+        """
+        self.updated_template = {val: [] for val in ['templates','labels']}
+        features_to_update = []
+        labels_to_update = []
+        for inds in labeled_inds:
+            selected_inds = pred_dicts[inds]['selected'] # selected proposals after NMS
+            selected_pred_scores = pred_dicts[inds]['pred_scores']
+            selected_pred_boxes = pred_dicts[inds]['pred_boxes']
+            selected_roi_scores = pred_dicts[inds]['pred_sem_scores']
+            selected_roi_labels = pred_dicts[inds]['pred_labels']
+            shared_feat = batch_dict['shared_features'][inds] # shared feature for the current batch index
+            selected_shared_feat = shared_feat[selected_inds] # shared feature for the selected proposals 
+
+            # get iou with GT and look for correct predictions
+            if len(selected_inds):
+                valid_gt_boxes_mask = torch.logical_not(torch.all(batch_dict['gt_boxes'][inds] == 0, dim=-1))
+                valid_gt_boxes = batch_dict['gt_boxes'][inds][valid_gt_boxes_mask]
+                overlaps= iou3d_nms_utils.boxes_iou3d_gpu(selected_pred_boxes[:,0:7], valid_gt_boxes[:,0:7])
+                max_overlaps, max_inds  = overlaps.max(dim=1)
+                gt_labels = valid_gt_boxes[...,-1].type(torch.long)
+                assigned_gt_labels = (gt_labels[max_inds]).type(torch.long)
+                cc_mask = (selected_roi_labels == assigned_gt_labels) #correct classification mask
+
+                # Filtering the NMSed proposals
+                iou_thresh_ = torch.tensor([0.8,0.8,0.8]).to(cc_mask.device) # check if iou with GT is greater than threshold
+                pred_thresh_ = torch.tensor([0.95,0.85,0.85]).to(cc_mask.device) # RCNN score threshold
+                # iou_thresh_ = torch.tensor([0.5,0.5,0.5]).to(cc_mask.device) # check if iou with GT is greater than threshold
+                # pred_thresh_ = torch.tensor([0.5,0.5,0.5]).to(cc_mask.device) # RCNN score threshold
+                iou_thresh = iou_thresh_[assigned_gt_labels-1]
+                pred_thresh = pred_thresh_[assigned_gt_labels-1]
+                filter_inds_mask = (max_overlaps >= iou_thresh) & (selected_pred_scores >= pred_thresh) & cc_mask # filter mask
+                filtered_shared_feat = selected_shared_feat[filter_inds_mask]
+                filtered_gt_labels = selected_roi_labels[filter_inds_mask]
+
+                # update the feature prototype
+                if len(filtered_shared_feat)!=0:
+                    features_to_update.append(filtered_shared_feat)
+                    labels_to_update.append(filtered_gt_labels)
+
+        if len(features_to_update)!=0:
+            features_to_update = torch.cat(features_to_update, dim=0) # to get the list of tensors to batch agnostic single tensor, for cleaner representation
+            labels_to_update = torch.cat(labels_to_update, dim=0)
+
+            for i in range(len(features_to_update)):
+                self.updated_template['templates'].append(features_to_update[i].detach().clone()) # detach and clone to avoid backprop, just like how it is passed into stats_utils.py
+                self.updated_template['labels'].append(labels_to_update[i].detach().clone()) # as a list of tensors
+
+            ## pass it into torch.metrics
+            template = {
+                'templates':features_to_update,
+                'labels':labels_to_update
+            }
+        else:
+            template = {
+                'templates': None,
+                'labels': None
+            }
+            
+        self.dynamic_template.update(**template) # update the feature prototype
+
+        if ((batch_dict['cur_iteration']+1) % 5) == 0:
+            self.rcnn_sh_mean = self.dynamic_template.compute()  # compute the mean of the updated feature prototype
+
+
 
     def ensemble_post_processing(self, batch_dict_a, batch_dict_b, unlabeled_inds, ensemble_option=None):
         # TODO(farzad) what about roi_labels and roi_scores in following options?
