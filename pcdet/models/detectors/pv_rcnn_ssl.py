@@ -15,7 +15,7 @@ from ...utils.stats_utils import KITTIEvalMetrics, PredQualityMetrics
 from torchmetrics.collections import MetricCollection
 import torch.distributed as dist
 from visual_utils import visualize_utils as V
-from ...utils.dynamic_template import Prototype
+from ...utils.prototype_utils import Prototype
 
 
 def _to_dict_of_tensors(list_of_dicts, agg_mode='stack'):
@@ -99,20 +99,20 @@ def _max_score_replacement(batch_dict_a, batch_dict_b, unlabeled_inds, score_key
     for key in keys:
         batch_dict_a[key][unlabeled_inds] = batch_dict_cat[key][unlabeled_inds, ..., max_inds]
 
-class DynamicTemplate(object):
+class DynamicPrototype(object):
     def __init__(self, **kwargs):
         self._tag_metrics = {}
         self.dataset = kwargs.get('dataset', None)
-        self.cls_bg_thresh = kwargs.get('cls_bg_thresh', None)
         self.model_cfg = kwargs.get('model_cfg', None)
     
-    def get(self, tag=None):
+    def get(self, tag=None,file=None):
         if tag is None:
             tag = 'default'
         if tag in self._tag_metrics.keys():
             metric = self._tag_metrics[tag]  
         else:
-            metric = Prototype(tag=tag, dataset=self.dataset, config=self.model_cfg)
+            assert file, "instance is created for the first time, Pkl file needed"
+            metric = Prototype(tag=tag, dataset=self.dataset, config=self.model_cfg,file=file)
             self._tag_metrics[tag] = metric
         return metric
     
@@ -169,27 +169,18 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.supervise_mode = model_cfg.SUPERVISE_MODE
         cls_bg_thresh = model_cfg.ROI_HEAD.TARGET_CONFIG.CLS_BG_THRESH
         self.metric_registry = MetricRegistry(dataset=self.dataset, model_cfg=model_cfg)
-        self.dynamic_template = DynamicTemplate(dataset=self.dataset, model_cfg=model_cfg).get(tag=f'prototype') 
+        self.labeled_prototype = DynamicPrototype(dataset=self.dataset, model_cfg=model_cfg).get(tag=f'labeled_prototype',file='ema_cls_sh.pkl') 
+        self.rcnn_sh_mean = self.labeled_prototype.rcnn_sh_mean #base prototype
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores', 
                         'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels',
                         'iteration']
         self.val_dict = {val: [] for val in vals_to_store}
         self.classes = ['Car','Ped','Cyc']
-        # with open('ema_sh4468_0.9.pkl','rb') as f:
-        #     self.rcnn_features = pickle.loads(f.read())
-        # rcnn_sh_mean = []
-        # for cls in self.classes:
-        #     avg = "mean"
-        #     param = "sh"
-        #     rcnn_sh_mean.append(self.rcnn_features[cls][avg][param].unsqueeze(dim=0).detach().cpu())
-        # if dist.is_initialized():
-        #     if dist.get_rank() == 0: # assign the tensor in the GPU 0
-        #         self.rcnn_sh_mean= torch.stack(rcnn_sh_mean)
-        #     dist.barrier() 
-        #     dist.broadcast(self.rcnn_sh_mean, src=0) # broadcast the tensor to all GPUs
-        #     dist.barrier()
-        # else:
-        #     self.rcnn_sh_mean = torch.stack(rcnn_sh_mean) # if no distributed training, just assign the tensor
+        self.features_to_update = []
+        self.labels_to_update = []
+        self.momentum = 0.9
+
+
 
     def forward(self, batch_dict):
         if self.training:
@@ -305,7 +296,9 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict['metric_registry'] = self.metric_registry
             batch_dict['ori_unlabeled_boxes'] = ori_unlabeled_boxes
             batch_dict['store_scores_in_pkl'] = self.model_cfg.STORE_SCORES_IN_PKL
-            batch_dict['shared_feat_prototype'] = self.dynamic_template.rcnn_sh_mean # Get the base prototype loaded from torch.metrics
+            batch_dict['shared_feat_prototype'] = self.labeled_prototype.rcnn_sh_mean # Get the base prototype loaded from torch.metrics
+            # self.rcnn_sh_mean = self.dynamic_template.rcnn_sh_mean
+            
             for cur_module in self.pv_rcnn.module_list:
                 if cur_module.model_cfg['NAME'] == 'PVRCNNHead' and self.model_cfg['ROI_HEAD'].get('ENABLE_RCNN_CONSISTENCY', False):
                     # Pass teacher's proposal to the student.
@@ -576,8 +569,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         Update the feature prototype for labeled data
         """
         self.updated_template = {val: [] for val in ['templates','labels']}
-        features_to_update = []
-        labels_to_update = []
+
         for inds in labeled_inds:
             selected_inds = pred_dicts[inds]['selected'] # selected proposals after NMS
             selected_pred_scores = pred_dicts[inds]['pred_scores']
@@ -600,8 +592,6 @@ class PVRCNN_SSL(Detector3DTemplate):
                 # Filtering the NMSed proposals
                 iou_thresh_ = torch.tensor([0.8,0.8,0.8]).to(cc_mask.device) # check if iou with GT is greater than threshold
                 pred_thresh_ = torch.tensor([0.95,0.85,0.85]).to(cc_mask.device) # RCNN score threshold
-                # iou_thresh_ = torch.tensor([0.5,0.5,0.5]).to(cc_mask.device) # check if iou with GT is greater than threshold
-                # pred_thresh_ = torch.tensor([0.5,0.5,0.5]).to(cc_mask.device) # RCNN score threshold
                 iou_thresh = iou_thresh_[assigned_gt_labels-1]
                 pred_thresh = pred_thresh_[assigned_gt_labels-1]
                 filter_inds_mask = (max_overlaps >= iou_thresh) & (selected_pred_scores >= pred_thresh) & cc_mask # filter mask
@@ -610,34 +600,13 @@ class PVRCNN_SSL(Detector3DTemplate):
 
                 # update the feature prototype
                 if len(filtered_shared_feat)!=0:
-                    features_to_update.append(filtered_shared_feat)
-                    labels_to_update.append(filtered_gt_labels)
+                    self.features_to_update.append(filtered_shared_feat)
+                    self.labels_to_update.append(filtered_gt_labels)
 
-        if len(features_to_update)!=0:
-            features_to_update = torch.cat(features_to_update, dim=0) # to get the list of tensors to batch agnostic single tensor, for cleaner representation
-            labels_to_update = torch.cat(labels_to_update, dim=0)
-
-            for i in range(len(features_to_update)):
-                self.updated_template['templates'].append(features_to_update[i].detach().clone()) # detach and clone to avoid backprop, just like how it is passed into stats_utils.py
-                self.updated_template['labels'].append(labels_to_update[i].detach().clone()) # as a list of tensors
-
-            ## pass it into torch.metrics
-            template = {
-                'templates':features_to_update,
-                'labels':labels_to_update
-            }
-        else:
-            template = {
-                'templates': None,
-                'labels': None
-            }
-            
-        self.dynamic_template.update(**template) # update the feature prototype
-
-        if ((batch_dict['cur_iteration']+1) % 5) == 0:
-            self.rcnn_sh_mean = self.dynamic_template.compute()  # compute the mean of the updated feature prototype
-
-
+        if len(self.features_to_update)!= 0:
+            self.rcnn_sh_mean = self.labeled_prototype.update(self.features_to_update,self.labels_to_update,batch_dict['cur_iteration'])
+            self.features_to_update = []
+            self.labels_to_update = []
 
     def ensemble_post_processing(self, batch_dict_a, batch_dict_b, unlabeled_inds, ensemble_option=None):
         # TODO(farzad) what about roi_labels and roi_scores in following options?
@@ -921,3 +890,48 @@ class PVRCNN_SSL(Detector3DTemplate):
                 logger.info('Not updated weight %s: %s' % (key, str(state_dict[key].shape)))
 
         logger.info('==> Done (loaded %d/%d)' % (len(update_model_state), len(self.state_dict())))
+
+    # def gather_tensors(self,tensor,labels=False):
+    #     """
+    #     Returns the gathered tensor to all GPUs in DDP else returns the tensor as such
+    #     dist.gather_all needs the gathered tensors to be of same size.
+    #     We get the sizes of the tensors first, zero pad them to match the size
+    #     Then gather and filter the padding
+
+    #     Args:
+    #         tensor: tensor to be gathered
+    #         labels: bool True if the tensor represents label information TODO:Deepika Remove this arg and make function tensor agnostic 
+    #     """
+    #     if dist.is_initialized(): # check if dist mode is initialized
+    #         # Determine sizes first
+    #         local_size = torch.tensor(tensor.size(), device=tensor.device)
+    #         WORLD_SIZE = dist.get_world_size()
+    #         all_sizes = [torch.zeros_like(local_size) for _ in range(WORLD_SIZE)]
+    #         dist.barrier() 
+    #         dist.all_gather(all_sizes,local_size)
+    #         dist.barrier()
+            
+    #         # make zero-padded version https://stackoverflow.com/questions/71433507/pytorch-python-distributed-multiprocessing-gather-concatenate-tensor-arrays-of
+    #         max_length = max([size[0] for size in all_sizes])
+    #         if max_length != local_size[0].item():
+    #             diff = max_length - local_size[0].item()
+    #             pad_size =[diff.item()] #pad with zeros 
+    #             if local_size.ndim >= 1:
+    #                 pad_size.extend(dimension.item() for dimension in local_size[1:])
+    #             padding = torch.zeros(pad_size, device=tensor.device, dtype=tensor.dtype)
+    #             tensor = torch.cat((tensor,padding))
+            
+    #         all_tensors_padded = [torch.zeros_like(tensor) for _ in range(WORLD_SIZE)]
+    #         dist.barrier()
+    #         dist.all_gather(all_tensors_padded,tensor)
+    #         dist.barrier()
+    #         gathered_tensor = torch.cat(all_tensors_padded)
+    #         if gathered_tensor.ndim == 1: # diff filtering mechanism for labels TODO:Deepika make this tensor agnostic
+    #             assert gathered_tensor.ndim == 1, "Label dimension should be N"
+    #             non_zero_mask = gathered_tensor > 0
+    #         else:
+    #             non_zero_mask = torch.any(gathered_tensor!=0,dim=-1).squeeze()
+    #         gathered_tensor = gathered_tensor[non_zero_mask]
+    #         return gathered_tensor
+    #     else:
+    #         return tensor
