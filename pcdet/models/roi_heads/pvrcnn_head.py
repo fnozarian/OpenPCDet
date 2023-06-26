@@ -177,7 +177,7 @@ class PVRCNNHead(RoIHeadTemplate):
         if (self.training or self.print_loss_when_eval) and not disable_gt_roi_when_pseudo_labeling: # cannot do this "if" in line 152 as we don't have shared features at that point
             shared_features_clone = shared_features.clone().detach().transpose(-2,-1) # cloning and detaching to keep the graph intact, transposing for cosine similarity
             labels = (targets_dict['roi_labels'].clone().view(-1)) - 1 
-            prototype = batch_dict['shared_feat_prototype'].to(labels.device) 
+            prototype = batch_dict['labeled_prototype'].to(labels.device) 
             cosine_scores = torch.zeros_like(batch_dict['roi_scores'].view(-1))
 
             for i,sh in enumerate(shared_features_clone):  # using batch_dict['shared_features'] as its cloned and detached already #NOTE: protype based classifier is to be from non-detached shared features in future

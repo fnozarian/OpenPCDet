@@ -5,8 +5,10 @@ import pickle
 class Prototype(object):
     def __init__(self,**kwargs):
         self.file = kwargs.get('file',None)
+        self.tag = kwargs.get('tag', None)
         self.classes  = ['Car','Ped','Cyc']
         self.momentum = 0.9
+        assert self.file is not None, "File path to the prototype is not provided"
         with open(self.file,'rb') as f:
             self.rcnn_features = pickle.loads(f.read())
         rcnn_sh_mean = []
@@ -18,19 +20,20 @@ class Prototype(object):
         self.rcnn_sh_mean = self.rcnn_sh_mean_.detach().clone()
         self.features = []
         self.labels = []
+        self.reset_state_interval = 20 #TODO:Deepika make this configurable
     
     def update(self,features,labels,iter):
-        self.features.extend(features)
+        self.features.extend(features) #NOTE: if features is [], extend will not affect the self.features
         self.labels.extend(labels)
-        # Computer EMA
-        if ((iter+1)%20) == 0:
+        # Compute EMA
+        if ((iter+1) % self.reset_state_interval) == 0: 
             print("20th iter")
             if len(self.features)!= 0:
                 print("Computing EMA")
                 # Gather the tensors (shares tensor among all GPUs)
                 features_to_gather = torch.cat(self.features, dim=0).detach().clone() # convert to tensor before gather
                 labels_to_gather = torch.cat(self.labels, dim=0).detach().clone()
-                print(f"gathering features {features_to_gather.shape}")
+                print(f"gathering features {features_to_gather.shape} in {self.tag}")
                 gathered_features = self.gather_tensors(features_to_gather) # Gather tensors from all GPUs
                 gathered_labels = self.gather_tensors(labels_to_gather,labels=True) 
                 print(f'gathered_features {gathered_features.shape}')

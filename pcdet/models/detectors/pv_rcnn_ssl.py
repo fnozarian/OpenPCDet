@@ -169,15 +169,19 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.supervise_mode = model_cfg.SUPERVISE_MODE
         cls_bg_thresh = model_cfg.ROI_HEAD.TARGET_CONFIG.CLS_BG_THRESH
         self.metric_registry = MetricRegistry(dataset=self.dataset, model_cfg=model_cfg)
-        self.labeled_prototype = DynamicPrototype(dataset=self.dataset, model_cfg=model_cfg).get(tag=f'labeled_prototype',file='ema_cls_sh.pkl') 
-        self.rcnn_sh_mean = self.labeled_prototype.rcnn_sh_mean #base prototype
+        self.labeled_template = DynamicPrototype(dataset=self.dataset, model_cfg=model_cfg).get(tag=f'labeled_prototype',file='ema_cls_sh.pkl') 
+        self.labeled_prototype = self.labeled_template.rcnn_sh_mean #base prototype
+        self.unlabeled_template = DynamicPrototype(dataset=self.dataset, model_cfg=model_cfg).get(tag=f'unlabeled_prototype',file='ema_cls_sh.pkl')
+        self.unlabeled_prototype = self.unlabeled_template.rcnn_sh_mean #base prototype same as labeled #TODO: ignore base prototype for ulb if needed
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores', 
                         'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels',
                         'iteration']
         self.val_dict = {val: [] for val in vals_to_store}
         self.classes = ['Car','Ped','Cyc']
-        self.features_to_update = []
-        self.labels_to_update = []
+        self.features_to_update_lb = []
+        self.labels_to_update_lb = []
+        self.features_to_update_ulb = []
+        self.labels_to_update_ulb = []
         self.momentum = 0.9
 
 
@@ -296,8 +300,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict['metric_registry'] = self.metric_registry
             batch_dict['ori_unlabeled_boxes'] = ori_unlabeled_boxes
             batch_dict['store_scores_in_pkl'] = self.model_cfg.STORE_SCORES_IN_PKL
-            batch_dict['shared_feat_prototype'] = self.labeled_prototype.rcnn_sh_mean # Get the base prototype loaded from torch.metrics
-            # self.rcnn_sh_mean = self.dynamic_template.rcnn_sh_mean
+            batch_dict['labeled_prototype'] = self.labeled_prototype 
+            batch_dict['unlabeled_prototype'] = self.unlabeled_prototype 
             
             for cur_module in self.pv_rcnn.module_list:
                 if cur_module.model_cfg['NAME'] == 'PVRCNNHead' and self.model_cfg['ROI_HEAD'].get('ENABLE_RCNN_CONSISTENCY', False):
@@ -349,7 +353,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             self.pv_rcnn.roi_head.forward_ret_dict['pl_scores'] = pseudo_scores
     
             pred_dicts_prototype, recall_dicts_prototype = self.pv_rcnn.post_processing(batch_dict,return_selected=True)
-            self.update_feature_prototype(batch_dict, pred_dicts_prototype, labeled_inds)
+            self.update_feature_prototype(batch_dict, pred_dicts_prototype)
             if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False):
                 # using teacher to evaluate student's bg/fg proposals through its rcnn head
                 with torch.no_grad():
@@ -564,49 +568,32 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         return metrics
     
-    def update_feature_prototype(self, batch_dict, pred_dicts, labeled_inds):
+    def update_feature_prototype(self, batch_dict, pred_dicts):
         """
         Update the feature prototype for labeled data
         """
-        self.updated_template = {val: [] for val in ['templates','labels']}
+        for inds in batch_dict['labeled_inds']:
+            filtered_shared_feat_lb,filtered_gt_labels_lb = self.filter_proposals(batch_dict, pred_dicts, inds)
+            # indexwise update into a list
+            if filtered_shared_feat_lb is not None:
+                self.features_to_update_lb.append(filtered_shared_feat_lb)
+                self.labels_to_update_lb.append(filtered_gt_labels_lb)
+        # for all labeled data in a batch, update the prototype
+        self.labeled_prototype = self.labeled_template.update(self.features_to_update_lb,self.labels_to_update_lb,batch_dict['cur_iteration'])
+        self.features_to_update_lb = []
+        self.labels_to_update_lb = []
+        
+        for inds in batch_dict['unlabeled_inds']:
+            filtered_shared_feat_ulb,filtered_gt_labels_ulb = self.filter_proposals(batch_dict, pred_dicts, inds)
+            # append indexwise filtered proposals to a list
+            if filtered_shared_feat_ulb is not None:
+                self.features_to_update_ulb.append(filtered_shared_feat_ulb)
+                self.labels_to_update_ulb.append(filtered_gt_labels_ulb)
+        # for all unlabeled data in a batch, update the prototype
+        self.unlabeled_prototype = self.unlabeled_template.update(self.features_to_update_ulb,self.labels_to_update_ulb,batch_dict['cur_iteration'])
+        self.features_to_update_ulb = []
+        self.labels_to_update_ulb = []
 
-        for inds in labeled_inds:
-            selected_inds = pred_dicts[inds]['selected'] # selected proposals after NMS
-            selected_pred_scores = pred_dicts[inds]['pred_scores']
-            selected_pred_boxes = pred_dicts[inds]['pred_boxes']
-            selected_roi_scores = pred_dicts[inds]['pred_sem_scores']
-            selected_roi_labels = pred_dicts[inds]['pred_labels']
-            shared_feat = batch_dict['shared_features'][inds] # shared feature for the current batch index
-            selected_shared_feat = shared_feat[selected_inds] # shared feature for the selected proposals 
-
-            # get iou with GT and look for correct predictions
-            if len(selected_inds):
-                valid_gt_boxes_mask = torch.logical_not(torch.all(batch_dict['gt_boxes'][inds] == 0, dim=-1))
-                valid_gt_boxes = batch_dict['gt_boxes'][inds][valid_gt_boxes_mask]
-                overlaps= iou3d_nms_utils.boxes_iou3d_gpu(selected_pred_boxes[:,0:7], valid_gt_boxes[:,0:7])
-                max_overlaps, max_inds  = overlaps.max(dim=1)
-                gt_labels = valid_gt_boxes[...,-1].type(torch.long)
-                assigned_gt_labels = (gt_labels[max_inds]).type(torch.long)
-                cc_mask = (selected_roi_labels == assigned_gt_labels) #correct classification mask
-
-                # Filtering the NMSed proposals
-                iou_thresh_ = torch.tensor([0.8,0.8,0.8]).to(cc_mask.device) # check if iou with GT is greater than threshold
-                pred_thresh_ = torch.tensor([0.95,0.85,0.85]).to(cc_mask.device) # RCNN score threshold
-                iou_thresh = iou_thresh_[assigned_gt_labels-1]
-                pred_thresh = pred_thresh_[assigned_gt_labels-1]
-                filter_inds_mask = (max_overlaps >= iou_thresh) & (selected_pred_scores >= pred_thresh) & cc_mask # filter mask
-                filtered_shared_feat = selected_shared_feat[filter_inds_mask]
-                filtered_gt_labels = selected_roi_labels[filter_inds_mask]
-
-                # update the feature prototype
-                if len(filtered_shared_feat)!=0:
-                    self.features_to_update.append(filtered_shared_feat)
-                    self.labels_to_update.append(filtered_gt_labels)
-
-        if len(self.features_to_update)!= 0:
-            self.rcnn_sh_mean = self.labeled_prototype.update(self.features_to_update,self.labels_to_update,batch_dict['cur_iteration'])
-            self.features_to_update = []
-            self.labels_to_update = []
 
     def ensemble_post_processing(self, batch_dict_a, batch_dict_b, unlabeled_inds, ensemble_option=None):
         # TODO(farzad) what about roi_labels and roi_scores in following options?
@@ -891,47 +878,40 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         logger.info('==> Done (loaded %d/%d)' % (len(update_model_state), len(self.state_dict())))
 
-    # def gather_tensors(self,tensor,labels=False):
-    #     """
-    #     Returns the gathered tensor to all GPUs in DDP else returns the tensor as such
-    #     dist.gather_all needs the gathered tensors to be of same size.
-    #     We get the sizes of the tensors first, zero pad them to match the size
-    #     Then gather and filter the padding
+    def filter_proposals(self, batch_dict, pred_dicts, inds):
+            """
+            Returns the filtered proposals based on the following criteria:
+            1. IoU with GT/PL is greater than threshold
+            2. RCNN score is greater than threshold
+            3. Correct classification
+            """
+            filtered_shared_feat, filtered_gt_labels = None, None
+            selected_inds = pred_dicts[inds]['selected'] # selected proposals after NMS
+            selected_pred_scores = pred_dicts[inds]['pred_scores']
+            selected_pred_boxes = pred_dicts[inds]['pred_boxes']
+            selected_roi_scores = pred_dicts[inds]['pred_sem_scores']
+            selected_roi_labels = pred_dicts[inds]['pred_labels']
+            shared_feat = batch_dict['shared_features'][inds] # shared feature for the current batch index
+            selected_shared_feat = shared_feat[selected_inds] # shared feature for the selected proposals 
+            valid_gt_boxes_mask = torch.logical_not(torch.all(batch_dict['gt_boxes'][inds] == 0, dim=-1))
+            valid_gt_boxes = batch_dict['gt_boxes'][inds][valid_gt_boxes_mask] #for unlabeled inds GT is PL
 
-    #     Args:
-    #         tensor: tensor to be gathered
-    #         labels: bool True if the tensor represents label information TODO:Deepika Remove this arg and make function tensor agnostic 
-    #     """
-    #     if dist.is_initialized(): # check if dist mode is initialized
-    #         # Determine sizes first
-    #         local_size = torch.tensor(tensor.size(), device=tensor.device)
-    #         WORLD_SIZE = dist.get_world_size()
-    #         all_sizes = [torch.zeros_like(local_size) for _ in range(WORLD_SIZE)]
-    #         dist.barrier() 
-    #         dist.all_gather(all_sizes,local_size)
-    #         dist.barrier()
-            
-    #         # make zero-padded version https://stackoverflow.com/questions/71433507/pytorch-python-distributed-multiprocessing-gather-concatenate-tensor-arrays-of
-    #         max_length = max([size[0] for size in all_sizes])
-    #         if max_length != local_size[0].item():
-    #             diff = max_length - local_size[0].item()
-    #             pad_size =[diff.item()] #pad with zeros 
-    #             if local_size.ndim >= 1:
-    #                 pad_size.extend(dimension.item() for dimension in local_size[1:])
-    #             padding = torch.zeros(pad_size, device=tensor.device, dtype=tensor.dtype)
-    #             tensor = torch.cat((tensor,padding))
-            
-    #         all_tensors_padded = [torch.zeros_like(tensor) for _ in range(WORLD_SIZE)]
-    #         dist.barrier()
-    #         dist.all_gather(all_tensors_padded,tensor)
-    #         dist.barrier()
-    #         gathered_tensor = torch.cat(all_tensors_padded)
-    #         if gathered_tensor.ndim == 1: # diff filtering mechanism for labels TODO:Deepika make this tensor agnostic
-    #             assert gathered_tensor.ndim == 1, "Label dimension should be N"
-    #             non_zero_mask = gathered_tensor > 0
-    #         else:
-    #             non_zero_mask = torch.any(gathered_tensor!=0,dim=-1).squeeze()
-    #         gathered_tensor = gathered_tensor[non_zero_mask]
-    #         return gathered_tensor
-    #     else:
-    #         return tensor
+            # get iou with GT and look for correct predictions
+            if len(selected_inds) and len(valid_gt_boxes):
+                overlaps= iou3d_nms_utils.boxes_iou3d_gpu(selected_pred_boxes[:,0:7], valid_gt_boxes[:,0:7])
+                max_overlaps, max_inds  = overlaps.max(dim=1)
+                gt_labels = valid_gt_boxes[...,-1].type(torch.long)
+                assigned_gt_labels = (gt_labels[max_inds]).type(torch.long)
+                cc_mask = (selected_roi_labels == assigned_gt_labels) #correct classification mask
+
+                # Filtering the NMSed proposals
+                iou_thresh_ = torch.tensor([0.8,0.8,0.8]).to(cc_mask.device) # check if iou with GT is greater than threshold
+                pred_thresh_ = torch.tensor([0.95,0.85,0.85]).to(cc_mask.device) # RCNN score threshold #TODO: make it a param from file
+                iou_thresh = iou_thresh_[assigned_gt_labels-1]
+                pred_thresh = pred_thresh_[assigned_gt_labels-1]
+                filter_inds_mask = (max_overlaps >= iou_thresh) & (selected_pred_scores >= pred_thresh) & cc_mask # filter mask
+                if torch.any(filter_inds_mask):
+                    filtered_shared_feat = selected_shared_feat[filter_inds_mask]
+                    filtered_gt_labels = selected_roi_labels[filter_inds_mask]
+                
+            return filtered_shared_feat, filtered_gt_labels
