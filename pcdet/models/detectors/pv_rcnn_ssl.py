@@ -183,7 +183,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.features_to_update_ulb = []
         self.labels_to_update_ulb = []
         self.momentum = 0.9
-
+        self.scenes = {}
 
 
     def forward(self, batch_dict):
@@ -203,6 +203,14 @@ class PVRCNN_SSL(Detector3DTemplate):
                 else:
                     batch_dict_ema[k] = batch_dict[k]
 
+            gt_boxes_check = torch.any(batch_dict['gt_boxes']!=0,dim=-1)
+            instance_idx_check = batch_dict['instance_idx']!=0
+            assert torch.all(gt_boxes_check[labeled_inds] == instance_idx_check[labeled_inds]), "gt_boxes and instance_idx should have the same length for labeled data" 
+            assert torch.all(gt_boxes_check[unlabeled_inds] == instance_idx_check[unlabeled_inds]), "gt_boxes and instance_idx should have the same length for ulb"     
+            gt_boxes_check = torch.any(batch_dict_ema['gt_boxes']!=0,dim=-1)
+            instance_idx_check = batch_dict_ema['instance_idx']!=0
+            assert torch.all(gt_boxes_check[labeled_inds] == instance_idx_check[labeled_inds]), "gt_boxes and instance_idx should have the same length for labeled data wa" 
+            assert torch.all(gt_boxes_check[unlabeled_inds] == instance_idx_check[unlabeled_inds]), "gt_boxes and instance_idx should have the same length for ulb wa"     
             # Create new dict for weakly aug.(WA) data for teacher - Eg. flip along x axis
             batch_dict_ema_wa = {}
             # If ENABLE_RELIABILITY is True, run WA (Humble Teacher) along with original teacher
@@ -302,7 +310,6 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict['store_scores_in_pkl'] = self.model_cfg.STORE_SCORES_IN_PKL
             batch_dict['labeled_prototype'] = self.labeled_prototype 
             batch_dict['unlabeled_prototype'] = self.unlabeled_prototype 
-            
             for cur_module in self.pv_rcnn.module_list:
                 if cur_module.model_cfg['NAME'] == 'PVRCNNHead' and self.model_cfg['ROI_HEAD'].get('ENABLE_RCNN_CONSISTENCY', False):
                     # Pass teacher's proposal to the student.

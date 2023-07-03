@@ -65,7 +65,7 @@ class PVRCNNHead(RoIHeadTemplate):
                     nn.init.constant_(m.bias, 0)
         nn.init.normal_(self.reg_layers[-1].weight, mean=0, std=0.001)
 
-    def roi_grid_pool(self, batch_dict):
+    def roi_grid_pool(self, batch_dict,pool_gtboxes=False):
         """
         Args:
             batch_dict:
@@ -85,6 +85,9 @@ class PVRCNNHead(RoIHeadTemplate):
         point_cls_scores = batch_dict["point_cls_scores"]
 
         point_features = point_features * point_cls_scores.view(-1, 1)
+
+        if pool_gtboxes:
+            rois = batch_dict['gt_boxes'][...,0:7]
 
         global_roi_grid_points, local_roi_grid_points = self.get_global_grid_points_of_roi(
             rois, grid_size=self.model_cfg.ROI_GRID_POOL.GRID_SIZE
@@ -160,10 +163,18 @@ class PVRCNNHead(RoIHeadTemplate):
             # TODO(farzad) refactor this with global registry,
             #  accessible in different places, not via passing through batch_dict
             targets_dict['metric_registry'] = batch_dict['metric_registry']
+            with torch.no_grad():
+                pooled_features_gt = self.roi_grid_pool(batch_dict,pool_gtboxes=True)  # (BxNum_GT, 6x6x6, C)
+                grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
+                batch_size_rcnn = pooled_features_gt.shape[0]
+                pooled_features_gt = pooled_features_gt.permute(0, 2, 1).\
+                    contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxNum_GT, C, 6, 6, 6)
+                shared_features_gt = self.shared_fc_layer(pooled_features_gt.view(batch_size_rcnn, -1, 1))
+                            
 
         # RoI aware pooling
         pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
-
+            
         grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
         batch_size_rcnn = pooled_features.shape[0]
         pooled_features = pooled_features.permute(0, 2, 1).\

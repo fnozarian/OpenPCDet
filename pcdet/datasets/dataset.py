@@ -138,7 +138,7 @@ class DatasetTemplate(torch_data.Dataset):
                         torch.from_numpy(data_dict['points'][:, :3]),
                         torch.from_numpy(data_dict['gt_boxes'][:, :7])).numpy().sum(axis=1)
 
-                mask = (num_points_in_gt >= self.dataset_cfg.get('MIN_POINTS_OF_GT', 1))
+                mask = (num_points_in_gt >= self.dataset_cfg.get('MIN_POINTS_OF_GT', 1)) # point filtering
                 data_dict['gt_boxes'] = data_dict['gt_boxes'][mask]
                 data_dict['gt_names'] = data_dict['gt_names'][mask]
                 if 'gt_classes' in data_dict:

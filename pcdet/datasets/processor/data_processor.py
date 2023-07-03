@@ -100,7 +100,9 @@ class DataProcessor(object):
             mask = box_utils.mask_boxes_outside_range_numpy(
                 data_dict['gt_boxes'], self.point_cloud_range, min_num_corners=config.get('min_num_corners', 1)
             )
+            assert len(data_dict['gt_boxes']) == len(data_dict['instance_idx']), 'gt_boxes and instance_idx must have the same length inside data processor'
             data_dict['gt_boxes'] = data_dict['gt_boxes'][mask]
+            data_dict['data_processor_mask'] = mask
         return data_dict
 
     def shuffle_points(self, data_dict=None, config=None):
