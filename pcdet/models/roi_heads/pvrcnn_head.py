@@ -4,7 +4,7 @@ from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stac
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
 import torch.nn.functional as F
-
+import pickle
 class PVRCNNHead(RoIHeadTemplate):
     def __init__(self, input_channels, model_cfg, num_class=1,
                  predict_boxes_when_training=True, **kwargs):
@@ -44,6 +44,13 @@ class PVRCNNHead(RoIHeadTemplate):
         self.init_weights(weight_init='xavier')
 
         self.print_loss_when_eval = False
+        pkl_file = 'prototypes_pooled_feat.pkl'
+        with open(pkl_file, 'rb') as file:
+        # Load the data from the .pkl file
+            self.pooled_prototype_lb = pickle.load(file)
+        self.pooled_prototype_lb['car'] = self.pooled_prototype_lb['car'].cuda().unsqueeze(0)
+        self.pooled_prototype_lb['ped'] = self.pooled_prototype_lb['ped'].cuda().unsqueeze(0)
+        self.pooled_prototype_lb['cyc'] = self.pooled_prototype_lb['cyc'].cuda().unsqueeze(0)
 
     def init_weights(self, weight_init='xavier'):
         if weight_init == 'kaiming':
@@ -170,15 +177,19 @@ class PVRCNNHead(RoIHeadTemplate):
                 pooled_features_gt = pooled_features_gt.permute(0, 2, 1).\
                     contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxNum_GT, C, 6, 6, 6)
                 shared_features_gt = self.shared_fc_layer(pooled_features_gt.view(batch_size_rcnn, -1, 1))
+                batch_dict['pooled_features_gt'] = pooled_features_gt
+                
                             
 
         # RoI aware pooling
         pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
-            
+        
         grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
         batch_size_rcnn = pooled_features.shape[0]
         pooled_features = pooled_features.permute(0, 2, 1).\
             contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
+
+        
 
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
@@ -196,7 +207,19 @@ class PVRCNNHead(RoIHeadTemplate):
                 cosine_scores[i] = cos_score
             targets_dict['cos_scores'] = cosine_scores.view(batch_dict['roi_scores'].shape[0],-1)
             batch_dict['shared_features'] = shared_features_clone.view(batch_dict['roi_scores'].shape[0],-1,shared_features_clone.shape[-2],shared_features_clone.shape[-1]) # reshaping to batch_wise features
-        
+            
+            pooled_features_clone = pooled_features.view(batch_size_rcnn,pooled_features.shape[1],-1).mean(dim=-1).clone().detach() # taking mean of pooled features and transposing for cosine similarity
+            # pooled_features_clone = pooled_features_clone.view(batch_size_rcnn,pooled_features.shape[1],-1) #(B, C, 1)
+            cosine_scores_car = torch.zeros_like(batch_dict['roi_scores'].view(-1))
+            cosine_scores_ped = torch.zeros_like(batch_dict['roi_scores'].view(-1))
+            cosine_scores_cyc = torch.zeros_like(batch_dict['roi_scores'].view(-1))
+            for i,sh in enumerate(pooled_features_clone):  # using batch_dict['shared_features'] as its cloned and detached already #NOTE: protype based classifier is to be from non-detached shared features in future
+                cosine_scores_car[i] = F.cosine_similarity(sh.unsqueeze(0),self.pooled_prototype_lb['car'])
+                cosine_scores_ped[i] = F.cosine_similarity(sh.unsqueeze(0),self.pooled_prototype_lb['ped'])
+                cosine_scores_cyc[i] = F.cosine_similarity(sh.unsqueeze(0),self.pooled_prototype_lb['cyc'])
+            targets_dict['cos_scores_car_pool'] = cosine_scores_car.view(batch_dict['roi_scores'].shape[0],-1)
+            targets_dict['cos_scores_ped_pool'] = cosine_scores_ped.view(batch_dict['roi_scores'].shape[0],-1)
+            targets_dict['cos_scores_cyc_pool'] = cosine_scores_cyc.view(batch_dict['roi_scores'].shape[0],-1)
         if not self.training or self.predict_boxes_when_training:
             batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(
                 batch_size=batch_dict['batch_size'], rois=batch_dict['rois'], cls_preds=rcnn_cls, box_preds=rcnn_reg
