@@ -169,9 +169,9 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.supervise_mode = model_cfg.SUPERVISE_MODE
         cls_bg_thresh = model_cfg.ROI_HEAD.TARGET_CONFIG.CLS_BG_THRESH
         self.metric_registry = MetricRegistry(dataset=self.dataset, model_cfg=model_cfg)
-        self.labeled_template = DynamicPrototype(dataset=self.dataset, model_cfg=model_cfg).get(tag=f'labeled_prototype',file='ema_cls_sh.pkl') 
+        self.labeled_template = DynamicPrototype(dataset=self.dataset, model_cfg=model_cfg).get(tag=f'labeled_prototype',file='only_sh_cls_100.pkl') 
         self.labeled_prototype = self.labeled_template.rcnn_sh_mean #base prototype
-        self.unlabeled_template = DynamicPrototype(dataset=self.dataset, model_cfg=model_cfg).get(tag=f'unlabeled_prototype',file='ema_cls_sh.pkl')
+        self.unlabeled_template = DynamicPrototype(dataset=self.dataset, model_cfg=model_cfg).get(tag=f'unlabeled_prototype',file='only_sh_cls_100.pkl')
         self.unlabeled_prototype = self.unlabeled_template.rcnn_sh_mean #base prototype same as labeled #TODO: ignore base prototype for ulb if needed
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores', 
                         'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels',
@@ -205,12 +205,12 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             gt_boxes_check = torch.any(batch_dict['gt_boxes']!=0,dim=-1)
             instance_idx_check = batch_dict['instance_idx']!=0
-            # assert torch.all(gt_boxes_check[labeled_inds] == instance_idx_check[labeled_inds]), "gt_boxes and instance_idx should have the same length for labeled data" 
-            # assert torch.all(gt_boxes_check[unlabeled_inds] == instance_idx_check[unlabeled_inds]), "gt_boxes and instance_idx should have the same length for ulb"     
+            assert torch.all(gt_boxes_check[labeled_inds] == instance_idx_check[labeled_inds]), "gt_boxes and instance_idx should have the same length for labeled data" 
+            assert torch.all(gt_boxes_check[unlabeled_inds] == instance_idx_check[unlabeled_inds]), "gt_boxes and instance_idx should have the same length for ulb"     
             gt_boxes_check = torch.any(batch_dict_ema['gt_boxes']!=0,dim=-1)
             instance_idx_check = batch_dict_ema['instance_idx']!=0
-            # assert torch.all(gt_boxes_check[labeled_inds] == instance_idx_check[labeled_inds]), "gt_boxes and instance_idx should have the same length for labeled data wa" 
-            # assert torch.all(gt_boxes_check[unlabeled_inds] == instance_idx_check[unlabeled_inds]), "gt_boxes and instance_idx should have the same length for ulb wa"     
+            assert torch.all(gt_boxes_check[labeled_inds] == instance_idx_check[labeled_inds]), "gt_boxes and instance_idx should have the same length for labeled data wa" 
+            assert torch.all(gt_boxes_check[unlabeled_inds] == instance_idx_check[unlabeled_inds]), "gt_boxes and instance_idx should have the same length for ulb wa"     
             # Create new dict for weakly aug.(WA) data for teacher - Eg. flip along x axis
             batch_dict_ema_wa = {}
             # If ENABLE_RELIABILITY is True, run WA (Humble Teacher) along with original teacher
@@ -360,7 +360,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             self.pv_rcnn.roi_head.forward_ret_dict['pl_scores'] = pseudo_scores
     
             pred_dicts_prototype, recall_dicts_prototype = self.pv_rcnn.post_processing(batch_dict,return_selected=True)
-            self.update_feature_prototype(batch_dict, pred_dicts_prototype)
+            # self.update_feature_prototype(batch_dict, pred_dicts_prototype) #TODO: Deepika, must uncomment for ema update on shared prototype. commented for comparision of static prototypes of both pooled and shared features
             if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False):
                 # using teacher to evaluate student's bg/fg proposals through its rcnn head
                 with torch.no_grad():
@@ -586,7 +586,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 self.features_to_update_lb.append(filtered_shared_feat_lb)
                 self.labels_to_update_lb.append(filtered_gt_labels_lb)
         # for all labeled data in a batch, update the prototype
-        self.labeled_prototype = self.labeled_template.update(self.features_to_update_lb,self.labels_to_update_lb,batch_dict['cur_iteration'])
+        self.labeled_prototype = self.labeled_template.update(self.features_to_update_lb,self.labels_to_update_lb,batch_dict['cur_iteration']) #TODO:Deepika commented for making static prototypes(uncomment later)
         self.features_to_update_lb = []
         self.labels_to_update_lb = []
         

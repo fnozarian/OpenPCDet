@@ -48,9 +48,9 @@ class PVRCNNHead(RoIHeadTemplate):
         with open(pkl_file, 'rb') as file:
         # Load the data from the .pkl file
             self.pooled_prototype_lb = pickle.load(file)
-        self.pooled_prototype_lb['car'] = self.pooled_prototype_lb['car'].cuda().unsqueeze(0)
-        self.pooled_prototype_lb['ped'] = self.pooled_prototype_lb['ped'].cuda().unsqueeze(0)
-        self.pooled_prototype_lb['cyc'] = self.pooled_prototype_lb['cyc'].cuda().unsqueeze(0)
+        self.pooled_prototype_lb['car'] = (self.pooled_prototype_lb['car'].cuda()).contiguous().view(-1)
+        self.pooled_prototype_lb['ped'] = (self.pooled_prototype_lb['ped'].cuda()).contiguous().view(-1)
+        self.pooled_prototype_lb['cyc'] = (self.pooled_prototype_lb['cyc'].cuda()).contiguous().view(-1)
 
     def init_weights(self, weight_init='xavier'):
         if weight_init == 'kaiming':
@@ -219,16 +219,17 @@ class PVRCNNHead(RoIHeadTemplate):
             targets_dict['cos_scores'] = cosine_scores.view(batch_dict['roi_scores'].shape[0],-1)
             batch_dict['shared_features'] = shared_features_clone.view(batch_dict['roi_scores'].shape[0],-1,shared_features_clone.shape[-2],shared_features_clone.shape[-1]) # reshaping to batch_wise features
             
-            pooled_features_clone = pooled_features.view(batch_size_rcnn,pooled_features.shape[1],-1).mean(dim=-1).clone().detach() # taking mean of pooled features and transposing for cosine similarity
+            pooled_features_clone = pooled_features.view(batch_size_rcnn,pooled_features.shape[1],-1).clone().detach() # taking mean of pooled features and transposing for cosine similarity
             # pooled_features_clone = pooled_features_clone.view(batch_size_rcnn,pooled_features.shape[1],-1) #(B, C, 1)
             cosine_scores_car_pool = torch.zeros_like(batch_dict['roi_scores'].view(-1))
             cosine_scores_ped_pool = torch.zeros_like(batch_dict['roi_scores'].view(-1))
             cosine_scores_cyc_pool = torch.zeros_like(batch_dict['roi_scores'].view(-1))
 
             for i,sh in enumerate(pooled_features_clone):  # using batch_dict['shared_features'] as its cloned and detached already #NOTE: protype based classifier is to be from non-detached shared features in future
-                cosine_scores_car_pool[i] = F.cosine_similarity(sh.unsqueeze(0),self.pooled_prototype_lb['car'])
-                cosine_scores_ped_pool[i] = F.cosine_similarity(sh.unsqueeze(0),self.pooled_prototype_lb['ped'])
-                cosine_scores_cyc_pool[i] = F.cosine_similarity(sh.unsqueeze(0),self.pooled_prototype_lb['cyc'])
+                sh=(sh.contiguous().view(-1)).unsqueeze(0) # (1,(216*128))
+                cosine_scores_car_pool[i] = F.cosine_similarity(sh,self.pooled_prototype_lb['car'].unsqueeze(0)) # unsqueeze(0) to make it (1,(216*128)==> (1,N) F.cosine_similarity needs (N,1) or (N,N)
+                cosine_scores_ped_pool[i] = F.cosine_similarity(sh,self.pooled_prototype_lb['ped'].unsqueeze(0))
+                cosine_scores_cyc_pool[i] = F.cosine_similarity(sh,self.pooled_prototype_lb['cyc'].unsqueeze(0))
             targets_dict['cos_scores_car_pool'] = cosine_scores_car_pool.view(batch_dict['roi_scores'].shape[0],-1)
             targets_dict['cos_scores_ped_pool'] = cosine_scores_ped_pool.view(batch_dict['roi_scores'].shape[0],-1)
             targets_dict['cos_scores_cyc_pool'] = cosine_scores_cyc_pool.view(batch_dict['roi_scores'].shape[0],-1)
