@@ -201,25 +201,37 @@ class PVRCNNHead(RoIHeadTemplate):
             labels = (targets_dict['roi_labels'].clone().view(-1)) - 1 
             prototype = batch_dict['labeled_prototype'].to(labels.device) 
             cosine_scores = torch.zeros_like(batch_dict['roi_scores'].view(-1))
+            cosine_scores_car = torch.zeros_like(batch_dict['roi_scores'].view(-1))
+            cosine_scores_ped = torch.zeros_like(batch_dict['roi_scores'].view(-1))
+            cosine_scores_cyc = torch.zeros_like(batch_dict['roi_scores'].view(-1))
 
             for i,sh in enumerate(shared_features_clone):  # using batch_dict['shared_features'] as its cloned and detached already #NOTE: protype based classifier is to be from non-detached shared features in future
-                cos_score = F.cosine_similarity(sh,prototype[labels[i]])
+                cos_score = F.cosine_similarity(sh,prototype[labels[i]]) # cosine similarity between shared features and prototype labelwise. this is used for weighting purposes
                 cosine_scores[i] = cos_score
+                #cosine similarity between shared features and shared prototype classwise for analysis(shared features are ema ed)
+                cosine_scores_car[i] = F.cosine_similarity(sh,prototype[0])
+                cosine_scores_ped[i] = F.cosine_similarity(sh,prototype[1])
+                cosine_scores_cyc[i] = F.cosine_similarity(sh,prototype[2])
+            targets_dict['cos_scores_car_sh'] = cosine_scores_car.view(batch_dict['roi_scores'].shape[0],-1)
+            targets_dict['cos_scores_ped_sh'] = cosine_scores_ped.view(batch_dict['roi_scores'].shape[0],-1)
+            targets_dict['cos_scores_cyc_sh'] = cosine_scores_cyc.view(batch_dict['roi_scores'].shape[0],-1)
+    
             targets_dict['cos_scores'] = cosine_scores.view(batch_dict['roi_scores'].shape[0],-1)
             batch_dict['shared_features'] = shared_features_clone.view(batch_dict['roi_scores'].shape[0],-1,shared_features_clone.shape[-2],shared_features_clone.shape[-1]) # reshaping to batch_wise features
             
             pooled_features_clone = pooled_features.view(batch_size_rcnn,pooled_features.shape[1],-1).mean(dim=-1).clone().detach() # taking mean of pooled features and transposing for cosine similarity
             # pooled_features_clone = pooled_features_clone.view(batch_size_rcnn,pooled_features.shape[1],-1) #(B, C, 1)
-            cosine_scores_car = torch.zeros_like(batch_dict['roi_scores'].view(-1))
-            cosine_scores_ped = torch.zeros_like(batch_dict['roi_scores'].view(-1))
-            cosine_scores_cyc = torch.zeros_like(batch_dict['roi_scores'].view(-1))
+            cosine_scores_car_pool = torch.zeros_like(batch_dict['roi_scores'].view(-1))
+            cosine_scores_ped_pool = torch.zeros_like(batch_dict['roi_scores'].view(-1))
+            cosine_scores_cyc_pool = torch.zeros_like(batch_dict['roi_scores'].view(-1))
+
             for i,sh in enumerate(pooled_features_clone):  # using batch_dict['shared_features'] as its cloned and detached already #NOTE: protype based classifier is to be from non-detached shared features in future
-                cosine_scores_car[i] = F.cosine_similarity(sh.unsqueeze(0),self.pooled_prototype_lb['car'])
-                cosine_scores_ped[i] = F.cosine_similarity(sh.unsqueeze(0),self.pooled_prototype_lb['ped'])
-                cosine_scores_cyc[i] = F.cosine_similarity(sh.unsqueeze(0),self.pooled_prototype_lb['cyc'])
-            targets_dict['cos_scores_car_pool'] = cosine_scores_car.view(batch_dict['roi_scores'].shape[0],-1)
-            targets_dict['cos_scores_ped_pool'] = cosine_scores_ped.view(batch_dict['roi_scores'].shape[0],-1)
-            targets_dict['cos_scores_cyc_pool'] = cosine_scores_cyc.view(batch_dict['roi_scores'].shape[0],-1)
+                cosine_scores_car_pool[i] = F.cosine_similarity(sh.unsqueeze(0),self.pooled_prototype_lb['car'])
+                cosine_scores_ped_pool[i] = F.cosine_similarity(sh.unsqueeze(0),self.pooled_prototype_lb['ped'])
+                cosine_scores_cyc_pool[i] = F.cosine_similarity(sh.unsqueeze(0),self.pooled_prototype_lb['cyc'])
+            targets_dict['cos_scores_car_pool'] = cosine_scores_car_pool.view(batch_dict['roi_scores'].shape[0],-1)
+            targets_dict['cos_scores_ped_pool'] = cosine_scores_ped_pool.view(batch_dict['roi_scores'].shape[0],-1)
+            targets_dict['cos_scores_cyc_pool'] = cosine_scores_cyc_pool.view(batch_dict['roi_scores'].shape[0],-1)
         if not self.training or self.predict_boxes_when_training:
             batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(
                 batch_size=batch_dict['batch_size'], rois=batch_dict['rois'], cls_preds=rcnn_cls, box_preds=rcnn_reg

@@ -48,7 +48,10 @@ class PredQualityMetrics(Metric):
                              "cos_scores_car_pool_tp","cos_scores_car_pool_fp","cos_scores_ped_pool_bg","cos_scores_ped_pool_uc",
                              "cos_scores_ped_pool_fg","cos_scores_ped_pool_fn","cos_scores_ped_pool_tp","cos_scores_ped_pool_fp",
                              "cos_scores_cyc_pool_bg","cos_scores_cyc_pool_uc","cos_scores_cyc_pool_fg","cos_scores_cyc_pool_fn",
-                             "cos_scores_cyc_pool_tp","cos_scores_cyc_pool_fp"]
+                             "cos_scores_cyc_pool_tp","cos_scores_cyc_pool_fp","cos_scores_car_sh_bg","cos_scores_car_sh_uc","cos_scores_car_sh_fg",
+                             "cos_scores_car_sh_fn","cos_scores_car_sh_tp","cos_scores_car_sh_fp","cos_scores_ped_sh_bg","cos_scores_ped_sh_uc","cos_scores_ped_sh_fg",
+                             "cos_scores_ped_sh_fn","cos_scores_ped_sh_tp","cos_scores_ped_sh_fp","cos_scores_cyc_sh_bg","cos_scores_cyc_sh_uc","cos_scores_cyc_sh_fg",
+                             "cos_scores_cyc_sh_fn","cos_scores_cyc_sh_tp","cos_scores_cyc_sh_fp"]
                              
         self.min_overlaps = np.array([0.7, 0.5, 0.5, 0.7, 0.5, 0.7])
         self.class_agnostic_fg_thresh = 0.7
@@ -58,7 +61,8 @@ class PredQualityMetrics(Metric):
     def update(self, preds: [torch.Tensor], ground_truths: [torch.Tensor], pred_scores: [torch.Tensor],
                rois=None, roi_scores=None, targets=None, target_scores=None, pred_weights=None,
                pseudo_labels=None, pseudo_label_scores=None, pred_iou_wrt_pl=None, cos_scores=None,
-               cos_scores_car_pool=None,cos_scores_ped_pool=None,cos_scores_cyc_pool=None) -> None:
+               cos_scores_car_pool=None,cos_scores_ped_pool=None,cos_scores_cyc_pool=None,cos_scores_car_sh=None,
+               cos_scores_ped_sh=None,cos_scores_cyc_sh=None) -> None:
         assert isinstance(preds, list) and isinstance(ground_truths, list) and isinstance(pred_scores, list)
         assert all([pred.dim() == 2 for pred in preds]) and all([pred.dim() == 2 for pred in ground_truths]) and all([pred.dim() == 1 for pred in pred_scores])
         assert all([pred.shape[-1] == 8 for pred in preds]) and all([gt.shape[-1] == 8 for gt in ground_truths])
@@ -89,6 +93,9 @@ class PredQualityMetrics(Metric):
             valid_cos_car_pool = cos_scores_car_pool[i][valid_preds_mask.nonzero().view(-1)] if cos_scores_car_pool else None
             valid_cos_ped_pool = cos_scores_ped_pool[i][valid_preds_mask.nonzero().view(-1)] if cos_scores_ped_pool else None
             valid_cos_cyc_pool = cos_scores_cyc_pool[i][valid_preds_mask.nonzero().view(-1)] if cos_scores_cyc_pool else None
+            valid_cos_car_sh = cos_scores_car_sh[i][valid_preds_mask.nonzero().view(-1)] if cos_scores_car_sh else None 
+            valid_cos_ped_sh = cos_scores_ped_sh[i][valid_preds_mask.nonzero().view(-1)] if cos_scores_ped_sh else None
+            valid_cos_cyc_sh = cos_scores_cyc_sh[i][valid_preds_mask.nonzero().view(-1)] if cos_scores_cyc_sh else None
 
             valid_gts_mask = torch.logical_not(torch.all(ground_truths[i] == 0, dim=-1))
             valid_gt_boxes = ground_truths[i][valid_gts_mask]
@@ -206,7 +213,32 @@ class PredQualityMetrics(Metric):
                         classwise_metrics['cos_scores_cyc_pool_uc'][cind] = cos_cyc_pool_uc
                         cos_cyc_pool_fg = (valid_cos_cyc_pool * cc_fg_mask.float()).sum() / cc_fg_mask.sum()
                         classwise_metrics['cos_scores_cyc_pool_fg'][cind] = cos_cyc_pool_fg
-
+                    
+                    if valid_cos_car_sh is not None:
+                        cos_car_sh_bg = (valid_cos_car_sh * cls_bg_mask.float()).sum() / cls_bg_mask.float().sum()
+                        classwise_metrics['cos_scores_car_sh_bg'][cind] = cos_car_sh_bg
+                        cos_car_sh_uc = (valid_cos_car_sh * cc_uc_mask.float()).sum() / cc_uc_mask.float().sum()
+                        classwise_metrics['cos_scores_car_sh_uc'][cind] = cos_car_sh_uc
+                        cos_car_sh_fg = (valid_cos_car_sh * cc_fg_mask.float()).sum() / cc_fg_mask.sum()
+                        classwise_metrics['cos_scores_car_sh_fg'][cind] = cos_car_sh_fg
+                    
+                    if valid_cos_ped_sh is not None:
+                        cos_ped_sh_bg = (valid_cos_ped_sh * cls_bg_mask.float()).sum() / cls_bg_mask.float().sum()
+                        classwise_metrics['cos_scores_ped_sh_bg'][cind] = cos_ped_sh_bg
+                        cos_ped_sh_uc = (valid_cos_ped_sh * cc_uc_mask.float()).sum() / cc_uc_mask.float().sum()
+                        classwise_metrics['cos_scores_ped_sh_uc'][cind] = cos_ped_sh_uc
+                        cos_ped_sh_fg = (valid_cos_ped_sh * cc_fg_mask.float()).sum() / cc_fg_mask.sum()
+                        classwise_metrics['cos_scores_ped_sh_fg'][cind] = cos_ped_sh_fg
+                    
+                    if valid_cos_cyc_sh is not None:
+                        cos_cyc_sh_bg = (valid_cos_cyc_sh * cls_bg_mask.float()).sum() / cls_bg_mask.float().sum()
+                        classwise_metrics['cos_scores_cyc_sh_bg'][cind] = cos_cyc_sh_bg
+                        cos_cyc_sh_uc = (valid_cos_cyc_sh * cc_uc_mask.float()).sum() / cc_uc_mask.float().sum()
+                        classwise_metrics['cos_scores_cyc_sh_uc'][cind] = cos_cyc_sh_uc
+                        cos_cyc_sh_fg = (valid_cos_cyc_sh * cc_fg_mask.float()).sum() / cc_fg_mask.sum()
+                        classwise_metrics['cos_scores_cyc_sh_fg'][cind] = cos_cyc_sh_fg
+                    
+                    
                     if valid_pred_iou_wrt_pl is not None:
                         fg_threshs = self.config.ROI_HEAD.TARGET_CONFIG.UNLABELED_CLS_FG_THRESH
                         bg_thresh = self.config.ROI_HEAD.TARGET_CONFIG.UNLABELED_CLS_BG_THRESH
@@ -277,6 +309,28 @@ class PredQualityMetrics(Metric):
                             classwise_metrics['cos_scores_cyc_pool_tp'][cind] = cos_cyc_pool_cc_tp
                             cos_cyc_pool_cc_fp = (valid_cos_cyc_pool * fp_mask).sum() / fp_mask.float().sum()
                             classwise_metrics['cos_scores_cyc_pool_fp'][cind] = cos_cyc_pool_cc_fp
+                        if valid_cos_car_sh is not None:
+                            cos_car_sh_fg_mc = (valid_cos_car_sh * fn_mask.float()).sum() / fn_mask.sum()
+                            classwise_metrics['cos_scores_car_sh_fn'][cind] = cos_car_sh_fg_mc
+                            cos_car_sh_cc_tp = (valid_cos_car_sh * tp_mask).sum() / tp_mask.float().sum()
+                            classwise_metrics['cos_scores_car_sh_tp'][cind] = cos_car_sh_cc_tp
+                            cos_car_sh_cc_fp = (valid_cos_car_sh * fp_mask).sum() / fp_mask.float().sum()
+                            classwise_metrics['cos_scores_car_sh_fp'][cind] = cos_car_sh_cc_fp
+                        if valid_cos_ped_sh is not None:
+                            cos_ped_sh_fg_mc = (valid_cos_ped_sh * fn_mask.float()).sum() / fn_mask.sum()
+                            classwise_metrics['cos_scores_ped_sh_fn'][cind] = cos_ped_sh_fg_mc
+                            cos_ped_sh_cc_tp = (valid_cos_ped_sh * tp_mask).sum() / tp_mask.float().sum()
+                            classwise_metrics['cos_scores_ped_sh_tp'][cind] = cos_ped_sh_cc_tp
+                            cos_ped_sh_cc_fp = (valid_cos_ped_sh * fp_mask).sum() / fp_mask.float().sum()
+                            classwise_metrics['cos_scores_ped_sh_fp'][cind] = cos_ped_sh_cc_fp
+                        if valid_cos_cyc_sh is not None:
+                            cos_cyc_sh_fg_mc = (valid_cos_cyc_sh * fn_mask.float()).sum() / fn_mask.sum()
+                            classwise_metrics['cos_scores_cyc_sh_fn'][cind] = cos_cyc_sh_fg_mc
+                            cos_cyc_sh_cc_tp = (valid_cos_cyc_sh * tp_mask).sum() / tp_mask.float().sum()
+                            classwise_metrics['cos_scores_cyc_sh_tp'][cind] = cos_cyc_sh_cc_tp
+                            cos_cyc_sh_cc_fp = (valid_cos_cyc_sh * fp_mask).sum() / fp_mask.float().sum()
+                            classwise_metrics['cos_scores_cyc_sh_fp'][cind] = cos_cyc_sh_cc_fp
+                            
                         # ------ Foreground misclassification metrics for IoUs lying in UC region (wrt PLs) ------
                         uc_fn_mask = cls_uc_mask_wrt_pl & cc_fg_mask
                         uc_fp_mask = cls_uc_mask_wrt_pl & (cls_bg_mask | cc_uc_mask)

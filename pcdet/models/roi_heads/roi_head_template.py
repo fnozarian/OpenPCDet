@@ -201,6 +201,10 @@ class RoIHeadTemplate(nn.Module):
         sample_cos_scores_car_pool = []
         sample_cos_scores_ped_pool = []
         sample_cos_scores_cyc_pool = []
+        sample_cos_scores_car_sh =  []
+        sample_cos_scores_ped_sh = []
+        sample_cos_scores_cyc_sh = []
+    
         for i, uind in enumerate(unlabeled_inds):
             mask = (targets_dict['reg_valid_mask'][uind] > 0) if mask_type == 'reg' else (
                         targets_dict['rcnn_cls_labels'][uind] >= 0)
@@ -236,6 +240,12 @@ class RoIHeadTemplate(nn.Module):
             sample_cos_scores_car_pool.append(car_cos_scores_pool)
             sample_cos_scores_ped_pool.append(ped_cos_scores_pool)
             sample_cos_scores_cyc_pool.append(cyc_cos_scores_pool)
+            car_cos_scores_sh = targets_dict['cos_scores_car_sh'][uind][mask].detach().clone()
+            ped_cos_scores_sh = targets_dict['cos_scores_ped_sh'][uind][mask].detach().clone()
+            cyc_cos_scores_sh = targets_dict['cos_scores_cyc_sh'][uind][mask].detach().clone()
+            sample_cos_scores_car_sh.append(car_cos_scores_sh)
+            sample_cos_scores_ped_sh.append(ped_cos_scores_sh)
+            sample_cos_scores_cyc_sh.append(cyc_cos_scores_sh)
 
             # (Real labels) GT info
             gt_labeled_boxes = targets_dict['ori_unlabeled_boxes'][i]
@@ -324,7 +334,8 @@ class RoIHeadTemplate(nn.Module):
                              'target_scores': sample_target_scores, 'pred_weights': sample_pred_weights,
                              'pred_iou_wrt_pl': sample_gt_iou_of_rois,'cos_scores': sample_cos_scores,
                              'cos_scores_car_pool': sample_cos_scores_car_pool, 'cos_scores_ped_pool': sample_cos_scores_ped_pool,
-                             'cos_scores_cyc_pool': sample_cos_scores_cyc_pool}
+                             'cos_scores_cyc_pool': sample_cos_scores_cyc_pool,'cos_scores_car_sh': sample_cos_scores_car_sh,
+                             'cos_scores_ped_sh': sample_cos_scores_ped_sh, 'cos_scores_cyc_sh': sample_cos_scores_cyc_sh}
             metrics.update(**metric_inputs)
 
     def assign_targets(self, batch_dict):
