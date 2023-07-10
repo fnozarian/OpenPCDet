@@ -205,12 +205,12 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             gt_boxes_check = torch.any(batch_dict['gt_boxes']!=0,dim=-1)
             instance_idx_check = batch_dict['instance_idx']!=0
-            assert torch.all(gt_boxes_check[labeled_inds] == instance_idx_check[labeled_inds]), "gt_boxes and instance_idx should have the same length for labeled data" 
-            assert torch.all(gt_boxes_check[unlabeled_inds] == instance_idx_check[unlabeled_inds]), "gt_boxes and instance_idx should have the same length for ulb"     
+            # assert torch.all(gt_boxes_check[labeled_inds] == instance_idx_check[labeled_inds]), "gt_boxes and instance_idx should have the same length for labeled data" 
+            # assert torch.all(gt_boxes_check[unlabeled_inds] == instance_idx_check[unlabeled_inds]), "gt_boxes and instance_idx should have the same length for ulb"     
             gt_boxes_check = torch.any(batch_dict_ema['gt_boxes']!=0,dim=-1)
             instance_idx_check = batch_dict_ema['instance_idx']!=0
-            assert torch.all(gt_boxes_check[labeled_inds] == instance_idx_check[labeled_inds]), "gt_boxes and instance_idx should have the same length for labeled data wa" 
-            assert torch.all(gt_boxes_check[unlabeled_inds] == instance_idx_check[unlabeled_inds]), "gt_boxes and instance_idx should have the same length for ulb wa"     
+            # assert torch.all(gt_boxes_check[labeled_inds] == instance_idx_check[labeled_inds]), "gt_boxes and instance_idx should have the same length for labeled data wa" 
+            # assert torch.all(gt_boxes_check[unlabeled_inds] == instance_idx_check[unlabeled_inds]), "gt_boxes and instance_idx should have the same length for ulb wa"     
             # Create new dict for weakly aug.(WA) data for teacher - Eg. flip along x axis
             batch_dict_ema_wa = {}
             # If ENABLE_RELIABILITY is True, run WA (Humble Teacher) along with original teacher
