@@ -58,7 +58,7 @@ class PredQualityMetrics(Metric):
     def update(self, preds: [torch.Tensor], ground_truths: [torch.Tensor], pred_scores: [torch.Tensor],
                rois=None, roi_scores=None, targets=None, target_scores=None, pred_weights=None,
                pseudo_labels=None, pseudo_label_scores=None, pred_iou_wrt_pl=None, cos_scores=None,
-               cos_car_pool=None,cos_ped_pool=None,cos_cyc_pool=None) -> None:
+               cos_scores_car_pool=None,cos_scores_ped_pool=None,cos_scores_cyc_pool=None) -> None:
         assert isinstance(preds, list) and isinstance(ground_truths, list) and isinstance(pred_scores, list)
         assert all([pred.dim() == 2 for pred in preds]) and all([pred.dim() == 2 for pred in ground_truths]) and all([pred.dim() == 1 for pred in pred_scores])
         assert all([pred.shape[-1] == 8 for pred in preds]) and all([gt.shape[-1] == 8 for gt in ground_truths])
@@ -86,9 +86,9 @@ class PredQualityMetrics(Metric):
             valid_pred_weights = pred_weights[i][valid_preds_mask.nonzero().view(-1)] if pred_weights else None
             valid_pred_iou_wrt_pl = pred_iou_wrt_pl[i][valid_preds_mask.nonzero().view(-1)].squeeze() if pred_iou_wrt_pl else None
             valid_cos_scores = cos_scores[i][valid_preds_mask.nonzero().view(-1)] if cos_scores else None
-            valid_cos_car_pool = cos_car_pool[i][valid_preds_mask.nonzero().view(-1)] if cos_car_pool else None
-            valid_cos_ped_pool = cos_ped_pool[i][valid_preds_mask.nonzero().view(-1)] if cos_ped_pool else None
-            valid_cos_cyc_pool = cos_cyc_pool[i][valid_preds_mask.nonzero().view(-1)] if cos_cyc_pool else None
+            valid_cos_car_pool = cos_scores_car_pool[i][valid_preds_mask.nonzero().view(-1)] if cos_scores_car_pool else None
+            valid_cos_ped_pool = cos_scores_ped_pool[i][valid_preds_mask.nonzero().view(-1)] if cos_scores_ped_pool else None
+            valid_cos_cyc_pool = cos_scores_cyc_pool[i][valid_preds_mask.nonzero().view(-1)] if cos_scores_cyc_pool else None
 
             valid_gts_mask = torch.logical_not(torch.all(ground_truths[i] == 0, dim=-1))
             valid_gt_boxes = ground_truths[i][valid_gts_mask]
