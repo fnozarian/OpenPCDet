@@ -206,12 +206,12 @@ class PVRCNNHead(RoIHeadTemplate):
             cosine_scores_cyc = torch.zeros_like(batch_dict['roi_scores'].view(-1))
 
             for i,sh in enumerate(shared_features_clone):  # using batch_dict['shared_features'] as its cloned and detached already #NOTE: protype based classifier is to be from non-detached shared features in future
-                cos_score = F.cosine_similarity(sh,prototype[labels[i]]) # cosine similarity between shared features and prototype labelwise. this is used for weighting purposes
+                cos_score = F.normalize(sh) @ F.normalize(prototype[labels[i]]).t() # cosine similarity between shared features and prototype labelwise. this is used for weighting purposes
                 cosine_scores[i] = cos_score
                 #cosine similarity between shared features and shared prototype classwise for analysis(shared features are ema ed)
-                cosine_scores_car[i] = F.cosine_similarity(sh,prototype[0])
-                cosine_scores_ped[i] = F.cosine_similarity(sh,prototype[1])
-                cosine_scores_cyc[i] = F.cosine_similarity(sh,prototype[2])
+                cosine_scores_car[i] = F.normalize(sh) @ F.normalize(prototype[0]).t()
+                cosine_scores_ped[i] = F.normalize(sh) @ F.normalize(prototype[1]).t()
+                cosine_scores_cyc[i] = F.normalize(sh) @ F.normalize(prototype[2]).t()
             targets_dict['cos_scores_car_sh'] = cosine_scores_car.view(batch_dict['roi_scores'].shape[0],-1)
             targets_dict['cos_scores_ped_sh'] = cosine_scores_ped.view(batch_dict['roi_scores'].shape[0],-1)
             targets_dict['cos_scores_cyc_sh'] = cosine_scores_cyc.view(batch_dict['roi_scores'].shape[0],-1)
@@ -227,9 +227,9 @@ class PVRCNNHead(RoIHeadTemplate):
 
             for i,sh in enumerate(pooled_features_clone):  # using batch_dict['shared_features'] as its cloned and detached already #NOTE: protype based classifier is to be from non-detached shared features in future
                 sh=(sh.contiguous().view(-1)).unsqueeze(0) # (1,(216*128))
-                cosine_scores_car_pool[i] = F.cosine_similarity(sh,self.pooled_prototype_lb['car'].unsqueeze(0)) # unsqueeze(0) to make it (1,(216*128)==> (1,N) F.cosine_similarity needs (N,1) or (N,N)
-                cosine_scores_ped_pool[i] = F.cosine_similarity(sh,self.pooled_prototype_lb['ped'].unsqueeze(0))
-                cosine_scores_cyc_pool[i] = F.cosine_similarity(sh,self.pooled_prototype_lb['cyc'].unsqueeze(0))
+                cosine_scores_car_pool[i] = F.normalize(sh) @ F.normalize(self.pooled_prototype_lb['car'].unsqueeze(0)).t() # unsqueeze(0) to make it (1,(216*128)==> (1,N) F.cosine_similarity needs (N,1) or (N,N)(did not change the dimensions when replacing the cosine with matmul for consistency with previous commits)
+                cosine_scores_ped_pool[i] = F.normalize(sh) @ F.normalize(self.pooled_prototype_lb['ped'].unsqueeze(0)).t()
+                cosine_scores_cyc_pool[i] = F.normalize(sh) @ F.normalize(self.pooled_prototype_lb['cyc'].unsqueeze(0)).t()
             targets_dict['cos_scores_car_pool'] = cosine_scores_car_pool.view(batch_dict['roi_scores'].shape[0],-1)
             targets_dict['cos_scores_ped_pool'] = cosine_scores_ped_pool.view(batch_dict['roi_scores'].shape[0],-1)
             targets_dict['cos_scores_cyc_pool'] = cosine_scores_cyc_pool.view(batch_dict['roi_scores'].shape[0],-1)
