@@ -175,7 +175,7 @@ class Detector3DTemplate(nn.Module):
     def forward(self, **kwargs):
         raise NotImplementedError
 
-    def post_processing(self, batch_dict, no_recall_dict=False, override_thresh=None, no_nms_for_unlabeled=False,return_selected=False):
+    def post_processing(self, batch_dict, no_recall_dict=False, override_thresh=None, no_nms_for_unlabeled=False):
         """
         Args:
             batch_dict:
@@ -252,8 +252,7 @@ class Detector3DTemplate(nn.Module):
                 if batch_dict.get('has_class_labels', False):
                     label_key = 'roi_labels' if 'roi_labels' in batch_dict else 'batch_pred_labels'
                     label_preds = batch_dict[label_key][index]
-                    if self.training:
-                        sem_scores = batch_dict['roi_scores'][index]
+                    sem_scores = batch_dict['roi_scores'][index]
                 else:
                     label_preds = label_preds + 1
                 # Should be True to preserve the order of roi's passed from the student
@@ -261,33 +260,20 @@ class Detector3DTemplate(nn.Module):
                     selected = torch.arange(len(cls_preds), device=cls_preds.device)
                     selected_scores = cls_preds
                 else:
-                    if False:
-                        selected, selected_scores = model_nms_utils.class_agnostic_nms(
-                            box_scores=torch.sigmoid(sem_scores), box_preds=box_preds,
-                            nms_config=post_process_cfg.NMS_CONFIG,
-                            score_thresh=post_process_cfg.SCORE_THRESH
-                        )
-                    else:
-                        selected, selected_scores = model_nms_utils.class_agnostic_nms(
-                            box_scores=cls_preds, box_preds=box_preds,
-                            nms_config=post_process_cfg.NMS_CONFIG,
-                            score_thresh=post_process_cfg.SCORE_THRESH
-                        )
+                    selected, selected_scores = model_nms_utils.class_agnostic_nms(
+                        box_scores=cls_preds, box_preds=box_preds,
+                        nms_config=post_process_cfg.NMS_CONFIG,
+                        score_thresh=post_process_cfg.SCORE_THRESH
+                    )
 
                 if post_process_cfg.OUTPUT_RAW_SCORE:
                     max_cls_preds, _ = torch.max(src_cls_preds, dim=-1)
                     selected_scores = max_cls_preds[selected]
 
                 final_scores = selected_scores
+                final_sem_scores = torch.sigmoid(sem_scores[selected])
                 final_labels = label_preds[selected]
                 final_boxes = box_preds[selected]
-
-                if self.training:
-                    final_sem_scores = torch.sigmoid(sem_scores[selected])
-                    if 'batch_box_preds_var' in batch_dict.keys():
-                        final_box_vars = batch_dict['batch_box_preds_var'][index, selected]
-                    if 'batch_cls_preds_var' in batch_dict.keys():
-                        final_cls_vars = batch_dict['batch_cls_preds_var'][index, selected]
 
             if not no_recall_dict:
                 recall_dict = self.generate_recall_record(
@@ -299,16 +285,10 @@ class Detector3DTemplate(nn.Module):
             record_dict = {
                 'pred_boxes': final_boxes,
                 'pred_scores': final_scores,
+                'pred_sem_scores': final_sem_scores,
                 'pred_labels': final_labels,
             }
-            if self.training:
-                record_dict['pred_sem_scores'] = final_sem_scores
-                if 'batch_box_preds_var' in batch_dict.keys():
-                    record_dict['pred_boxes_var'] = final_box_vars
-                if 'batch_cls_preds_var' in batch_dict.keys():
-                    record_dict['pred_scores_var'] = final_cls_vars
-                if return_selected:
-                    record_dict['selected'] = selected
+
             pred_dicts.append(record_dict)
 
         return pred_dicts, recall_dict

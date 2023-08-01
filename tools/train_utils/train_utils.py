@@ -18,7 +18,9 @@ def log_tb_dict(tb_log, tb_dict, accumulated_iter):
         cat, key = (subkeys[0] + "/", subkeys[1]) if len(subkeys) > 1 else ('train/', key)
         if key in ['bs']:
             cat = 'meta_data/'
-        if isinstance(val, dict):
+        if "pr_curve" in key:
+            tb_log.add_pr_curve(cat + key, val['labels'], val['predictions'], accumulated_iter)
+        elif isinstance(val, dict):
             tb_log.add_scalars(cat + key, val, accumulated_iter)
         elif isinstance(val, plt.Figure):
             tb_log.add_figure(cat + key, val, accumulated_iter)

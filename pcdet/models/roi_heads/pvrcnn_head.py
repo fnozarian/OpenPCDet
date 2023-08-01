@@ -4,6 +4,8 @@ from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stac
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
 import torch.nn.functional as F
+from prototype_utils import feature_bank_registry
+
 import pickle
 class PVRCNNHead(RoIHeadTemplate):
     def __init__(self, input_channels, model_cfg, num_class=1,
@@ -72,7 +74,7 @@ class PVRCNNHead(RoIHeadTemplate):
                     nn.init.constant_(m.bias, 0)
         nn.init.normal_(self.reg_layers[-1].weight, mean=0, std=0.001)
 
-    def roi_grid_pool(self, batch_dict,pool_gtboxes=False):
+    def roi_grid_pool(self, batch_dict, pool_gtboxes=False):
         """
         Args:
             batch_dict:
@@ -146,20 +148,30 @@ class PVRCNNHead(RoIHeadTemplate):
                           - (local_roi_size.unsqueeze(dim=1) / 2)  # (B, 6x6x6, 3)
         return roi_grid_points
 
-    def forward(self, batch_dict, disable_gt_roi_when_pseudo_labeling=False):
+    def get_pool_features(self, batch_dict, pool_gtboxes=False):
+        if pool_gtboxes:
+            with torch.no_grad():
+                pooled_features = self.roi_grid_pool(batch_dict, pool_gtboxes=True)
+        else:
+            # RoI aware pooling
+            pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
+            grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
+            batch_size_rcnn = pooled_features.shape[0]
+            pooled_features = pooled_features.permute(0, 2, 1). \
+                contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
+
+        return pooled_features
+
+    def forward(self, batch_dict, pseudo_labeling_phase=False):
         """
         :param input_data: input dict
         :return:
         """
-
-        # use test-time nms for pseudo label generation
-        nms_mode = self.model_cfg.NMS_CONFIG['TRAIN' if self.training and not disable_gt_roi_when_pseudo_labeling else 'TEST']
-
         # proposal_layer doesn't continue if the rois are already in the batch_dict.
         # However, for labeled data proposal layer should continue!
-        targets_dict = self.proposal_layer(batch_dict, nms_config=nms_mode)
+        targets_dict = self.proposal_layer(batch_dict, nms_config=self.model_cfg.NMS_CONFIG['TRAIN' if self.training else 'TEST'])
         # should not use gt_roi for pseudo label generation
-        if (self.training or self.print_loss_when_eval) and not disable_gt_roi_when_pseudo_labeling:
+        if (self.training or self.print_loss_when_eval):
             targets_dict = self.assign_targets(batch_dict)
             batch_dict['rois'] = targets_dict['rois']
             batch_dict['roi_scores'] = targets_dict['roi_scores']
@@ -167,72 +179,28 @@ class PVRCNNHead(RoIHeadTemplate):
             # Temporarily add infos to targets_dict for metrics
             targets_dict['unlabeled_inds'] = batch_dict['unlabeled_inds']
             targets_dict['ori_unlabeled_boxes'] = batch_dict['ori_unlabeled_boxes']
-            # TODO(farzad) refactor this with global registry,
-            #  accessible in different places, not via passing through batch_dict
-            targets_dict['metric_registry'] = batch_dict['metric_registry']
-            with torch.no_grad():
-                pooled_features_gt = self.roi_grid_pool(batch_dict,pool_gtboxes=True)  # (BxNum_GT, 6x6x6, C)
-                grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
-                batch_size_rcnn = pooled_features_gt.shape[0]
-                pooled_features_gt = pooled_features_gt.permute(0, 2, 1).\
-                    contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxNum_GT, C, 6, 6, 6)
-                shared_features_gt = self.shared_fc_layer(pooled_features_gt.view(batch_size_rcnn, -1, 1))
-                batch_dict['pooled_features_gt'] = pooled_features_gt
-                
-                            
 
-        # RoI aware pooling
-        pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
-        
-        grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
+        pooled_features = self.get_pool_features(batch_dict)
         batch_size_rcnn = pooled_features.shape[0]
-        pooled_features = pooled_features.permute(0, 2, 1).\
-            contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
-
-        
-
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
         rcnn_reg = self.reg_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
-        
-        # Cosine similarity between shared features and prototype
-        if (self.training or self.print_loss_when_eval) and not disable_gt_roi_when_pseudo_labeling: # cannot do this "if" in line 152 as we don't have shared features at that point
-            shared_features_clone = shared_features.clone().detach().transpose(-2,-1) # cloning and detaching to keep the graph intact, transposing for cosine similarity
-            labels = (targets_dict['roi_labels'].clone().view(-1)) - 1 
-            prototype = batch_dict['labeled_prototype'].to(labels.device) 
-            cosine_scores = torch.zeros_like(batch_dict['roi_scores'].view(-1))
-            cosine_scores_car = torch.zeros_like(batch_dict['roi_scores'].view(-1))
-            cosine_scores_ped = torch.zeros_like(batch_dict['roi_scores'].view(-1))
-            cosine_scores_cyc = torch.zeros_like(batch_dict['roi_scores'].view(-1))
 
-            for i,sh in enumerate(shared_features_clone):  # using batch_dict['shared_features'] as its cloned and detached already #NOTE: protype based classifier is to be from non-detached shared features in future
-                cos_score = F.normalize(sh) @ F.normalize(prototype[labels[i]]).t() # cosine similarity between shared features and prototype labelwise. this is used for weighting purposes
-                cosine_scores[i] = cos_score
-                #cosine similarity between shared features and shared prototype classwise for analysis(shared features are ema ed)
-                cosine_scores_car[i] = F.normalize(sh) @ F.normalize(prototype[0]).t()
-                cosine_scores_ped[i] = F.normalize(sh) @ F.normalize(prototype[1]).t()
-                cosine_scores_cyc[i] = F.normalize(sh) @ F.normalize(prototype[2]).t()
-            targets_dict['cos_scores_car_sh'] = cosine_scores_car.view(batch_dict['roi_scores'].shape[0],-1)
-            targets_dict['cos_scores_ped_sh'] = cosine_scores_ped.view(batch_dict['roi_scores'].shape[0],-1)
-            targets_dict['cos_scores_cyc_sh'] = cosine_scores_cyc.view(batch_dict['roi_scores'].shape[0],-1)
-    
-            targets_dict['cos_scores'] = cosine_scores.view(batch_dict['roi_scores'].shape[0],-1)
-            batch_dict['shared_features'] = shared_features_clone.view(batch_dict['roi_scores'].shape[0],-1,shared_features_clone.shape[-2],shared_features_clone.shape[-1]) # reshaping to batch_wise features
-            
-            pooled_features_clone = pooled_features.view(batch_size_rcnn,pooled_features.shape[1],-1).clone().detach() # taking mean of pooled features and transposing for cosine similarity
-            # pooled_features_clone = pooled_features_clone.view(batch_size_rcnn,pooled_features.shape[1],-1) #(B, C, 1)
-            cosine_scores_car_pool = torch.zeros_like(batch_dict['roi_scores'].view(-1))
-            cosine_scores_ped_pool = torch.zeros_like(batch_dict['roi_scores'].view(-1))
-            cosine_scores_cyc_pool = torch.zeros_like(batch_dict['roi_scores'].view(-1))
+        if pseudo_labeling_phase:
+            # If teacher model with nonaugmented data is used, update the bank with gt features from labeled data
+            labeled_inds = batch_dict['labeled_inds']
+            bank = feature_bank_registry.get('gt_noaug_lbl_prototypes')
+            gt_noaug_feats = self.get_pool_features(batch_dict, pool_gtboxes=True)
+            bank.update(gt_noaug_feats[labeled_inds], batch_dict['gt_boxes'][labeled_inds],
+                        batch_dict['instance_idx'][labeled_inds], batch_dict['cur_iteration'])
+        if not pseudo_labeling_phase and self.training:
+            # RoI-level similarity.
+            # calculate cosine similarity between unlabeled augmented RoI features and labeled nonaugmented prototypes.
+            roi_features = pooled_features.clone().detach().view(batch_size_rcnn, pooled_features.shape[1], -1)
+            bank = feature_bank_registry.get('gt_noaug_lbl_prototypes')
+            if bank.initialized:
+                targets_dict['roi_sim_scores'] = bank.get_sim_scores(roi_features)
 
-            for i,sh in enumerate(pooled_features_clone):  # using batch_dict['shared_features'] as its cloned and detached already #NOTE: protype based classifier is to be from non-detached shared features in future
-                sh=(sh.contiguous().view(-1)).unsqueeze(0) # (1,(216*128))
-                cosine_scores_car_pool[i] = F.normalize(sh) @ F.normalize(self.pooled_prototype_lb['car'].unsqueeze(0)).t() # unsqueeze(0) to make it (1,(216*128)==> (1,N) F.cosine_similarity needs (N,1) or (N,N)(did not change the dimensions when replacing the cosine with matmul for consistency with previous commits)
-                cosine_scores_ped_pool[i] = F.normalize(sh) @ F.normalize(self.pooled_prototype_lb['ped'].unsqueeze(0)).t()
-                cosine_scores_cyc_pool[i] = F.normalize(sh) @ F.normalize(self.pooled_prototype_lb['cyc'].unsqueeze(0)).t()
-            targets_dict['cos_scores_car_pool'] = cosine_scores_car_pool.view(batch_dict['roi_scores'].shape[0],-1)
-            targets_dict['cos_scores_ped_pool'] = cosine_scores_ped_pool.view(batch_dict['roi_scores'].shape[0],-1)
-            targets_dict['cos_scores_cyc_pool'] = cosine_scores_cyc_pool.view(batch_dict['roi_scores'].shape[0],-1)
         if not self.training or self.predict_boxes_when_training:
             batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(
                 batch_size=batch_dict['batch_size'], rois=batch_dict['rois'], cls_preds=rcnn_cls, box_preds=rcnn_reg

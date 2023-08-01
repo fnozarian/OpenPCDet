@@ -66,7 +66,7 @@ class KittiDatasetSSL(DatasetTemplate):
         for info in self.kitti_infos:
             for name in info['annos']['name']:
                 self.class_counter[name] += 1
-        print(self.class_counter)
+        print("Labeled instances before gt_sampling: ", self.class_counter)
         if self.logger is not None:
             self.logger.info('Total samples for KITTI dataset: %d' % (len(self.kitti_infos)))
 
@@ -468,7 +468,6 @@ class KittiDatasetSSL(DatasetTemplate):
             'calib': calib,
             'labeled_mask': 0 if unlabeled else 1,
             'sample_idx': sample_idx,
-
         }
 
         if 'annos' in info:
@@ -478,7 +477,7 @@ class KittiDatasetSSL(DatasetTemplate):
             gt_names = annos['name']
             gt_boxes_camera = np.concatenate([loc, dims, rots[..., np.newaxis]], axis=1).astype(np.float32)
             gt_boxes_lidar = box_utils.boxes3d_kitti_camera_to_lidar(gt_boxes_camera, calib)
-            instance_index = np.asarray([int(sample_idx)*1000+int(index) for index in annos['index']])
+            instance_index = np.asarray([int(sample_idx) * 100 + int(index) for index in annos['index']])
             input_dict.update({
                 'gt_names': gt_names,
                 'gt_boxes': gt_boxes_lidar,
@@ -518,8 +517,7 @@ class KittiDatasetSSL(DatasetTemplate):
         """
         if self.training:
             assert 'gt_boxes' in data_dict, 'gt_boxes should be provided for training'
-            gt_boxes_mask = np.array([n in self.class_names for n in data_dict['gt_names']], dtype=np.bool_) #class filtering
-            assert data_dict['gt_boxes'].shape[0] == data_dict['instance_idx'].shape[0], "gt_boxes and instance_idx do not match"
+            gt_boxes_mask = np.array([n in self.class_names for n in data_dict['gt_names']], dtype=np.bool_)
             data_dict = self.data_augmentor.forward(
                 data_dict={
                     **data_dict,
@@ -527,8 +525,6 @@ class KittiDatasetSSL(DatasetTemplate):
                 },
                 no_db_sample=no_db_sample
             )
-            assert data_dict['gt_boxes'].shape[0] == data_dict['instance_idx'].shape[0], "gt_boxes and instance_idx do not match in prepare_data  ulb : {}".format(no_db_sample)
-            # print(data_dict)
             points_ema = data_dict['points'].copy()
             gt_boxes_ema = data_dict['gt_boxes'].copy()
             # Reverses the student's augmentations applied on points/gt_boxes. Thus, teacher's input has no augs.
@@ -588,7 +584,7 @@ class KittiDatasetSSL(DatasetTemplate):
             data_dict['voxels_ema'] = data_dict['voxels']
             data_dict['voxel_coords_ema'] = data_dict['voxel_coords']
             data_dict['voxel_num_points_ema'] = data_dict['voxel_num_points']
-            data_dict['instance_idx_ema'] = data_dict['instance_idx'][data_dict['data_processor_mask']]
+            data_dict['instance_idx_ema'] = data_dict['instance_idx']
 
             data_dict['points'] = data_dict['points_ema_wa']
             data_dict['gt_boxes'] = data_dict['gt_boxes_ema_wa']
@@ -613,8 +609,9 @@ class KittiDatasetSSL(DatasetTemplate):
             data_dict = self.data_processor.forward(
                 data_dict=data_dict
             )
-            data_dict['instance_idx'] = data_dict['instance_idx'][data_dict['data_processor_mask']]
-            assert data_dict['instance_idx'].shape[0] == data_dict['gt_boxes'].shape[0], "gt_boxes and instance_idx do not match in the end of prepare data"
+            data_dict['instance_idx'] = data_dict['instance_idx']
+            assert data_dict['instance_idx'].shape[0] == data_dict['gt_boxes'].shape[0],\
+                "gt_boxes and instance_idx do not match in the end of prepare data"
         '''if self.training:
             if no_db_sample:
                 data_dict['gt_boxes_ema'].fill(0)

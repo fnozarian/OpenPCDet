@@ -1,5 +1,3 @@
-import os 
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,13 +7,48 @@ from ...utils import box_coder_utils, common_utils, loss_utils
 from ..model_utils.model_nms_utils import class_agnostic_nms
 from .target_assigner.proposal_target_layer import ProposalTargetLayer
 from .target_assigner.proposal_target_layer_consistency import ProposalTargetLayerConsistency
-from ...ops.roiaware_pool3d import roiaware_pool3d_utils
+from stats_utils import metrics_registry
 
-from visual_utils import visualize_utils as V
+from collections import defaultdict
 
+def update_metrics(targets_dict, mask_type='cls'):
+    metrics_input = defaultdict(list)
 
+    for i, uind in enumerate(targets_dict['unlabeled_inds']):
+        mask = (targets_dict['reg_valid_mask'][uind] > 0) if mask_type == 'reg' else (
+                    targets_dict['rcnn_cls_labels'][uind] >= 0)
 
+        # (Proposals) ROI info
+        rois = targets_dict['rois'][uind][mask].detach().clone()
+        roi_labels = targets_dict['roi_labels'][uind][mask].unsqueeze(-1).detach().clone()
+        roi_scores = torch.sigmoid(targets_dict['roi_scores'])[uind][mask].detach().clone()
+        roi_sim_scores_multiclass = targets_dict['roi_sim_scores'][uind][mask].detach().clone()
+        roi_sim_scores, roi_sim_labels = torch.max(roi_sim_scores_multiclass, dim=-1)
+        roi_labeled_boxes = torch.cat([rois, roi_labels], dim=-1)
+        gt_iou_of_rois = targets_dict['gt_iou_of_rois'][uind][mask].unsqueeze(-1).detach().clone()
+        roi_weights = targets_dict['roi_weights'][uind][mask].detach().clone()
+        metrics_input['rois'].append(roi_labeled_boxes)
+        metrics_input['roi_scores'].append(roi_scores)
+        metrics_input['roi_sim_scores'].append(roi_sim_scores)
+        metrics_input['roi_sim_labels'].append(roi_sim_labels)
+        metrics_input['roi_iou_wrt_pl'].append(gt_iou_of_rois)
+        metrics_input['roi_weights'].append(roi_weights)
 
+        # Target info
+        target_labeled_boxes = targets_dict['gt_of_rois_src'][uind][mask].detach().clone()
+        target_scores = targets_dict['rcnn_cls_labels'][uind][mask].detach().clone()
+        metrics_input['roi_target_scores'].append(target_scores)
+
+        # (Real labels) GT info
+        gt_labeled_boxes = targets_dict['ori_unlabeled_boxes'][i]
+        metrics_input['ground_truths'].append(gt_labeled_boxes)
+
+        # RoI weights
+        target_weights = targets_dict['rcnn_cls_weights'][uind][mask].detach().clone()
+        metrics_input['roi_weights'].append(target_weights)
+
+    tag = f'rcnn_roi_pl_gt_metrics_{mask_type}'
+    metrics_registry.get(tag).update(**metrics_input)
 
 
 class RoIHeadTemplate(nn.Module):
@@ -79,10 +112,8 @@ class RoIHeadTemplate(nn.Module):
             return batch_dict
 
         batch_size = batch_dict['batch_size']
-
         batch_box_preds = batch_dict['batch_box_preds']
         batch_cls_preds = batch_dict['batch_cls_preds']
-
         rois = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_box_preds.shape[-1]))
         roi_scores = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
         roi_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
@@ -117,227 +148,6 @@ class RoIHeadTemplate(nn.Module):
         batch_dict.pop('batch_index', None)
         return batch_dict
 
-    def _override_unlabeled_target(self, targets_dict, batch_dict):
-        # merge rois_ema with rois in targets_dict
-        unlabeled_inds = batch_dict['unlabeled_inds']
-        targets_dict['unlabeled_inds'] = unlabeled_inds
-        num_rois = targets_dict['rois'].shape[1]
-        num_rois_ema = batch_dict['rois_ema'].shape[1]
-
-        # TODO(farzad) Expand the targets_dict tensors better/compacter.
-        if num_rois_ema > num_rois:  # Expand targets_dict tensors to hold teacher's rois
-            code_size = targets_dict['rois'].shape[-1]
-            batch_size = batch_dict['batch_size']
-
-            labeled_inds = torch.nonzero(batch_dict['labeled_mask']).squeeze(1).long()
-
-            batch_rois = targets_dict['rois'].new_zeros(batch_size, num_rois_ema, code_size)
-            batch_rois[labeled_inds, :num_rois] = targets_dict['rois'][labeled_inds]
-            targets_dict['rois'] = batch_rois
-
-            batch_gt_of_rois = targets_dict['gt_of_rois'].new_zeros(batch_size, num_rois_ema, code_size + 1)
-            batch_gt_of_rois[labeled_inds, :num_rois] = targets_dict['gt_of_rois'][labeled_inds]
-            targets_dict['gt_of_rois'] = batch_gt_of_rois
-
-            batch_gt_iou_of_rois = targets_dict['gt_iou_of_rois'].new_zeros(batch_size, num_rois_ema)
-            batch_gt_iou_of_rois[labeled_inds, :num_rois] = targets_dict['gt_iou_of_rois'][labeled_inds]
-            targets_dict['gt_iou_of_rois'] = batch_gt_iou_of_rois
-
-            batch_roi_labels = targets_dict['roi_labels'].new_zeros((batch_size, num_rois_ema), dtype=torch.long)
-            batch_roi_labels[labeled_inds, :num_rois] = targets_dict['roi_labels'][labeled_inds]
-            targets_dict['roi_labels'] = batch_roi_labels
-
-            batch_roi_scores = targets_dict['roi_scores'].new_zeros(batch_size, num_rois_ema)
-            batch_roi_scores[labeled_inds, :num_rois] = targets_dict['roi_scores'][labeled_inds]
-            targets_dict['roi_scores'] = batch_roi_scores
-
-            batch_rcnn_cls_labels = -1 * targets_dict['rcnn_cls_labels'].new_ones(batch_size, num_rois_ema)
-            batch_rcnn_cls_labels[labeled_inds, :num_rois] = targets_dict['rcnn_cls_labels'][labeled_inds]
-            targets_dict['rcnn_cls_labels'] = batch_rcnn_cls_labels
-
-            batch_reg_valid_mask = targets_dict['reg_valid_mask'].new_zeros(batch_size, num_rois_ema)
-            batch_reg_valid_mask[labeled_inds, :num_rois] = targets_dict['reg_valid_mask'][labeled_inds]
-            targets_dict['reg_valid_mask'] = batch_reg_valid_mask
-
-            batch_interval_mask = targets_dict['interval_mask'].new_zeros(batch_size, num_rois_ema)
-            batch_interval_mask[labeled_inds, :num_rois] = targets_dict['interval_mask'][labeled_inds]
-            targets_dict['interval_mask'] = batch_interval_mask
-
-
-        targets_dict['rois'][unlabeled_inds, :num_rois_ema] = batch_dict['rois_ema'][unlabeled_inds]
-        # TODO(farzad) WARNING:roi_scores are not normalized for the un/labeled data! Ignored bc it's not used in losses.
-        targets_dict['roi_scores'][unlabeled_inds, :num_rois_ema] = batch_dict['roi_scores_ema'][unlabeled_inds]
-        targets_dict['roi_labels'][unlabeled_inds, :num_rois_ema] = batch_dict['roi_labels_ema'][unlabeled_inds]
-        targets_dict['gt_of_rois'][unlabeled_inds, :num_rois_ema] = batch_dict['gt_boxes'][unlabeled_inds]
-        targets_dict['rcnn_cls_labels'][unlabeled_inds, :num_rois_ema] = batch_dict['pred_scores_ema'][unlabeled_inds]
-        # TODO(farzad) fixed FG threshold.
-        targets_dict['reg_valid_mask'][unlabeled_inds, :num_rois_ema] = torch.ge(batch_dict['pred_scores_ema'][unlabeled_inds], 0.7).long()
-        targets_dict['rcnn_cls_labels'][unlabeled_inds, num_rois_ema:] = -1
-        targets_dict['reg_valid_mask'][unlabeled_inds, num_rois_ema:] = 0
-        targets_dict['gt_iou_of_rois'][unlabeled_inds, :num_rois_ema] = 0
-
-        if 'pred_scores_ema_var' in batch_dict.keys():
-            targets_dict['rcnn_cls_labels_var'] = torch.zeros_like(targets_dict['rcnn_cls_labels'])
-            targets_dict['rcnn_cls_labels_var'][unlabeled_inds, :num_rois_ema] = batch_dict['pred_scores_ema_var'][
-                unlabeled_inds]
-        if 'pred_boxes_ema_var' in batch_dict.keys():
-            targets_dict['gt_of_rois_var'] = torch.zeros_like(targets_dict['gt_of_rois'])
-            # Setting all output dims' var to predicted var except for class label
-            targets_dict['gt_of_rois_var'][unlabeled_inds, :num_rois_ema, :-1] = batch_dict['pred_boxes_ema_var'][
-                unlabeled_inds]
-
-    def update_metrics(self, targets_dict, mask_type='cls', vis_type='pred_gt', pred_type=None):
-        metric_registry = targets_dict['metric_registry']
-        unlabeled_inds = targets_dict['unlabeled_inds']
-
-        sample_preds, sample_pred_scores, sample_pred_weights = [], [], []
-        sample_rois, sample_roi_scores = [], []
-        sample_targets, sample_target_scores = [], []
-        sample_pls, sample_pl_scores = [], []
-        ema_preds_of_std_rois, ema_pred_scores_of_std_rois = [], []
-        sample_gts = []
-        sample_gt_iou_of_rois = []
-        sample_cos_scores = []
-        sample_cos_scores_car_pool = []
-        sample_cos_scores_ped_pool = []
-        sample_cos_scores_cyc_pool = []
-        sample_cos_scores_car_sh =  []
-        sample_cos_scores_ped_sh = []
-        sample_cos_scores_cyc_sh = []
-    
-        for i, uind in enumerate(unlabeled_inds):
-            mask = (targets_dict['reg_valid_mask'][uind] > 0) if mask_type == 'reg' else (
-                        targets_dict['rcnn_cls_labels'][uind] >= 0)
-
-            # (Proposals) ROI info
-            rois = targets_dict['rois'][uind][mask].detach().clone()
-            roi_labels = targets_dict['roi_labels'][uind][mask].unsqueeze(-1).detach().clone()
-            roi_scores = torch.sigmoid(targets_dict['roi_scores'])[uind][mask].detach().clone()
-            roi_labeled_boxes = torch.cat([rois, roi_labels], dim=-1)
-            gt_iou_of_rois = targets_dict['gt_iou_of_rois'][uind][mask].unsqueeze(-1).detach().clone()
-            sample_rois.append(roi_labeled_boxes)
-            sample_roi_scores.append(roi_scores)
-            sample_gt_iou_of_rois.append(gt_iou_of_rois)
-            # Target info
-            target_labeled_boxes = targets_dict['gt_of_rois_src'][uind][mask].detach().clone()
-            target_scores = targets_dict['rcnn_cls_labels'][uind][mask].detach().clone()
-            sample_targets.append(target_labeled_boxes)
-            sample_target_scores.append(target_scores)
-
-            # Pred info
-            pred_boxes = targets_dict['batch_box_preds'][uind][mask].detach().clone()
-            pred_scores = torch.sigmoid(targets_dict['rcnn_cls']).view_as(targets_dict['rcnn_cls_labels'])[uind][mask].detach().clone()
-            pred_labeled_boxes = torch.cat([pred_boxes, roi_labels], dim=-1)
-            sample_preds.append(pred_labeled_boxes)
-            sample_pred_scores.append(pred_scores)
-
-            # Cosine similarity
-            cos_scores = targets_dict['cos_scores'][uind][mask].detach().clone()
-            sample_cos_scores.append(cos_scores)
-            car_cos_scores_pool = targets_dict['cos_scores_car_pool'][uind][mask].detach().clone()
-            ped_cos_scores_pool = targets_dict['cos_scores_ped_pool'][uind][mask].detach().clone()
-            cyc_cos_scores_pool = targets_dict['cos_scores_cyc_pool'][uind][mask].detach().clone()
-            sample_cos_scores_car_pool.append(car_cos_scores_pool)
-            sample_cos_scores_ped_pool.append(ped_cos_scores_pool)
-            sample_cos_scores_cyc_pool.append(cyc_cos_scores_pool)
-            car_cos_scores_sh = targets_dict['cos_scores_car_sh'][uind][mask].detach().clone()
-            ped_cos_scores_sh = targets_dict['cos_scores_ped_sh'][uind][mask].detach().clone()
-            cyc_cos_scores_sh = targets_dict['cos_scores_cyc_sh'][uind][mask].detach().clone()
-            sample_cos_scores_car_sh.append(car_cos_scores_sh)
-            sample_cos_scores_ped_sh.append(ped_cos_scores_sh)
-            sample_cos_scores_cyc_sh.append(cyc_cos_scores_sh)
-
-            # (Real labels) GT info
-            gt_labeled_boxes = targets_dict['ori_unlabeled_boxes'][i]
-            sample_gts.append(gt_labeled_boxes)
-
-            # (Pseudo labels) PL info
-            pl_labeled_boxes = targets_dict['pl_boxes'][uind]
-            pl_scores = targets_dict['pl_scores'][i]
-            sample_pls.append(pl_labeled_boxes)
-            sample_pl_scores.append(pl_scores)
-
-            # Teacher refinements (Preds) of student's rois
-            if 'ema_gt' in pred_type and self.get('ENABLE_SOFT_TEACHER', False):
-                pred_boxes_ema = targets_dict['batch_box_preds_teacher'][uind][mask].detach().clone()
-                pred_labeled_boxes_ema = torch.cat([pred_boxes_ema, roi_labels], dim=-1)
-                pred_scores_ema = targets_dict['rcnn_cls_score_teacher'][uind][mask].detach().clone()
-                ema_preds_of_std_rois.append(pred_labeled_boxes_ema)
-                ema_pred_scores_of_std_rois.append(pred_scores_ema)
-            if self.model_cfg.get('ENABLE_SOFT_TEACHER', False):
-                pred_weights = targets_dict['rcnn_cls_weights'][uind][mask].detach().clone()
-                sample_pred_weights.append(pred_weights)
-            if self.model_cfg.get('ENABLE_VIS', False):
-                points_mask = targets_dict['points'][:, 0] == uind
-                points = targets_dict['points'][points_mask, 1:]
-                gt_boxes = gt_labeled_boxes[:, :-1]  # Default GT option
-                if vis_type == 'roi_gt':
-                    vis_pred_boxes = roi_labeled_boxes[:, :-1]
-                    vis_pred_scores = roi_scores
-                elif vis_type == 'roi_pl':
-                    vis_pred_boxes = roi_labeled_boxes[:, :-1]
-                    vis_pred_scores = roi_scores
-                    gt_boxes = pl_labeled_boxes[:, :-1]
-                elif vis_type == 'target_gt':
-                    vis_pred_boxes = target_labeled_boxes[:, :-1]
-                    vis_pred_scores = target_scores
-                elif vis_type == 'pred_gt':
-                    vis_pred_boxes = pred_boxes
-                    vis_pred_scores = pred_scores
-                elif vis_type == 'ema_gt' and self.model_cfg.get('ENABLE_SOFT_TEACHER', False):
-                    vis_pred_boxes = targets_dict['batch_box_preds_teacher'][uind][mask].detach().clone()
-                    vis_pred_scores = targets_dict['rcnn_cls_score_teacher'][uind][mask].detach().clone()
-                else:
-                    raise ValueError(vis_type)
-
-                V.vis(points, gt_boxes=gt_boxes, pred_boxes=vis_pred_boxes,
-                      pred_scores=vis_pred_scores, pred_labels=roi_labels.view(-1),
-                      filename=f'vis_{vis_type}_{uind}.png')
-
-        sample_pred_weights = sample_pred_weights if len(sample_pred_weights) > 0 else None
-
-        if 'pred_gt' in pred_type:
-            tag = f'rcnn_pred_gt_metrics_{mask_type}'
-            metrics = metric_registry.get(tag)
-            metric_inputs = {'preds': sample_preds, 'pred_scores': sample_pred_scores, 'rois': sample_rois,
-                             'roi_scores': sample_roi_scores, 'ground_truths': sample_gts,
-                             'targets': sample_targets, 'target_scores': sample_target_scores,
-                             'pred_weights': sample_pred_weights}
-            metrics.update(**metric_inputs)
-        if 'ema_gt' in pred_type and self.model_cfg.get('ENABLE_SOFT_TEACHER', False):
-            tag = f'rcnn_ema_gt_metrics_{mask_type}'
-            metrics_ema = metric_registry.get(tag)
-            metric_inputs_ema = {'preds': ema_preds_of_std_rois, 'pred_scores': ema_pred_scores_of_std_rois,
-                                 'ground_truths': sample_gts, 'pred_weights': sample_pred_weights}
-            metrics_ema.update(**metric_inputs_ema)
-        if 'roi_pl' in pred_type:
-            tag = f'rcnn_roi_pl_metrics_{mask_type}'
-            metrics_roi_pl = metric_registry.get(tag)
-            metric_inputs_roi_pl = {'preds': sample_rois, 'pred_scores': sample_roi_scores, 'ground_truths': sample_pls,
-                                    'targets': sample_targets, 'target_scores': sample_target_scores,
-                                    'pred_weights': sample_pred_weights}
-            metrics_roi_pl.update(**metric_inputs_roi_pl)
-        if 'pred_pl' in pred_type:
-            tag = f'rcnn_pred_pl_metrics_{mask_type}'
-            metrics_pred_pl = metric_registry.get(tag)
-            metric_inputs_pred_pl = {'preds': sample_preds, 'pred_scores': sample_pred_scores, 'rois': sample_rois,
-                                     'roi_scores': sample_roi_scores, 'ground_truths': sample_pls,
-                                     'targets': sample_targets, 'target_scores': sample_target_scores,
-                                     'pred_weights': sample_pred_weights}
-            metrics_pred_pl.update(**metric_inputs_pred_pl)
-        if 'roi_pl_gt' in pred_type:
-            tag = f'rcnn_roi_pl_gt_metrics_{mask_type}'
-            metrics = metric_registry.get(tag)
-            metric_inputs = {'preds': sample_rois, 'pred_scores': sample_roi_scores,
-                             'ground_truths': sample_gts, 'targets': sample_targets,
-                             'pseudo_labels': sample_pls, 'pseudo_label_scores': sample_pl_scores,
-                             'target_scores': sample_target_scores, 'pred_weights': sample_pred_weights,
-                             'pred_iou_wrt_pl': sample_gt_iou_of_rois,'cos_scores': sample_cos_scores,
-                             'cos_scores_car_pool': sample_cos_scores_car_pool, 'cos_scores_ped_pool': sample_cos_scores_ped_pool,
-                             'cos_scores_cyc_pool': sample_cos_scores_cyc_pool,'cos_scores_car_sh': sample_cos_scores_car_sh,
-                             'cos_scores_ped_sh': sample_cos_scores_ped_sh, 'cos_scores_cyc_sh': sample_cos_scores_cyc_sh}
-            metrics.update(**metric_inputs)
-
     def assign_targets(self, batch_dict):
 
         with torch.no_grad():
@@ -347,14 +157,6 @@ class RoIHeadTemplate(nn.Module):
 
         # Adding points temporarily to the targets_dict for visualization inside update_metrics
         targets_dict['points'] = batch_dict['points']
-
-        # Extract number of points in ROIs
-        if batch_dict['store_scores_in_pkl']:
-            num_point_in_rois = roiaware_pool3d_utils.points_in_boxes_cpu(targets_dict['points'][:, 1:4].cpu(),
-                                                                        targets_dict['rois'].view(-1,7).cpu()).squeeze(0).sum(1)
-            targets_dict['num_points_in_roi'] = num_point_in_rois.reshape(targets_dict['rois'].shape[0], \
-                                                                        targets_dict['rois'].shape[1])
-
         rois = targets_dict['rois']  # (B, N, 7 + C)
         gt_of_rois = targets_dict['gt_of_rois']  # (B, N, 7 + C + 1)
         targets_dict['gt_of_rois_src'] = gt_of_rois.clone().detach()
@@ -419,14 +221,6 @@ class RoIHeadTemplate(nn.Module):
         rcnn_reg = forward_ret_dict['rcnn_reg']  # (rcnn_batch_size, C)
         roi_boxes3d = forward_ret_dict['rois']
         rcnn_batch_size = gt_boxes3d_ct.view(-1, code_size).shape[0]
-
-        if 'gt_of_rois_var' in forward_ret_dict.keys() and loss_cfgs.get('USE_BOX_REG_VAR', False):
-            gt_of_rois_var = forward_ret_dict['gt_of_rois_var'][..., 0:code_size]
-            box_var = gt_of_rois_var.view_as(rcnn_reg)
-            box_var = torch.clamp(box_var, min=1e-6, max=1)
-        else:
-            box_var = torch.ones_like(rcnn_reg)
-
         batch_size = forward_ret_dict['reg_valid_mask'].shape[0]
 
         fg_mask = (reg_valid_mask > 0)
@@ -456,8 +250,7 @@ class RoIHeadTemplate(nn.Module):
             else:
                 fg_sum_ = fg_mask.reshape(batch_size, -1).long().sum(-1)
                 rcnn_loss_reg = (rcnn_loss_reg.view(rcnn_batch_size, -1) *
-                                 fg_mask.unsqueeze(dim=-1).float() *
-                                 (1 / box_var)).reshape(batch_size, -1).sum(-1) / torch.clamp(fg_sum_.float(), min=1.0)
+                                 fg_mask.unsqueeze(dim=-1).float()).reshape(batch_size, -1).sum(-1) / torch.clamp(fg_sum_.float(), min=1.0)
             rcnn_loss_reg = rcnn_loss_reg * loss_cfgs.LOSS_WEIGHTS['rcnn_reg_weight']
             tb_dict['rcnn_loss_reg'] = rcnn_loss_reg.item() if scalar else rcnn_loss_reg
 
@@ -727,10 +520,10 @@ class RoIHeadTemplate(nn.Module):
         self.pre_loss_filtering()
 
         if self.model_cfg.get("ENABLE_EVAL", None):
-            # self.update_metrics(self.forward_ret_dict, mask_type='reg')
+            # update_metrics(self.forward_ret_dict, mask_type='reg')
             metrics_pred_types = self.model_cfg.get("METRICS_PRED_TYPES", None)
             if metrics_pred_types is not None:
-                self.update_metrics(self.forward_ret_dict, mask_type='cls', pred_type=metrics_pred_types, vis_type='roi_pl')
+                update_metrics(self.forward_ret_dict, mask_type='cls')
 
         rcnn_loss_cls, cls_tb_dict = self.get_box_cls_layer_loss(self.forward_ret_dict, scalar=scalar)
         rcnn_loss_reg, reg_tb_dict = self.get_box_reg_layer_loss(self.forward_ret_dict, scalar=scalar)

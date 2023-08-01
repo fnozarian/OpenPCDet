@@ -3,20 +3,16 @@ import os
 import pickle
 import numpy as np
 import torch
-import torch.nn.functional as F
 from pcdet.datasets.augmentor import augmentor_utils
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
-import torch.distributed as dist
-from ...utils import common_utils
 from .detector3d_template import Detector3DTemplate
-from collections import defaultdict
-from.pv_rcnn import PVRCNN
-from ...utils.stats_utils import KITTIEvalMetrics, PredQualityMetrics
-from torchmetrics.collections import MetricCollection
-import torch.distributed as dist
-from visual_utils import visualize_utils as V
-from ...utils.prototype_utils import Prototype
+from .pv_rcnn import PVRCNN
 
+import common_utils
+from stats_utils import metrics_registry
+from prototype_utils import feature_bank_registry
+
+from visual_utils import visualize_utils as V
 
 def _to_dict_of_tensors(list_of_dicts, agg_mode='stack'):
     new_dict = {}
@@ -99,50 +95,6 @@ def _max_score_replacement(batch_dict_a, batch_dict_b, unlabeled_inds, score_key
     for key in keys:
         batch_dict_a[key][unlabeled_inds] = batch_dict_cat[key][unlabeled_inds, ..., max_inds]
 
-class DynamicPrototype(object):
-    def __init__(self, **kwargs):
-        self._tag_metrics = {}
-        self.dataset = kwargs.get('dataset', None)
-        self.model_cfg = kwargs.get('model_cfg', None)
-    
-    def get(self, tag=None,file=None):
-        if tag is None:
-            tag = 'default'
-        if tag in self._tag_metrics.keys():
-            metric = self._tag_metrics[tag]  
-        else:
-            assert file, "instance is created for the first time, Pkl file needed"
-            metric = Prototype(tag=tag, dataset=self.dataset, config=self.model_cfg,file=file)
-            self._tag_metrics[tag] = metric
-        return metric
-    
-    def tags(self):
-        return self._tag_metrics.keys()
-
-# TODO(farzad) refactor this with global registry, accessible in different places, not via passing through batch_dict
-class MetricRegistry(object):
-    def __init__(self, **kwargs):
-        self._tag_metrics = {}
-        self.dataset = kwargs.get('dataset', None)
-        self.cls_bg_thresh = kwargs.get('cls_bg_thresh', None)
-        self.model_cfg = kwargs.get('model_cfg', None)
-    def get(self, tag=None):
-        if tag is None:
-            tag = 'default'
-        if tag in self._tag_metrics.keys():
-            metric = self._tag_metrics[tag]
-        else:
-            kitti_eval_metric = KITTIEvalMetrics(tag=tag, dataset=self.dataset, config=self.model_cfg)
-            pred_qual_metric = PredQualityMetrics(tag=tag, dataset=self.dataset, cls_bg_thresh=self.cls_bg_thresh, config=self.model_cfg)
-            metric = MetricCollection({"kitti_eval_metric": kitti_eval_metric,
-                                       "pred_quality_metric": pred_qual_metric})
-            self._tag_metrics[tag] = metric
-        return metric
-
-    def tags(self):
-        return self._tag_metrics.keys()
-
-
 
 class PVRCNN_SSL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -158,8 +110,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.add_module('pv_rcnn', self.pv_rcnn)
         self.add_module('pv_rcnn_ema', self.pv_rcnn_ema)
         self.accumulated_itr = 0
-        # self.module_list = self.build_networks()
-        # self.module_list_ema = self.build_networks()
+
         self.thresh = model_cfg.THRESH
         self.sem_thresh = model_cfg.SEM_THRESH
         self.unlabeled_supervise_cls = model_cfg.UNLABELED_SUPERVISE_CLS
@@ -167,24 +118,16 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.unlabeled_weight = model_cfg.UNLABELED_WEIGHT
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
-        cls_bg_thresh = model_cfg.ROI_HEAD.TARGET_CONFIG.CLS_BG_THRESH
-        self.metric_registry = MetricRegistry(dataset=self.dataset, model_cfg=model_cfg)
-        self.labeled_template = DynamicPrototype(dataset=self.dataset, model_cfg=model_cfg).get(tag=f'labeled_prototype',file='only_sh_cls_100.pkl') 
-        self.labeled_prototype = self.labeled_template.rcnn_sh_mean #base prototype
-        self.unlabeled_template = DynamicPrototype(dataset=self.dataset, model_cfg=model_cfg).get(tag=f'unlabeled_prototype',file='only_sh_cls_100.pkl')
-        self.unlabeled_prototype = self.unlabeled_template.rcnn_sh_mean #base prototype same as labeled #TODO: ignore base prototype for ulb if needed
+
+        for bank_configs in model_cfg.get("FEATURE_BANK_LIST", []):
+            if bank_configs.get("BANK_SIZE", None) is None:
+                bank_configs["BANK_SIZE"] = sum(self.dataset.class_counter[cls] for cls in self.dataset.class_names)
+            feature_bank_registry.register(tag=bank_configs["NAME"], **bank_configs)
+
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores', 
                         'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels',
                         'iteration']
         self.val_dict = {val: [] for val in vals_to_store}
-        self.classes = ['Car','Ped','Cyc']
-        self.features_to_update_lb = []
-        self.labels_to_update_lb = []
-        self.features_to_update_ulb = []
-        self.labels_to_update_ulb = []
-        self.momentum = 0.9
-        self.scenes = {}
-
 
     def forward(self, batch_dict):
         if self.training:
@@ -203,80 +146,23 @@ class PVRCNN_SSL(Detector3DTemplate):
                 else:
                     batch_dict_ema[k] = batch_dict[k]
 
-            gt_boxes_check = torch.any(batch_dict['gt_boxes']!=0,dim=-1)
-            instance_idx_check = batch_dict['instance_idx']!=0
-            assert torch.all(gt_boxes_check[labeled_inds] == instance_idx_check[labeled_inds]), "gt_boxes and instance_idx should have the same length for labeled data" 
-            # assert torch.all(gt_boxes_check[unlabeled_inds] == instance_idx_check[unlabeled_inds]), "gt_boxes and instance_idx should have the same length for ulb" TODO: fix the assert for ulb. currently it fails after 10+ iterations
-            gt_boxes_check = torch.any(batch_dict_ema['gt_boxes']!=0,dim=-1)
-            instance_idx_check = batch_dict_ema['instance_idx']!=0
-            assert torch.all(gt_boxes_check[labeled_inds] == instance_idx_check[labeled_inds]), "gt_boxes and instance_idx should have the same length for labeled data wa" 
-            # assert torch.all(gt_boxes_check[unlabeled_inds] == instance_idx_check[unlabeled_inds]), "gt_boxes and instance_idx should have the same length for ulb wa"    TODO: fix the assert for ulb. currently it fails after 10+ iterations  
-            # Create new dict for weakly aug.(WA) data for teacher - Eg. flip along x axis
-            batch_dict_ema_wa = {}
-            # If ENABLE_RELIABILITY is True, run WA (Humble Teacher) along with original teacher
-            if self.model_cfg['ROI_HEAD'].get('ENABLE_RELIABILITY', False):
-                keys = list(batch_dict.keys())
-                for k in keys:
-                    if k + '_ema_wa' in keys:
-                        continue
-                    if k.endswith('_ema_wa'):
-                        batch_dict_ema_wa[k[:-7]] = batch_dict[k]
-                    else:
-                        # TODO(farzad) Warning! Here flip_x values are copied from _ema to _ema_wa which is not correct!
-                        batch_dict_ema_wa[k] = batch_dict[k]
-
-                with torch.no_grad():
-                    self.pv_rcnn_ema.train()
-                    for cur_module in self.pv_rcnn_ema.module_list:
-                        # Do not use RPN to produce rois for WA image, instead augment (eg. flip)
-                        # the proposal coord. of P horizontally to obtain P^
-                        try:
-                            batch_dict_ema = cur_module(batch_dict_ema, disable_gt_roi_when_pseudo_labeling=True)
-                            if cur_module.model_cfg['NAME'] == 'AnchorHeadSingle':
-                                # Use proposals generated from original (non-augmented) input
-                                # to pool features generated from weakly-augmented input
-                                # Note that the proposals should be (weakly-) augmented before pooling!
-                                batch_dict_ema_wa['batch_cls_preds'] = batch_dict_ema[
-                                    'batch_cls_preds'].clone().detach()
-                                batch_dict_ema_wa['batch_box_preds'] = batch_dict_ema[
-                                    'batch_box_preds'].clone().detach()
-                                batch_dict_ema_wa['cls_preds_normalized'] = batch_dict_ema['cls_preds_normalized']
-
-                                enable = [1] * len(unlabeled_inds)
-                                batch_dict_ema_wa['batch_box_preds'][unlabeled_inds] = augmentor_utils.random_flip_along_x_bbox(
-                                    batch_dict_ema_wa['batch_box_preds'][unlabeled_inds],
-                                    enables=enable)
-                            else:
-                                batch_dict_ema_wa = cur_module(batch_dict_ema_wa, disable_gt_roi_when_pseudo_labeling=True)
-                        except:
-                            # TODO(farzad) we can concat both batch_dict_ema and batch_dict_ema_wa and
-                            #  do a forward pass once. Requires more GPU memory, but faster!
-                            batch_dict_ema = cur_module(batch_dict_ema)
-                            batch_dict_ema_wa = cur_module(batch_dict_ema_wa)
-                    # Reverse preds of wa input to match their original (no-aug) preds
-                    batch_dict_ema_wa['batch_box_preds'][unlabeled_inds] = augmentor_utils.random_flip_along_x_bbox(
-                        batch_dict_ema_wa['batch_box_preds'][unlabeled_inds], [1] * len(unlabeled_inds))
-
-                    # pseudo-labels used for training rpn head
-                    pred_dicts_ens = self.ensemble_post_processing(batch_dict_ema, batch_dict_ema_wa, unlabeled_inds,
-                                                                   ensemble_option='mean_pre_nms')
-            # Else, run the original teacher only
-            else:
-                with torch.no_grad():
-                    for cur_module in self.pv_rcnn_ema.module_list:
-                        try:
-                            batch_dict_ema = cur_module(batch_dict_ema, disable_gt_roi_when_pseudo_labeling=True)
-                        except:
-                            batch_dict_ema = cur_module(batch_dict_ema)
-                pred_dicts_ens, recall_dicts_ema = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True,
-                                                                                    override_thresh=0.0,
-                                                                                    no_nms_for_unlabeled=self.no_nms)
+            with torch.no_grad():
+                self.pv_rcnn_ema.eval()
+                for cur_module in self.pv_rcnn_ema.module_list:
+                    try:
+                        batch_dict_ema = cur_module(batch_dict_ema, pseudo_labeling_phase=True)
+                    except TypeError as e:
+                        print(e)
+                        batch_dict_ema = cur_module(batch_dict_ema)
+            pred_dicts_ens, recall_dicts_ema = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True,
+                                                                                override_thresh=0.0,
+                                                                                no_nms_for_unlabeled=self.no_nms)
 
             # Used for calc stats before and after filtering
             ori_unlabeled_boxes = batch_dict['gt_boxes'][unlabeled_inds, ...]
-            if self.model_cfg.ROI_HEAD.get("ENABLE_EVAL", False):
-                # PL metrics before filtering
-                self.update_metrics(batch_dict, pred_dicts_ens, unlabeled_inds, labeled_inds)
+            # if self.model_cfg.ROI_HEAD.get("ENABLE_EVAL", False):
+            #     # PL metrics before filtering
+            #     self.update_metrics(batch_dict, pred_dicts_ens, unlabeled_inds, labeled_inds)
 
             pseudo_boxes, pseudo_scores, pseudo_sem_scores, pseudo_boxes_var, pseudo_scores_var = \
                 self._filter_pseudo_labels(pred_dicts_ens, unlabeled_inds)
@@ -305,11 +191,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             #                  'pred_sem_scores': pseudo_sem_scores}
             # self.metrics['after_filtering'].update(**metric_inputs)  # commented to reduce complexity.
 
-            batch_dict['metric_registry'] = self.metric_registry
             batch_dict['ori_unlabeled_boxes'] = ori_unlabeled_boxes
-            batch_dict['store_scores_in_pkl'] = self.model_cfg.STORE_SCORES_IN_PKL
-            batch_dict['labeled_prototype'] = self.labeled_prototype 
-            batch_dict['unlabeled_prototype'] = self.unlabeled_prototype 
+
             for cur_module in self.pv_rcnn.module_list:
                 if cur_module.model_cfg['NAME'] == 'PVRCNNHead' and self.model_cfg['ROI_HEAD'].get('ENABLE_RCNN_CONSISTENCY', False):
                     # Pass teacher's proposal to the student.
@@ -358,14 +241,13 @@ class PVRCNN_SSL(Detector3DTemplate):
             self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = unlabeled_inds
             self.pv_rcnn.roi_head.forward_ret_dict['pl_boxes'] = batch_dict['gt_boxes']
             self.pv_rcnn.roi_head.forward_ret_dict['pl_scores'] = pseudo_scores
-    
-            pred_dicts_prototype, recall_dicts_prototype = self.pv_rcnn.post_processing(batch_dict,return_selected=True)
-            # self.update_feature_prototype(batch_dict, pred_dicts_prototype) #TODO: Deepika, must uncomment for ema update on shared prototype. commented for comparision of static prototypes of both pooled and shared features
+
             if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False):
                 # using teacher to evaluate student's bg/fg proposals through its rcnn head
                 with torch.no_grad():
                     batch_dict_std = {}
                     batch_dict_std['unlabeled_inds'] = batch_dict['unlabeled_inds']
+                    batch_dict_std['labeled_inds'] = batch_dict['labeled_inds']
                     batch_dict_std['rois'] = batch_dict['rois'].data.clone()
                     batch_dict_std['roi_scores'] = batch_dict['roi_scores'].data.clone()
                     batch_dict_std['roi_labels'] = batch_dict['roi_labels'].data.clone()
@@ -385,8 +267,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                         batch_dict_std['rois'][unlabeled_inds] = \
                             augment_rois(batch_dict_std['rois'][unlabeled_inds], self.model_cfg.ROI_HEAD)
 
-                    self.pv_rcnn_ema.roi_head.forward(batch_dict_std,
-                                                      disable_gt_roi_when_pseudo_labeling=True)
+                    self.pv_rcnn_ema.roi_head.forward(batch_dict_std, pseudo_labeling_phase=True)
                     batch_dict_std = self.apply_augmentation(batch_dict_std, batch_dict, unlabeled_inds, key='batch_box_preds')
 
                     pred_dicts_std, recall_dicts_std = self.pv_rcnn_ema.post_processing(batch_dict_std,
@@ -442,79 +323,13 @@ class PVRCNN_SSL(Detector3DTemplate):
                     tb_dict_[key] = tb_dict[key]
 
             if self.model_cfg.get('STORE_SCORES_IN_PKL', False) :
-                # Store different types of scores over all itrs and epochs and dump them in a pickle for offline modeling 
-                # TODO (shashank) : Can be optimized later to save computational time, currently takes about 0.002sec
-                batch_roi_labels = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'][unlabeled_inds]
-                batch_roi_labels = [roi_labels.clone().detach() for roi_labels in batch_roi_labels]
+                self.dump_statistics(batch_dict, unlabeled_inds)
 
-                batch_rois = self.pv_rcnn.roi_head.forward_ret_dict['rois'][unlabeled_inds]
-                batch_rois = [rois.clone().detach() for rois in batch_rois]
+            for tag in metrics_registry.tags():
+                results = metrics_registry.get(tag).compute()
+                tb_dict_.update({tag + "/" + k: v for k, v in results.items()})
 
-                batch_ori_gt_boxes = self.pv_rcnn.roi_head.forward_ret_dict['ori_unlabeled_boxes']
-                batch_ori_gt_boxes = [ori_gt_boxes.clone().detach() for ori_gt_boxes in batch_ori_gt_boxes]
-
-                for i in range(len(batch_rois)):
-                    valid_rois_mask = torch.logical_not(torch.all(batch_rois[i] == 0, dim=-1))
-                    valid_rois = batch_rois[i][valid_rois_mask]
-                    valid_roi_labels = batch_roi_labels[i][valid_rois_mask]
-                    valid_roi_labels -= 1                                   # Starting class indices from zero
-
-                    valid_gt_boxes_mask = torch.logical_not(torch.all(batch_ori_gt_boxes[i] == 0, dim=-1))
-                    valid_gt_boxes = batch_ori_gt_boxes[i][valid_gt_boxes_mask]
-                    valid_gt_boxes[:, -1] -= 1                              # Starting class indices from zero
-
-                    num_gts = valid_gt_boxes_mask.sum()
-                    num_preds = valid_rois_mask.sum()
-
-                    cur_unlabeled_ind = unlabeled_inds[i]
-                    if num_gts > 0 and num_preds > 0:
-                        # Find IoU between Student's ROI v/s Original GTs
-                        overlap = iou3d_nms_utils.boxes_iou3d_gpu(valid_rois[:, 0:7], valid_gt_boxes[:, 0:7])
-                        preds_iou_max, assigned_gt_inds = overlap.max(dim=1)
-                        self.val_dict['iou_roi_gt'].extend(preds_iou_max.tolist())
-
-                        cur_iou_roi_pl = self.pv_rcnn.roi_head.forward_ret_dict['gt_iou_of_rois'][cur_unlabeled_ind]
-                        self.val_dict['iou_roi_pl'].extend(cur_iou_roi_pl.tolist())
-
-                        cur_pred_score = torch.sigmoid(batch_dict['batch_cls_preds'][cur_unlabeled_ind]).squeeze()
-                        self.val_dict['pred_scores'].extend(cur_pred_score.tolist())
-
-                        if 'rcnn_cls_score_teacher' in self.pv_rcnn.roi_head.forward_ret_dict:
-                            cur_teacher_pred_score = self.pv_rcnn.roi_head.forward_ret_dict['rcnn_cls_score_teacher'][cur_unlabeled_ind]
-                            self.val_dict['teacher_pred_scores'].extend(cur_teacher_pred_score.tolist())
-
-                            cur_weight = self.pv_rcnn.roi_head.forward_ret_dict['rcnn_cls_weights'][cur_unlabeled_ind]
-                            self.val_dict['weights'].extend(cur_weight.tolist())
-
-                        cur_roi_score =  torch.sigmoid(self.pv_rcnn.roi_head.forward_ret_dict['roi_scores'][cur_unlabeled_ind])
-                        self.val_dict['roi_scores'].extend(cur_roi_score.tolist())
-
-                        cur_pcv_score = self.pv_rcnn.roi_head.forward_ret_dict['pcv_scores'][cur_unlabeled_ind]
-                        self.val_dict['pcv_scores'].extend(cur_pcv_score.tolist())
-
-                        cur_num_points_roi = self.pv_rcnn.roi_head.forward_ret_dict['num_points_in_roi'][cur_unlabeled_ind]
-                        self.val_dict['num_points_in_roi'].extend(cur_num_points_roi.tolist())
-
-                        cur_roi_label = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'][cur_unlabeled_ind].squeeze()
-                        self.val_dict['class_labels'].extend(cur_roi_label.tolist())
-
-                        cur_iteration = torch.ones_like(preds_iou_max) * (batch_dict['cur_iteration'])
-                        self.val_dict['iteration'].extend(cur_iteration.tolist())
-
-                # replace old pickle data (if exists) with updated one 
-                output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
-                file_path = os.path.join(output_dir, 'scores.pkl')
-                pickle.dump(self.val_dict, open(file_path, 'wb'))
-
-            for key in self.metric_registry.tags():
-                metrics = self.compute_metrics(tag=key)
-                tb_dict_.update(metrics)
-
-            if dist.is_initialized():
-                rank = os.getenv('RANK')
-                tb_dict_[f'bs_rank_{rank}'] = int(batch_dict['gt_boxes'].shape[0])
-            else:
-                tb_dict_[f'bs'] = int(batch_dict['gt_boxes'].shape[0])
+            # feature_bank_registry.update(batch_dict['cur_iteration'])
 
             ret_dict = {
                 'loss': loss
@@ -535,72 +350,103 @@ class PVRCNN_SSL(Detector3DTemplate):
                              'pred_scores': pseudo_scores,
                              'ground_truths': gt_boxes}
 
-            self.metric_registry.get('test').update(**metric_inputs)
+            metrics_registry.get('test').update(**metric_inputs)
 
             return pred_dicts, recall_dicts, {}
+    def dump_statistics(self, batch_dict, unlabeled_inds):
+        # Store different types of scores over all itrs and epochs and dump them in a pickle for offline modeling
+        # TODO (shashank) : Can be optimized later to save computational time, currently takes about 0.002sec
+        batch_roi_labels = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'][unlabeled_inds]
+        batch_roi_labels = [roi_labels.clone().detach() for roi_labels in batch_roi_labels]
 
-    def update_metrics(self, input_dict, pred_dict, unlabeled_inds, labeled_inds):
-        """
-        Recording PL vs GT statistics BEFORE filtering
-        """
-        if 'pl_gt_metrics_before_filtering' in self.model_cfg.ROI_HEAD.METRICS_PRED_TYPES:
-            pseudo_boxes, pseudo_labels, pseudo_scores, pseudo_sem_scores, _, _ = self._unpack_predictions(
-                pred_dict, unlabeled_inds)
-            pseudo_boxes = [torch.cat([pseudo_box, pseudo_label.view(-1, 1).float()], dim=1) \
-                            for (pseudo_box, pseudo_label) in zip(pseudo_boxes, pseudo_labels)]
+        batch_rois = self.pv_rcnn.roi_head.forward_ret_dict['rois'][unlabeled_inds]
+        batch_rois = [rois.clone().detach() for rois in batch_rois]
 
-            # Making consistent # of pseudo boxes in each batch
-            # NOTE: Need to store them in batch_dict in a new key, which can be removed later
-            input_dict['pseudo_boxes_prefilter'] = torch.zeros_like(input_dict['gt_boxes'])
-            self._fill_with_pseudo_labels(input_dict, pseudo_boxes, unlabeled_inds, labeled_inds,
-                                          key='pseudo_boxes_prefilter')
+        batch_ori_gt_boxes = self.pv_rcnn.roi_head.forward_ret_dict['ori_unlabeled_boxes']
+        batch_ori_gt_boxes = [ori_gt_boxes.clone().detach() for ori_gt_boxes in batch_ori_gt_boxes]
 
-            # apply student's augs on teacher's pseudo-boxes (w/o filtered)
-            batch_dict = self.apply_augmentation(input_dict, input_dict, unlabeled_inds, key='pseudo_boxes_prefilter')
+        for i in range(len(batch_rois)):
+            valid_rois_mask = torch.logical_not(torch.all(batch_rois[i] == 0, dim=-1))
+            valid_rois = batch_rois[i][valid_rois_mask]
+            valid_roi_labels = batch_roi_labels[i][valid_rois_mask]
+            valid_roi_labels -= 1  # Starting class indices from zero
 
-            tag = f'pl_gt_metrics_before_filtering'
-            metrics = self.metric_registry.get(tag)
+            valid_gt_boxes_mask = torch.logical_not(torch.all(batch_ori_gt_boxes[i] == 0, dim=-1))
+            valid_gt_boxes = batch_ori_gt_boxes[i][valid_gt_boxes_mask]
+            valid_gt_boxes[:, -1] -= 1  # Starting class indices from zero
 
-            preds_prefilter = [batch_dict['pseudo_boxes_prefilter'][uind] for uind in unlabeled_inds]
-            gts_prefilter = [batch_dict['gt_boxes'][uind] for uind in unlabeled_inds]
-            metric_inputs = {'preds': preds_prefilter, 'pred_scores': pseudo_scores, 'roi_scores': pseudo_sem_scores,
-                             'ground_truths': gts_prefilter}
-            metrics.update(**metric_inputs)
-            batch_dict.pop('pseudo_boxes_prefilter')
+            num_gts = valid_gt_boxes_mask.sum()
+            num_preds = valid_rois_mask.sum()
 
-    def compute_metrics(self, tag):
-        results = self.metric_registry.get(tag).compute()
-        tag = tag + "/" if tag else ''
-        metrics = {tag + key: val for key, val in results.items()}
+            cur_unlabeled_ind = unlabeled_inds[i]
+            if num_gts > 0 and num_preds > 0:
+                # Find IoU between Student's ROI v/s Original GTs
+                overlap = iou3d_nms_utils.boxes_iou3d_gpu(valid_rois[:, 0:7], valid_gt_boxes[:, 0:7])
+                preds_iou_max, assigned_gt_inds = overlap.max(dim=1)
+                self.val_dict['iou_roi_gt'].extend(preds_iou_max.tolist())
 
-        return metrics
-    
-    def update_feature_prototype(self, batch_dict, pred_dicts):
-        """
-        Update the feature prototype for labeled data
-        """
-        for inds in batch_dict['labeled_inds']:
-            filtered_shared_feat_lb,filtered_gt_labels_lb = self.filter_proposals(batch_dict, pred_dicts, inds)
-            # indexwise update into a list
-            if filtered_shared_feat_lb is not None:
-                self.features_to_update_lb.append(filtered_shared_feat_lb)
-                self.labels_to_update_lb.append(filtered_gt_labels_lb)
-        # for all labeled data in a batch, update the prototype
-        self.labeled_prototype = self.labeled_template.update(self.features_to_update_lb,self.labels_to_update_lb,batch_dict['cur_iteration']) #TODO:Deepika commented for making static prototypes(uncomment later)
-        self.features_to_update_lb = []
-        self.labels_to_update_lb = []
-        
-        for inds in batch_dict['unlabeled_inds']:
-            filtered_shared_feat_ulb,filtered_gt_labels_ulb = self.filter_proposals(batch_dict, pred_dicts, inds)
-            # append indexwise filtered proposals to a list
-            if filtered_shared_feat_ulb is not None:
-                self.features_to_update_ulb.append(filtered_shared_feat_ulb)
-                self.labels_to_update_ulb.append(filtered_gt_labels_ulb)
-        # for all unlabeled data in a batch, update the prototype
-        self.unlabeled_prototype = self.unlabeled_template.update(self.features_to_update_ulb,self.labels_to_update_ulb,batch_dict['cur_iteration'])
-        self.features_to_update_ulb = []
-        self.labels_to_update_ulb = []
+                cur_iou_roi_pl = self.pv_rcnn.roi_head.forward_ret_dict['gt_iou_of_rois'][cur_unlabeled_ind]
+                self.val_dict['iou_roi_pl'].extend(cur_iou_roi_pl.tolist())
 
+                cur_pred_score = torch.sigmoid(batch_dict['batch_cls_preds'][cur_unlabeled_ind]).squeeze()
+                self.val_dict['pred_scores'].extend(cur_pred_score.tolist())
+
+                if 'rcnn_cls_score_teacher' in self.pv_rcnn.roi_head.forward_ret_dict:
+                    cur_teacher_pred_score = self.pv_rcnn.roi_head.forward_ret_dict['rcnn_cls_score_teacher'][
+                        cur_unlabeled_ind]
+                    self.val_dict['teacher_pred_scores'].extend(cur_teacher_pred_score.tolist())
+
+                    cur_weight = self.pv_rcnn.roi_head.forward_ret_dict['rcnn_cls_weights'][cur_unlabeled_ind]
+                    self.val_dict['weights'].extend(cur_weight.tolist())
+
+                cur_roi_score = torch.sigmoid(self.pv_rcnn.roi_head.forward_ret_dict['roi_scores'][cur_unlabeled_ind])
+                self.val_dict['roi_scores'].extend(cur_roi_score.tolist())
+
+                cur_pcv_score = self.pv_rcnn.roi_head.forward_ret_dict['pcv_scores'][cur_unlabeled_ind]
+                self.val_dict['pcv_scores'].extend(cur_pcv_score.tolist())
+
+                cur_num_points_roi = self.pv_rcnn.roi_head.forward_ret_dict['num_points_in_roi'][cur_unlabeled_ind]
+                self.val_dict['num_points_in_roi'].extend(cur_num_points_roi.tolist())
+
+                cur_roi_label = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'][cur_unlabeled_ind].squeeze()
+                self.val_dict['class_labels'].extend(cur_roi_label.tolist())
+
+                cur_iteration = torch.ones_like(preds_iou_max) * (batch_dict['cur_iteration'])
+                self.val_dict['iteration'].extend(cur_iteration.tolist())
+
+        # replace old pickle data (if exists) with updated one
+        output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
+        file_path = os.path.join(output_dir, 'scores.pkl')
+        pickle.dump(self.val_dict, open(file_path, 'wb'))
+
+    # def update_metrics(self, input_dict, pred_dict, unlabeled_inds, labeled_inds):
+    #     """
+    #     Recording PL vs GT statistics BEFORE filtering
+    #     """
+    #     if 'pl_gt_metrics_before_filtering' in self.model_cfg.ROI_HEAD.METRICS_PRED_TYPES:
+    #         pseudo_boxes, pseudo_labels, pseudo_scores, pseudo_sem_scores, _, _ = self._unpack_predictions(
+    #             pred_dict, unlabeled_inds)
+    #         pseudo_boxes = [torch.cat([pseudo_box, pseudo_label.view(-1, 1).float()], dim=1) \
+    #                         for (pseudo_box, pseudo_label) in zip(pseudo_boxes, pseudo_labels)]
+    #
+    #         # Making consistent # of pseudo boxes in each batch
+    #         # NOTE: Need to store them in batch_dict in a new key, which can be removed later
+    #         input_dict['pseudo_boxes_prefilter'] = torch.zeros_like(input_dict['gt_boxes'])
+    #         self._fill_with_pseudo_labels(input_dict, pseudo_boxes, unlabeled_inds, labeled_inds,
+    #                                       key='pseudo_boxes_prefilter')
+    #
+    #         # apply student's augs on teacher's pseudo-boxes (w/o filtered)
+    #         batch_dict = self.apply_augmentation(input_dict, input_dict, unlabeled_inds, key='pseudo_boxes_prefilter')
+    #
+    #         tag = f'pl_gt_metrics_before_filtering'
+    #         metrics = metrics_registry.get(tag)
+    #
+    #         preds_prefilter = [batch_dict['pseudo_boxes_prefilter'][uind] for uind in unlabeled_inds]
+    #         gts_prefilter = [batch_dict['gt_boxes'][uind] for uind in unlabeled_inds]
+    #         metric_inputs = {'preds': preds_prefilter, 'pred_scores': pseudo_scores, 'roi_scores': pseudo_sem_scores,
+    #                          'ground_truths': gts_prefilter}
+    #         metrics.update(**metric_inputs)
+    #         batch_dict.pop('pseudo_boxes_prefilter')
 
     def ensemble_post_processing(self, batch_dict_a, batch_dict_b, unlabeled_inds, ensemble_option=None):
         # TODO(farzad) what about roi_labels and roi_scores in following options?
@@ -884,41 +730,3 @@ class PVRCNN_SSL(Detector3DTemplate):
                 logger.info('Not updated weight %s: %s' % (key, str(state_dict[key].shape)))
 
         logger.info('==> Done (loaded %d/%d)' % (len(update_model_state), len(self.state_dict())))
-
-    def filter_proposals(self, batch_dict, pred_dicts, inds):
-            """
-            Returns the filtered proposals based on the following criteria:
-            1. IoU with GT/PL is greater than threshold
-            2. RCNN score is greater than threshold
-            3. Correct classification
-            """
-            filtered_shared_feat, filtered_gt_labels = None, None
-            selected_inds = pred_dicts[inds]['selected'] # selected proposals after NMS
-            selected_pred_scores = pred_dicts[inds]['pred_scores']
-            selected_pred_boxes = pred_dicts[inds]['pred_boxes']
-            selected_roi_scores = pred_dicts[inds]['pred_sem_scores']
-            selected_roi_labels = pred_dicts[inds]['pred_labels']
-            shared_feat = batch_dict['shared_features'][inds] # shared feature for the current batch index
-            selected_shared_feat = shared_feat[selected_inds] # shared feature for the selected proposals 
-            valid_gt_boxes_mask = torch.logical_not(torch.all(batch_dict['gt_boxes'][inds] == 0, dim=-1))
-            valid_gt_boxes = batch_dict['gt_boxes'][inds][valid_gt_boxes_mask] #for unlabeled inds GT is PL
-
-            # get iou with GT and look for correct predictions
-            if len(selected_inds) and len(valid_gt_boxes):
-                overlaps= iou3d_nms_utils.boxes_iou3d_gpu(selected_pred_boxes[:,0:7], valid_gt_boxes[:,0:7])
-                max_overlaps, max_inds  = overlaps.max(dim=1)
-                gt_labels = valid_gt_boxes[...,-1].type(torch.long)
-                assigned_gt_labels = (gt_labels[max_inds]).type(torch.long)
-                cc_mask = (selected_roi_labels == assigned_gt_labels) #correct classification mask
-
-                # Filtering the NMSed proposals
-                iou_thresh_ = torch.tensor([0.8,0.8,0.8]).to(cc_mask.device) # check if iou with GT is greater than threshold
-                pred_thresh_ = torch.tensor([0.95,0.85,0.85]).to(cc_mask.device) # RCNN score threshold #TODO: make it a param from file
-                iou_thresh = iou_thresh_[assigned_gt_labels-1]
-                pred_thresh = pred_thresh_[assigned_gt_labels-1]
-                filter_inds_mask = (max_overlaps >= iou_thresh) & (selected_pred_scores >= pred_thresh) & cc_mask # filter mask
-                if torch.any(filter_inds_mask):
-                    filtered_shared_feat = selected_shared_feat[filter_inds_mask]
-                    filtered_gt_labels = selected_roi_labels[filter_inds_mask]
-                
-            return filtered_shared_feat, filtered_gt_labels

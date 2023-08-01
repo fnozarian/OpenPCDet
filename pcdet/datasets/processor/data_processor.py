@@ -74,19 +74,6 @@ class DataProcessor(object):
         for cur_cfg in processor_configs:
             cur_processor = getattr(self, cur_cfg.NAME)(config=cur_cfg)
             self.data_processor_queue.append(cur_processor)
-    # ST3D
-    def mask_boxes_outside_length(self, data_dict=None, config=None):
-        if data_dict is None:
-            return partial(self.mask_boxes_outside_length, config=config)
-
-        min_mask = data_dict['gt_boxes'][:, 3] >= config['LENGTH_RANGE'][0]
-        max_mask = data_dict['gt_boxes'][:, 3] <= config['LENGTH_RANGE'][1]
-        mask = min_mask & max_mask
-
-        data_dict['gt_boxes'] = data_dict['gt_boxes'][mask]
-
-        return data_dict
-
 
     def mask_points_and_boxes_outside_range(self, data_dict=None, config=None):
         if data_dict is None:
@@ -102,7 +89,8 @@ class DataProcessor(object):
             )
             assert len(data_dict['gt_boxes']) == len(data_dict['instance_idx']), 'gt_boxes and instance_idx must have the same length inside data processor'
             data_dict['gt_boxes'] = data_dict['gt_boxes'][mask]
-            data_dict['data_processor_mask'] = mask
+            if data_dict.get("instance_idx", None) is not None:
+                data_dict['instance_idx'] = data_dict['instance_idx'][mask]
         return data_dict
 
     def shuffle_points(self, data_dict=None, config=None):

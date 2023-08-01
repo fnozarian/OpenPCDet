@@ -40,7 +40,7 @@ class AnchorHeadSingle(AnchorHeadTemplate):
         nn.init.constant_(self.conv_cls.bias, -np.log((1 - pi) / pi))
         nn.init.normal_(self.conv_box.weight, mean=0, std=0.001)
 
-    def forward(self, data_dict, disable_gt_roi_when_pseudo_labeling=False):
+    def forward(self, data_dict, pseudo_labeling_phase=False):
         spatial_features_2d = data_dict['spatial_features_2d']
 
         cls_preds = self.conv_cls(spatial_features_2d)
@@ -63,7 +63,7 @@ class AnchorHeadSingle(AnchorHeadTemplate):
         else:
             dir_cls_preds = None
 
-        if (self.training or self.print_loss_when_eval) and not disable_gt_roi_when_pseudo_labeling:
+        if (self.training or self.print_loss_when_eval) and not pseudo_labeling_phase:
             targets_dict = self.assign_targets(
                 gt_boxes=data_dict['gt_boxes']
             )

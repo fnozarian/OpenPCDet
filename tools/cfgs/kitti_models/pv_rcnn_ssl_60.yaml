@@ -271,6 +271,14 @@ MODEL:
     REDUCE_LOSS: 'mean'
     STORE_SCORES_IN_PKL: False
 
+    FEATURE_BANK_LIST:
+        - NAME: gt_noaug_lbl_prototypes
+          BANK_SIZE: null # Determined the total number of labeled instances in all classes for each split during runtime
+          FEATURE_SIZE: 256
+          TEMPERATURE: 1.0
+          DIRECT_UPDATE: False
+          UPDATE_INTERVAL: 37
+          MOMENTUM: 0.9
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 1 #2
