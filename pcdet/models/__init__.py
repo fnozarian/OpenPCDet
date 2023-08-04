@@ -30,10 +30,11 @@ def load_data_to_gpu(batch_dict):
             batch_dict[key] = kornia.image_to_tensor(val).float().cuda().contiguous()
         elif key in ['image_shape']:
             batch_dict[key] = torch.from_numpy(val).int().cuda()
-        elif key in ['sample_idx','index']:
+        elif key in ['index']:
             batch_dict[key] =  torch.from_numpy(val.astype(int)).float().cuda()
         else:
             batch_dict[key] = torch.from_numpy(val).float().cuda()     
+
 
 def model_fn_decorator():
     ModelReturn = namedtuple('ModelReturn', ['loss', 'tb_dict', 'disp_dict'])

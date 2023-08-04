@@ -11,15 +11,13 @@ from pcdet.models import load_data_to_gpu
 
 def log_tb_dict(tb_log, tb_dict, accumulated_iter):
     for key, val in tb_dict.items():
-        if val is None or (isinstance(val, torch.Tensor) and torch.isnan(val)):
-            continue
-        # print(key, val)
         subkeys = key.split("/")
         cat, key = (subkeys[0] + "/", subkeys[1]) if len(subkeys) > 1 else ('train/', key)
         if key in ['bs']:
             cat = 'meta_data/'
-        if "pr_curve" in key:
-            tb_log.add_pr_curve(cat + key, val['labels'], val['predictions'], accumulated_iter)
+        if "pr_curve" in key and isinstance(val, dict):
+            for sub_key, sub_val in val.items():
+                tb_log.add_pr_curve(cat + key + "_" + sub_key, sub_val['labels'], sub_val['predictions'], accumulated_iter)
         elif isinstance(val, dict):
             tb_log.add_scalars(cat + key, val, accumulated_iter)
         elif isinstance(val, plt.Figure):
@@ -92,11 +90,11 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         avg_forward_time = commu_utils.average_reduce_value(cur_forward_time)
         avg_batch_time = commu_utils.average_reduce_value(cur_batch_time)
 
-        if dataloader_test_iter:
-            model.eval()
-            with torch.no_grad():
-                load_data_to_gpu(batch_test)
-                pred_dicts, tb_dict_test, disp_dict_test = model(batch_test)
+        # if dataloader_test_iter:
+        #     model.eval()
+        #     with torch.no_grad():
+        #         load_data_to_gpu(batch_test)
+        #         pred_dicts, tb_dict_test, disp_dict_test = model(batch_test)
 
         # log to console and tensorboard
         if rank == 0:
@@ -117,8 +115,8 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
                 tb_log.add_scalar('train/loss', loss, accumulated_iter)
                 tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
                 log_tb_dict(tb_log, tb_dict, accumulated_iter)
-                if dataloader_test_iter:
-                    log_tb_dict(tb_log, tb_dict_test, accumulated_iter)
+                # if dataloader_test_iter:
+                #     log_tb_dict(tb_log, tb_dict_test, accumulated_iter)
     if rank == 0:
         pbar.close()
     return accumulated_iter

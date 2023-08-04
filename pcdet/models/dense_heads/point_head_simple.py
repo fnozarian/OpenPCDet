@@ -57,7 +57,7 @@ class PointHeadSimple(PointHeadTemplate):
         tb_dict.update(tb_dict_1)
         return point_loss, tb_dict
 
-    def forward(self, batch_dict, pseudo_labeling_phase=False):
+    def forward(self, batch_dict, test_only=False):
         """
         Args:
             batch_dict:
@@ -87,7 +87,7 @@ class PointHeadSimple(PointHeadTemplate):
         batch_dict['point_cls_scores'], _ = point_cls_scores.max(dim=-1)
 
         # should not use gt_roi for pseudo label generation
-        if (self.training or self.print_loss_when_eval) and not pseudo_labeling_phase:
+        if (self.training or self.print_loss_when_eval) and not test_only:
             targets_dict = self.assign_targets(batch_dict)
             ret_dict['point_cls_labels'] = targets_dict['point_cls_labels']
         self.forward_ret_dict = ret_dict

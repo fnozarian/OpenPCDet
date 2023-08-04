@@ -34,7 +34,7 @@ class DataBaseSampler(object):
  
         for class_name in self.class_names:
             for i,val in enumerate(self.db_infos[class_name]):
-                val['instance_idx'] = int(val['image_idx'])*1000 + int(val['gt_idx']) #NOTE: img_idx_gt_idx is unique identifier #Not filtered by difficulty
+                val['instance_idx'] = int(val['image_idx']) * 100 + int(val['gt_idx']) #NOTE: img_idx_gt_idx is unique identifier #Not filtered by difficulty
                 val['class_name'] = class_name #NOTE: for verification later
         for func_name, val in sampler_cfg.PREPARE.items():
             self.db_infos = getattr(self, func_name)(self.db_infos, val) #dict_items([('filter_by_min_points', ['Car:5', 'Pedestrian:5', 'Cyclist:5']), ('filter_by_difficulty', [-1])])
@@ -167,7 +167,7 @@ class DataBaseSampler(object):
         gt_boxes_mask = data_dict['gt_boxes_mask']
         gt_boxes = data_dict['gt_boxes'][gt_boxes_mask]
         gt_names = data_dict['gt_names'][gt_boxes_mask]
-        gt_instance_idx = data_dict['instance_idx'][gt_boxes_mask] #TODO:Deepika Error here
+        gt_instance_idx = data_dict['instance_idx'][gt_boxes_mask]
         assert gt_boxes.shape[0] == gt_names.shape[0] == gt_instance_idx.shape[0], "gt_boxes, gt_names, gt_instance_idx should have same length"
         points = data_dict['points']
         if self.sampler_cfg.get('USE_ROAD_PLANE', False):
@@ -234,10 +234,10 @@ class DataBaseSampler(object):
         assert gt_boxes.shape[0] == data_dict['instance_idx'].shape[0], "gt_boxes, instance_idx in call"
         existed_boxes = gt_boxes
         total_valid_sampled_dict = []
-        for class_name, sample_group in self.sample_groups.items(): #TODO:Deepika 'Cyc' 'Ped' 'Car'
+        for class_name, sample_group in self.sample_groups.items():
             if self.limit_whole_scene: 
                 num_gt = np.sum(class_name == gt_names)
-                sample_group['sample_num'] = str(int(self.sample_class_num[class_name]) - num_gt) #TODO:Deepika/Shashank implementational bug
+                sample_group['sample_num'] = str(int(self.sample_class_num[class_name]) - num_gt)
             if int(sample_group['sample_num']) > 0:
                 sampled_dict = self.sample_with_fixed_number(class_name, sample_group)
 

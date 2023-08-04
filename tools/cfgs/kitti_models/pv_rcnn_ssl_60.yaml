@@ -275,11 +275,16 @@ MODEL:
     FEATURE_BANK_LIST:
         - NAME: gt_noaug_lbl_prototypes
           BANK_SIZE: null # Determined the total number of labeled instances in all classes for each split during runtime
-          FEATURE_SIZE: 256
+          FEATURE_SIZE: 27648  # 128 * 6 * 6 * 6: 128 channels of 6x6x6 grid points
           TEMPERATURE: 1.0
           DIRECT_UPDATE: False
           UPDATE_INTERVAL: 37
           MOMENTUM: 0.9
+    METRICS_BANK_LIST:
+        - NAME: rcnn_roi_pl_gt_metrics_cls
+          RESET_STATE_INTERVAL: 64
+          BG_THRESH: 0.25
+
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 1 #2

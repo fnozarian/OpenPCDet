@@ -137,21 +137,8 @@ class AnchorHeadTemplate(nn.Module):
                           torch.clamp((cls_targets > 0).view(batch_size, -1).sum(-1).float(), min=1.0)
 
         cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
-        labeled_inds = self.forward_ret_dict['labeled_inds']    
-        unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
-        labeled_loss = self.get_classwise_cls_loss(cls_loss_src,cls_targets,labeled_inds)
-        unlabeled_loss = self.get_classwise_cls_loss(cls_loss_src,cls_targets,unlabeled_inds)
-        classwise_loss = {'Bg': torch.stack([labeled_loss[0],unlabeled_loss[0]]).view(-1),
-                        'Car': torch.stack([labeled_loss[1],unlabeled_loss[1]]).view(-1),
-                        'Pedestrian': torch.stack([labeled_loss[2],unlabeled_loss[2]]).view(-1),
-                        'Cyclist': torch.stack([labeled_loss[3],unlabeled_loss[3]]).view(-1)}
         tb_dict = {
             'rpn_loss_cls': cls_loss.item() if scalar else cls_loss,
-            'rpn_acc_cls': rpn_acc_cls.item() if scalar else rpn_acc_cls,
-            'rpn_loss_cls_Bg': classwise_loss['Bg'],
-            'rpn_loss_cls_Car': classwise_loss['Car'],
-            'rpn_loss_cls_Pedestrian': classwise_loss['Pedestrian'],
-            'rpn_loss_cls_Cyclist': classwise_loss['Cyclist'],
         }
 
         return cls_loss, tb_dict
