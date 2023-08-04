@@ -4,7 +4,7 @@ from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stac
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
 import torch.nn.functional as F
-from prototype_utils import feature_bank_registry
+from ...utils.prototype_utils import feature_bank_registry
 
 import pickle
 class PVRCNNHead(RoIHeadTemplate):
@@ -46,13 +46,14 @@ class PVRCNNHead(RoIHeadTemplate):
         self.init_weights(weight_init='xavier')
 
         self.print_loss_when_eval = False
-        pkl_file = 'prototypes_pooled_feat.pkl'
+        pkl_file = self.model_cfg.BASE_PROTOTYPE 
+        # TODO (Advait) - Change BASE_prototype format from self.pooled_prototype_lb_.append((data['Car']['mean']['pool'].cuda()).contiguous().view(-1)) to below
         with open(pkl_file, 'rb') as file:
         # Load the data from the .pkl file
             self.pooled_prototype_lb = pickle.load(file)
-        self.pooled_prototype_lb['car'] = (self.pooled_prototype_lb['car'].cuda()).contiguous().view(-1)
-        self.pooled_prototype_lb['ped'] = (self.pooled_prototype_lb['ped'].cuda()).contiguous().view(-1)
-        self.pooled_prototype_lb['cyc'] = (self.pooled_prototype_lb['cyc'].cuda()).contiguous().view(-1)
+        self.pooled_prototype_lb['car'] = (self.pooled_prototype_lb['Car'].cuda()).contiguous().view(-1)
+        self.pooled_prototype_lb['ped'] = (self.pooled_prototype_lb['Ped'].cuda()).contiguous().view(-1)
+        self.pooled_prototype_lb['cyc'] = (self.pooled_prototype_lb['Cyc'].cuda()).contiguous().view(-1)
 
     def init_weights(self, weight_init='xavier'):
         if weight_init == 'kaiming':

@@ -8,9 +8,9 @@ from pcdet.ops.iou3d_nms import iou3d_nms_utils
 from .detector3d_template import Detector3DTemplate
 from .pv_rcnn import PVRCNN
 
-import common_utils
-from stats_utils import metrics_registry
-from prototype_utils import feature_bank_registry
+from ...utils import common_utils
+from ...utils.stats_utils import metrics_registry
+from ...utils.prototype_utils import feature_bank_registry
 
 from visual_utils import visualize_utils as V
 
