@@ -40,7 +40,7 @@ class AnchorHeadSingle(AnchorHeadTemplate):
         nn.init.constant_(self.conv_cls.bias, -np.log((1 - pi) / pi))
         nn.init.normal_(self.conv_box.weight, mean=0, std=0.001)
 
-    def forward(self, data_dict, pseudo_labeling_phase=False):
+    def forward(self, data_dict, test_only=False):
         spatial_features_2d = data_dict['spatial_features_2d']
 
         cls_preds = self.conv_cls(spatial_features_2d)
@@ -51,10 +51,6 @@ class AnchorHeadSingle(AnchorHeadTemplate):
 
         self.forward_ret_dict['cls_preds'] = cls_preds
         self.forward_ret_dict['box_preds'] = box_preds
-        if 'labeled_inds' in data_dict.keys():
-            self.forward_ret_dict['labeled_inds'] = data_dict['labeled_inds']
-        if 'unlabeled_inds' in data_dict.keys():   
-            self.forward_ret_dict['unlabeled_inds'] = data_dict['unlabeled_inds']   
 
         if self.conv_dir_cls is not None:
             dir_cls_preds = self.conv_dir_cls(spatial_features_2d)
@@ -63,7 +59,7 @@ class AnchorHeadSingle(AnchorHeadTemplate):
         else:
             dir_cls_preds = None
 
-        if (self.training or self.print_loss_when_eval) and not pseudo_labeling_phase:
+        if (self.training or self.print_loss_when_eval) and not test_only:
             targets_dict = self.assign_targets(
                 gt_boxes=data_dict['gt_boxes']
             )

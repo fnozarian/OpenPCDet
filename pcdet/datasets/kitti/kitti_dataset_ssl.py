@@ -466,8 +466,7 @@ class KittiDatasetSSL(DatasetTemplate):
             'points': points,
             'frame_id': sample_idx,
             'calib': calib,
-            'labeled_mask': 0 if unlabeled else 1,
-            'sample_idx': sample_idx,
+            'labeled_mask': 0 if unlabeled else 1
         }
 
         if 'annos' in info:
@@ -533,14 +532,14 @@ class KittiDatasetSSL(DatasetTemplate):
             gt_boxes_ema, points_ema, _ = global_rotation(gt_boxes_ema, points_ema, [-1, 1],
                                                           rot_angle_=-data_dict['rot_angle'])
             
-            # Weakly augment the data for teacher ensemble 
-            points_ema_wa = points_ema.copy()
-            gt_boxes_ema_wa = gt_boxes_ema.copy()
-            # Apply random-flip-along-x on samples where it was not applied previously
-            rem_samples = ~data_dict['flip_x']
-            gt_boxes_ema_wa, points_ema_wa, _ = random_flip_along_x(gt_boxes_ema_wa, points_ema_wa, enable_=rem_samples)
-            data_dict['points_ema_wa'] = points_ema_wa
-            data_dict['gt_boxes_ema_wa'] = gt_boxes_ema_wa
+            # # Weakly augment the data for teacher ensemble
+            # points_ema_wa = points_ema.copy()
+            # gt_boxes_ema_wa = gt_boxes_ema.copy()
+            # # Apply random-flip-along-x on samples where it was not applied previously
+            # rem_samples = ~data_dict['flip_x']
+            # gt_boxes_ema_wa, points_ema_wa, _ = random_flip_along_x(gt_boxes_ema_wa, points_ema_wa, enable_=rem_samples)
+            # data_dict['points_ema_wa'] = points_ema_wa
+            # data_dict['gt_boxes_ema_wa'] = gt_boxes_ema_wa
             
             gt_boxes_ema, points_ema, _ = random_flip_along_x(gt_boxes_ema, points_ema, enable_=data_dict['flip_x'])
             gt_boxes_ema, points_ema, _ = random_flip_along_y(gt_boxes_ema, points_ema, enable_=data_dict['flip_y'])
@@ -554,7 +553,7 @@ class KittiDatasetSSL(DatasetTemplate):
             data_dict['instance_idx'] = data_dict['instance_idx'][selected]
             if self.training:
                 data_dict['gt_boxes_ema'] = data_dict['gt_boxes_ema'][selected]
-                data_dict['gt_boxes_ema_wa'] = data_dict['gt_boxes_ema_wa'][selected]
+                # data_dict['gt_boxes_ema_wa'] = data_dict['gt_boxes_ema_wa'][selected]
             data_dict['gt_names'] = data_dict['gt_names'][selected]
             gt_classes = np.array([self.class_names.index(n) + 1 for n in data_dict['gt_names']], dtype=np.int32)
             gt_boxes = np.concatenate((data_dict['gt_boxes'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
@@ -563,13 +562,14 @@ class KittiDatasetSSL(DatasetTemplate):
                 gt_boxes_ema = np.concatenate((data_dict['gt_boxes_ema'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
                 data_dict['gt_boxes_ema'] = gt_boxes_ema
 
-                gt_boxes_ema_wa = np.concatenate((data_dict['gt_boxes_ema_wa'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
-                data_dict['gt_boxes_ema_wa'] = gt_boxes_ema_wa
+                # gt_boxes_ema_wa = np.concatenate((data_dict['gt_boxes_ema_wa'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
+                # data_dict['gt_boxes_ema_wa'] = gt_boxes_ema_wa
 
         # print((data_dict['points'] ** 2).sum(), (data_dict['points_ema'] ** 2).sum()*(data_dict['scale']**2))
         if self.training:
             points = data_dict['points'].copy()
             gt_boxes = data_dict['gt_boxes'].copy()
+            instance_idx = data_dict['instance_idx'].copy()
             # points_ema = data_dict['points_ema'].copy()
             data_dict['points'] = data_dict['points_ema']
             data_dict['gt_boxes'] = data_dict['gt_boxes_ema']
@@ -586,22 +586,21 @@ class KittiDatasetSSL(DatasetTemplate):
             data_dict['voxel_num_points_ema'] = data_dict['voxel_num_points']
             data_dict['instance_idx_ema'] = data_dict['instance_idx']
 
-            data_dict['points'] = data_dict['points_ema_wa']
-            data_dict['gt_boxes'] = data_dict['gt_boxes_ema_wa']
-
-            data_dict = self.point_feature_encoder.forward(data_dict)
-            data_dict = self.data_processor.forward(
-                data_dict=data_dict
-            )
-
-            data_dict['points_ema_wa'] = data_dict['points']
-            data_dict['gt_boxes_ema_wa'] = data_dict['gt_boxes']
-            data_dict['voxels_ema_wa'] = data_dict['voxels']
-            data_dict['voxel_coords_ema_wa'] = data_dict['voxel_coords']
-            data_dict['voxel_num_points_ema_wa'] = data_dict['voxel_num_points']
+            # data_dict['points'] = data_dict['points_ema_wa']
+            # data_dict['gt_boxes'] = data_dict['gt_boxes_ema_wa']
+            # data_dict = self.point_feature_encoder.forward(data_dict)
+            # data_dict = self.data_processor.forward(
+            #     data_dict=data_dict
+            # )
+            # data_dict['points_ema_wa'] = data_dict['points']
+            # data_dict['gt_boxes_ema_wa'] = data_dict['gt_boxes']
+            # data_dict['voxels_ema_wa'] = data_dict['voxels']
+            # data_dict['voxel_coords_ema_wa'] = data_dict['voxel_coords']
+            # data_dict['voxel_num_points_ema_wa'] = data_dict['voxel_num_points']
 
             data_dict['points'] = points
             data_dict['gt_boxes'] = gt_boxes
+            data_dict['instance_idx'] = instance_idx
             data_dict.pop('voxels', None)
             data_dict.pop('voxel_coords', None)
             data_dict.pop('voxel_num_points', None)

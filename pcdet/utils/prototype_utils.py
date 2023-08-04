@@ -89,10 +89,10 @@ class FeatureBank(Metric):
 
     def get_sim_scores(self, input_features):
         assert input_features.shape[1] == self.feat_size, "input feature size is not equal to the bank feature size"
-        assert self.initialized, "prototypes are not initialized"
+        if not self.initialized:
+            return input_features.new_zeros(input_features.shape[0], self.bank_size)
         cos_sim = F.normalize(input_features) @ F.normalize(self.prototypes).t()
         return F.softmax(cos_sim / self.temperature, dim=-1)
-
 
 class FeatureBankRegistry(object):
     def __init__(self, **kwargs):
@@ -106,10 +106,6 @@ class FeatureBankRegistry(object):
         bank = FeatureBank(**bank_configs)
         self._banks[tag] = bank
         return self._banks[tag]
-    def update(self, global_iteration, **kwargs):
-        for tag, bank in self._banks.items():
-            if global_iteration % bank.bank_config['update_interval'] == 0:
-                pass
 
     def get(self, tag=None):
         if tag is None:

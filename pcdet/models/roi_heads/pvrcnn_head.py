@@ -1,12 +1,10 @@
 import torch.nn as nn
-import torch
 from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
-import torch.nn.functional as F
 from prototype_utils import feature_bank_registry
 
-import pickle
+
 class PVRCNNHead(RoIHeadTemplate):
     def __init__(self, input_channels, model_cfg, num_class=1,
                  predict_boxes_when_training=True, **kwargs):
@@ -46,13 +44,6 @@ class PVRCNNHead(RoIHeadTemplate):
         self.init_weights(weight_init='xavier')
 
         self.print_loss_when_eval = False
-        pkl_file = 'prototypes_pooled_feat.pkl'
-        with open(pkl_file, 'rb') as file:
-        # Load the data from the .pkl file
-            self.pooled_prototype_lb = pickle.load(file)
-        self.pooled_prototype_lb['car'] = (self.pooled_prototype_lb['car'].cuda()).contiguous().view(-1)
-        self.pooled_prototype_lb['ped'] = (self.pooled_prototype_lb['ped'].cuda()).contiguous().view(-1)
-        self.pooled_prototype_lb['cyc'] = (self.pooled_prototype_lb['cyc'].cuda()).contiguous().view(-1)
 
     def init_weights(self, weight_init='xavier'):
         if weight_init == 'kaiming':
@@ -148,30 +139,26 @@ class PVRCNNHead(RoIHeadTemplate):
                           - (local_roi_size.unsqueeze(dim=1) / 2)  # (B, 6x6x6, 3)
         return roi_grid_points
 
-    def get_pool_features(self, batch_dict, pool_gtboxes=False):
-        if pool_gtboxes:
-            with torch.no_grad():
-                pooled_features = self.roi_grid_pool(batch_dict, pool_gtboxes=True)
-        else:
-            # RoI aware pooling
-            pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
-            grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
-            batch_size_rcnn = pooled_features.shape[0]
-            pooled_features = pooled_features.permute(0, 2, 1). \
-                contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
+    def get_pooled_features(self, batch_dict, pool_gtboxes=False):
+        pooled_features = self.roi_grid_pool(batch_dict, pool_gtboxes=pool_gtboxes)  # (BxN, 6x6x6, C)
+        grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
+        batch_size_rcnn = pooled_features.shape[0]
+        pooled_features = pooled_features.permute(0, 2, 1). \
+            contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
 
         return pooled_features
 
-    def forward(self, batch_dict, pseudo_labeling_phase=False):
+    def forward(self, batch_dict, test_only=False):
         """
         :param input_data: input dict
         :return:
         """
+        nms_config = self.model_cfg.NMS_CONFIG['TRAIN' if self.training and not test_only else 'TEST']
         # proposal_layer doesn't continue if the rois are already in the batch_dict.
         # However, for labeled data proposal layer should continue!
-        targets_dict = self.proposal_layer(batch_dict, nms_config=self.model_cfg.NMS_CONFIG['TRAIN' if self.training else 'TEST'])
+        targets_dict = self.proposal_layer(batch_dict, nms_config=nms_config)
         # should not use gt_roi for pseudo label generation
-        if (self.training or self.print_loss_when_eval):
+        if (self.training or self.print_loss_when_eval) and not test_only:
             targets_dict = self.assign_targets(batch_dict)
             batch_dict['rois'] = targets_dict['rois']
             batch_dict['roi_scores'] = targets_dict['roi_scores']
@@ -180,26 +167,19 @@ class PVRCNNHead(RoIHeadTemplate):
             targets_dict['unlabeled_inds'] = batch_dict['unlabeled_inds']
             targets_dict['ori_unlabeled_boxes'] = batch_dict['ori_unlabeled_boxes']
 
-        pooled_features = self.get_pool_features(batch_dict)
+        pooled_features = self.get_pooled_features(batch_dict)
         batch_size_rcnn = pooled_features.shape[0]
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
         rcnn_reg = self.reg_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
 
-        if pseudo_labeling_phase:
-            # If teacher model with nonaugmented data is used, update the bank with gt features from labeled data
-            labeled_inds = batch_dict['labeled_inds']
-            bank = feature_bank_registry.get('gt_noaug_lbl_prototypes')
-            gt_noaug_feats = self.get_pool_features(batch_dict, pool_gtboxes=True)
-            bank.update(gt_noaug_feats[labeled_inds], batch_dict['gt_boxes'][labeled_inds],
-                        batch_dict['instance_idx'][labeled_inds], batch_dict['cur_iteration'])
-        if not pseudo_labeling_phase and self.training:
+        if (self.training or self.print_loss_when_eval) and not test_only:
             # RoI-level similarity.
             # calculate cosine similarity between unlabeled augmented RoI features and labeled nonaugmented prototypes.
-            roi_features = pooled_features.clone().detach().view(batch_size_rcnn, pooled_features.shape[1], -1)
+            roi_features = pooled_features.clone().detach().view(batch_size_rcnn, -1)
+            roi_scores_shape = batch_dict['roi_scores'].shape  # (B, N)
             bank = feature_bank_registry.get('gt_noaug_lbl_prototypes')
-            if bank.initialized:
-                targets_dict['roi_sim_scores'] = bank.get_sim_scores(roi_features)
+            targets_dict['roi_sim_scores'] = bank.get_sim_scores(roi_features).view(*roi_scores_shape, bank.bank_size)
 
         if not self.training or self.predict_boxes_when_training:
             batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(
