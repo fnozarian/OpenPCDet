@@ -38,10 +38,10 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
 
-        for bank_configs in model_cfg.get("FEATURE_BANK_LIST", []):
-            if bank_configs.get("BANK_SIZE", None) is None:
-                bank_configs["BANK_SIZE"] = sum(self.dataset.class_counter[cls] for cls in self.dataset.class_names)
-            feature_bank_registry.register(tag=bank_configs["NAME"], **bank_configs)
+        # for bank_configs in model_cfg.get("FEATURE_BANK_LIST", []):
+        #     if bank_configs.get("BANK_SIZE", None) is None:
+        #         bank_configs["BANK_SIZE"] = sum(self.dataset.class_counter[cls] for cls in self.dataset.class_names)
+        #     feature_bank_registry.register(tag=bank_configs["NAME"], **bank_configs)
 
         for metrics_configs in model_cfg.get("METRICS_BANK_LIST", []):
             metrics_registry.register(tag=metrics_configs["NAME"], dataset=self.dataset, **metrics_configs)
@@ -77,14 +77,12 @@ class PVRCNN_SSL(Detector3DTemplate):
                         batch_dict_ema = cur_module(batch_dict_ema)
 
                 # Update the bank with teacher's gt features from unaugmented labeled data
-                bank = feature_bank_registry.get('gt_noaug_lbl_prototypes')
-                gt_noaug_feats = self.pv_rcnn_ema.roi_head.get_pooled_features(batch_dict_ema, pool_gtboxes=True)
-                bank.update(gt_noaug_feats[labeled_inds], batch_dict['gt_boxes'][labeled_inds],
-                            batch_dict['instance_idx'][labeled_inds], batch_dict['cur_iteration'])
+                # bank = feature_bank_registry.get('gt_noaug_lbl_prototypes')
+                # gt_noaug_feats = self.pv_rcnn_ema.roi_head.get_pooled_features(batch_dict_ema, pool_gtboxes=True)
+                # bank.update(gt_noaug_feats[labeled_inds], batch_dict['gt_boxes'][labeled_inds],
+                #             batch_dict['instance_idx'][labeled_inds], batch_dict['cur_iteration'])
 
-            pred_dicts_ens, recall_dicts_ema = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True,
-                                                                                override_thresh=0.0,
-                                                                                no_nms_for_unlabeled=self.no_nms)
+            pred_dicts_ens, recall_dicts_ema = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
 
             # Used for calc stats before and after filtering
             ori_unlabeled_boxes = batch_dict['gt_boxes'][unlabeled_inds, ...]
