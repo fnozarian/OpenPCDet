@@ -276,7 +276,7 @@ MODEL:
           FEATURE_SIZE: 27648  # 128 * 6 * 6 * 6: 128 channels of 6x6x6 grid points
           TEMPERATURE: 1.0
           DIRECT_UPDATE: False
-          UPDATE_INTERVAL: 37
+          RESET_STATE_INTERVAL: 37  # 1% setting for ~3700 KITTI samples
           MOMENTUM: 0.9
     METRICS_BANK_LIST:
         - NAME: rcnn_roi_pl_gt_metrics_cls

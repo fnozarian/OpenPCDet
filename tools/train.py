@@ -201,20 +201,20 @@ def main():
     # -----------------------start training---------------------------
     logger.info('**********************Start training %s/%s(%s)**********************'
                 % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
-    test_set, test_loader, sampler = build_dataloader(
-        dataset_cfg=cfg.DATA_CONFIG,
-        class_names=cfg.CLASS_NAMES,
-        batch_size=args.eval_batch_size,
-        dist=dist_train, workers=args.workers,
-        logger=logger,
-        training=False
-    )
 
-    eval_in_train = cfg.MODEL.POST_PROCESSING.get('TEST_EVAL_DURING_TRAIN', False)
-    if eval_in_train:
+    if cfg.MODEL.POST_PROCESSING.get('TEST_EVAL_DURING_TRAIN', False):
+        test_set, test_loader, sampler = build_dataloader(
+            dataset_cfg=cfg.DATA_CONFIG,
+            class_names=cfg.CLASS_NAMES,
+            batch_size=args.eval_batch_size,
+            dist=dist_train, workers=args.workers,
+            logger=logger,
+            training=False
+        )
         test_loader_during_train = test_loader
     else:
         test_loader_during_train = None
+
     train_model(
         model,
         optimizer,

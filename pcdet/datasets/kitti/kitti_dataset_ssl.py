@@ -421,15 +421,15 @@ class KittiDatasetSSL(DatasetTemplate):
 
         for key, val in data_dict.items():
             try:
-                if key in ['voxels', 'voxel_num_points', 'voxels_ema', 'voxel_num_points_ema', 'voxels_ema_wa', 'voxel_num_points_ema_wa']:
+                if key in ['voxels', 'voxel_num_points', 'voxels_ema', 'voxel_num_points_ema']:
                     ret[key] = np.concatenate(val, axis=0)
-                elif key in ['points', 'voxel_coords', 'points_ema', 'voxel_coords_ema', 'points_ema_wa', 'voxel_coords_ema_wa']:
+                elif key in ['points', 'voxel_coords', 'points_ema', 'voxel_coords_ema']:
                     coors = []
                     for i, coor in enumerate(val):
                         coor_pad = np.pad(coor, ((0, 0), (1, 0)), mode='constant', constant_values=i)
                         coors.append(coor_pad)
                     ret[key] = np.concatenate(coors, axis=0)
-                elif key in ['gt_boxes', 'gt_boxes_ema', 'gt_boxes_ema_wa']:
+                elif key in ['gt_boxes', 'gt_boxes_ema']:
                     max_gt = max([len(x) for x in val])
                     batch_gt_boxes3d = np.zeros((batch_size, max_gt, val[0].shape[-1]), dtype=np.float32)
                     for k in range(batch_size):
@@ -437,7 +437,7 @@ class KittiDatasetSSL(DatasetTemplate):
                     ret[key] = batch_gt_boxes3d
                 elif key in ['instance_idx','instance_idx_ema']:
                     max_ind = max([len(x) for x in val])
-                    batch_ind = np.zeros((batch_size, max_ind), dtype=np.float32)  # Use dtype=np.object to store strings
+                    batch_ind = np.zeros((batch_size, max_ind), dtype=np.int32)
                     for k in range(batch_size):
                         batch_ind[k, :val[k].__len__()] = val[k]
                     ret[key] = batch_ind
@@ -608,7 +608,6 @@ class KittiDatasetSSL(DatasetTemplate):
             data_dict = self.data_processor.forward(
                 data_dict=data_dict
             )
-            data_dict['instance_idx'] = data_dict['instance_idx']
             assert data_dict['instance_idx'].shape[0] == data_dict['gt_boxes'].shape[0],\
                 "gt_boxes and instance_idx do not match in the end of prepare data"
         '''if self.training:
@@ -622,8 +621,6 @@ class KittiDatasetSSL(DatasetTemplate):
         #    return self.__getitem__(new_index)
 
         data_dict.pop('gt_names', None)
-        data_dict.pop('data_processor_mask',None)
-
         return data_dict
 
 

@@ -38,10 +38,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
 
-        # for bank_configs in model_cfg.get("FEATURE_BANK_LIST", []):
-        #     if bank_configs.get("BANK_SIZE", None) is None:
-        #         bank_configs["BANK_SIZE"] = sum(self.dataset.class_counter[cls] for cls in self.dataset.class_names)
-        #     feature_bank_registry.register(tag=bank_configs["NAME"], **bank_configs)
+        for bank_configs in model_cfg.get("FEATURE_BANK_LIST", []):
+            feature_bank_registry.register(tag=bank_configs["NAME"], **bank_configs)
 
         for metrics_configs in model_cfg.get("METRICS_BANK_LIST", []):
             metrics_registry.register(tag=metrics_configs["NAME"], dataset=self.dataset, **metrics_configs)
@@ -50,6 +48,20 @@ class PVRCNN_SSL(Detector3DTemplate):
                         'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels',
                         'iteration']
         self.val_dict = {val: [] for val in vals_to_store}
+    def _update_feature_bank(self, batch_dict_ema, labeled_inds):
+        # Update the bank with teacher's gt features from unaugmented labeled data
+        bank = feature_bank_registry.get('gt_noaug_lbl_prototypes')
+        bs = batch_dict_ema['batch_size']
+        num_gts = batch_dict_ema['gt_boxes'].shape[1]
+        gt_noaug_feats = self.pv_rcnn_ema.roi_head.get_pooled_features(batch_dict_ema, pool_gtboxes=True).view(bs, num_gts, -1)
+        lbl_gt_boxes = batch_dict_ema['gt_boxes'][labeled_inds]
+        valid_mask = torch.logical_not(torch.eq(lbl_gt_boxes, 0)).all(dim=-1)
+        lbl_gt_boxes = lbl_gt_boxes[valid_mask]
+        gt_noaug_feats = gt_noaug_feats[labeled_inds][valid_mask]
+        rois_labels = lbl_gt_boxes[:, -1].detach().clone().int()
+        rois_idxs = batch_dict_ema['instance_idx'][labeled_inds][valid_mask].int()
+        smpl_idxs = torch.from_numpy(batch_dict_ema['frame_id'].astype(np.int32))[labeled_inds].int()
+        bank.update(gt_noaug_feats, rois_labels, rois_idxs, smpl_idxs, batch_dict_ema['cur_iteration'])
 
     def forward(self, batch_dict):
         if self.training:
@@ -76,11 +88,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                     except TypeError as e:
                         batch_dict_ema = cur_module(batch_dict_ema)
 
-                # Update the bank with teacher's gt features from unaugmented labeled data
-                # bank = feature_bank_registry.get('gt_noaug_lbl_prototypes')
-                # gt_noaug_feats = self.pv_rcnn_ema.roi_head.get_pooled_features(batch_dict_ema, pool_gtboxes=True)
-                # bank.update(gt_noaug_feats[labeled_inds], batch_dict['gt_boxes'][labeled_inds],
-                #             batch_dict['instance_idx'][labeled_inds], batch_dict['cur_iteration'])
+            self._update_feature_bank(batch_dict_ema, labeled_inds)
 
             pred_dicts_ens, recall_dicts_ema = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
 
@@ -208,6 +216,9 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             if self.model_cfg.get('STORE_SCORES_IN_PKL', False) :
                 self.dump_statistics(batch_dict, unlabeled_inds)
+
+            for tag in feature_bank_registry.tags():
+                feature_bank_registry.get(tag).compute()
 
             for tag in metrics_registry.tags():
                 results = metrics_registry.get(tag).compute()
