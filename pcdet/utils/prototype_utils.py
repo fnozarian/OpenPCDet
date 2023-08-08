@@ -56,7 +56,6 @@ class FeatureBank(Metric):
             return None
 
         features = torch.cat(self.feats)
-        features = F.normalize(features, dim=1).view(-1, self.feat_size)  # normalize along the feature dim
         labels = torch.cat(self.labels).int()
         ins_ids = torch.cat(self.ins_ids).int().cpu().numpy()
         iterations = torch.cat(self.iterations).int().cpu().numpy()
@@ -78,17 +77,14 @@ class FeatureBank(Metric):
             assert torch.allclose(labels[inds[0]], labels[inds]), "labels should be the same for the same instance id"
 
             if not self.initialized or self.direct_update:
-                self.proto_labels[proto_id] = labels[inds[0]]
+                self.proto_labels[proto_id] = labels[inds[0]] - 1
                 self.num_updates[proto_id] += len(grouped_inds)
                 new_prototype = torch.mean(features[inds], dim=0, keepdim=True)  # TODO: maybe it'd be better to replaced it by the EMA
-                new_prototype = F.normalize(new_prototype, dim=-1)
                 self.prototypes[proto_id] = new_prototype
             else:
                 for ind in inds:
                     new_prototype = self.momentum * self.prototypes[proto_id] + (1 - self.momentum) * features[ind]
-                    self.prototypes[proto_id] = F.normalize(new_prototype, dim=-1)
-
-        assert self.prototypes.norm(dim=-1).allclose(torch.ones(self.bank_size).cuda()), "The prototypes are not updated correctly"
+                    self.prototypes[proto_id] = new_prototype
 
         self.initialized = True
         self.reset()
@@ -97,8 +93,12 @@ class FeatureBank(Metric):
         assert input_features.shape[1] == self.feat_size, "input feature size is not equal to the bank feature size"
         if not self.initialized:
             return input_features.new_zeros(input_features.shape[0], 3)
-        cos_sim = F.normalize(input_features) @ self.prototypes.t()
-        return F.softmax(cos_sim / self.temperature, dim=-1)
+        cos_sim = F.normalize(input_features) @ F.normalize(self.prototypes).t()
+        norm_cos_sim = F.softmax(cos_sim / self.temperature, dim=-1)
+        classwise_sim = cos_sim.new_zeros(input_features.shape[0], 3)
+        lbls = self.proto_labels.expand_as(cos_sim).long()
+        classwise_sim.scatter_add_(1, lbls, norm_cos_sim)
+        return F.softmax(classwise_sim / self.temperature, dim=-1)
 
 class FeatureBankRegistry(object):
     def __init__(self, **kwargs):

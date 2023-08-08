@@ -169,14 +169,14 @@ class PredQualityMetrics(Metric):
             add_avg_metric('rois_avg_weight', cls_roi_weights)
             add_avg_metric('rois_avg_target_score', cls_roi_target_scores)
 
-            tag = 'bin_clf_avg_precision_score_using_target_score'
-            classwise_metrics[tag][cls] = _average_precision_score(cls_fg_mask, cls_roi_target_scores)
-            tag = 'bin_clf_avg_precision_score_using_target_score_weighted'
-            classwise_metrics[tag][cls] = _average_precision_score(cls_fg_mask, cls_roi_target_scores, cls_roi_weights)
-            tag = 'bin_clf_avg_precision_score_using_roi_iou_wrt_pl'
-            classwise_metrics[tag][cls] = _average_precision_score(cls_fg_mask, cls_roi_iou_wrt_pl)
-            tag = 'bin_clf_avg_precision_score_using_roi_iou_wrt_pl_weighted'
-            classwise_metrics[tag][cls] = _average_precision_score(cls_fg_mask, cls_roi_iou_wrt_pl, cls_roi_weights)
+            # tag = 'bin_clf_avg_precision_score_using_target_score'
+            # classwise_metrics[tag][cls] = _average_precision_score(cls_fg_mask, cls_roi_target_scores)
+            # tag = 'bin_clf_avg_precision_score_using_target_score_weighted'
+            # classwise_metrics[tag][cls] = _average_precision_score(cls_fg_mask, cls_roi_target_scores, cls_roi_weights)
+            # tag = 'bin_clf_avg_precision_score_using_roi_iou_wrt_pl'
+            # classwise_metrics[tag][cls] = _average_precision_score(cls_fg_mask, cls_roi_iou_wrt_pl)
+            # tag = 'bin_clf_avg_precision_score_using_roi_iou_wrt_pl_weighted'
+            # classwise_metrics[tag][cls] = _average_precision_score(cls_fg_mask, cls_roi_iou_wrt_pl, cls_roi_weights)
 
         self.reset()
         # Torchmetrics has an issue with defaultdicts. I have to pass the keys and values separately.
