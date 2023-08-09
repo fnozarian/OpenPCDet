@@ -121,8 +121,8 @@ class PredQualityMetrics(Metric):
             cls_true_mask = true_labels == cind
 
             # By using cls_true_mask we assume that the performance of RPN classification is perfect.
-            cls_roi_scores = scores[cls_true_mask]
-            cls_roi_sim_scores = sim_scores[cls_true_mask]
+            # cls_roi_scores = scores[cls_true_mask]
+            # cls_roi_sim_scores = sim_scores[cls_true_mask]
             cls_roi_iou_wrt_gt = iou_wrt_gt[cls_true_mask]
             cls_roi_iou_wrt_pl = iou_wrt_pl[cls_true_mask]
             cls_roi_weights = weights[cls_true_mask]
@@ -162,8 +162,8 @@ class PredQualityMetrics(Metric):
             classwise_metrics['rois_uc_ratio'][cls] = cls_uc_mask.sum() / cls_true_mask.sum()
             classwise_metrics['rois_bg_ratio'][cls] = cls_bg_mask.sum() / cls_true_mask.sum()
 
-            add_avg_metric('rois_avg_score', cls_roi_scores)
-            add_avg_metric('rois_avg_sim_score', cls_roi_sim_scores)
+            # add_avg_metric('rois_avg_score', cls_roi_scores)
+            # add_avg_metric('rois_avg_sim_score', cls_roi_sim_scores)
             add_avg_metric('rois_avg_iou_wrt_gt', cls_roi_iou_wrt_gt)
             add_avg_metric('rois_avg_iou_wrt_pl', cls_roi_iou_wrt_pl)
             add_avg_metric('rois_avg_weight', cls_roi_weights)
