@@ -3,18 +3,19 @@ Open3d visualization tool box
 Written by Jihan YANG
 All rights preserved from 2021 - present.
 """
+import open3d.visualization.gui as gui
 import open3d
 import torch
 import matplotlib
 import numpy as np
 
 box_colormap = [
-    [1, 1, 1],
     [0, 1, 0],
     [0, 1, 1],
     [1, 1, 0],
 ]
 
+classes = {0: 'Car', 1: 'Ped', 2: 'Cycle'}
 
 def get_coor_colors(obj_labels):
     """
@@ -35,7 +36,7 @@ def get_coor_colors(obj_labels):
     return label_rgba
 
 
-def draw_scenes(points, gt_boxes=None, ref_boxes=None, ref_labels=None, ref_scores=None, point_colors=None, draw_origin=True):
+def draw_scenes(points, gt_boxes=None, gt_labels=None, ref_boxes=None, ref_labels=None, ref_scores=None, point_colors=None, draw_origin=True):
     if isinstance(points, torch.Tensor):
         points = points.cpu().numpy()
     if isinstance(gt_boxes, torch.Tensor):
@@ -43,35 +44,39 @@ def draw_scenes(points, gt_boxes=None, ref_boxes=None, ref_labels=None, ref_scor
     if isinstance(ref_boxes, torch.Tensor):
         ref_boxes = ref_boxes.cpu().numpy()
 
-    vis = open3d.visualization.Visualizer()
-    vis.create_window()
+    app = gui.Application.instance
+    app.initialize()
+    vis = open3d.visualization.O3DVisualizer("Open3D - 3D Text", 1024, 768)
 
-    vis.get_render_option().point_size = 1.0
-    vis.get_render_option().background_color = np.zeros(3)
+    vis.show_settings = True
+    vis.show_skybox(False)
+    vis.show_ground = True
+    vis.show_axes = True
+    vis.ground_plane = open3d.visualization.rendering.Scene.GroundPlane.XY
 
     # draw origin
     if draw_origin:
         axis_pcd = open3d.geometry.TriangleMesh.create_coordinate_frame(size=1.0, origin=[0, 0, 0])
-        vis.add_geometry(axis_pcd)
+        vis.add_geometry("Axis", axis_pcd)
 
-    pts = open3d.geometry.PointCloud()
-    pts.points = open3d.utility.Vector3dVector(points[:, :3])
+    cloud = open3d.geometry.PointCloud()
+    cloud.points = open3d.utility.Vector3dVector(points[:, :3])
 
-    vis.add_geometry(pts)
+    vis.add_geometry("Points", cloud)
     if point_colors is None:
-        pts.colors = open3d.utility.Vector3dVector(np.ones((points.shape[0], 3)))
+        cloud.colors = open3d.utility.Vector3dVector(np.zeros((points.shape[0], 3)))
     else:
-        pts.colors = open3d.utility.Vector3dVector(point_colors)
+        cloud.colors = open3d.utility.Vector3dVector(point_colors)
 
     if gt_boxes is not None:
-        vis = draw_box(vis, gt_boxes, (0, 0, 1))
+        vis = draw_box(vis, gt_boxes, (0, 0, 1), gt_labels)
 
     if ref_boxes is not None:
         vis = draw_box(vis, ref_boxes, (0, 1, 0), ref_labels, ref_scores)
 
-    vis.run()
-    vis.destroy_window()
-
+    vis.reset_camera_to_default()
+    app.add_window(vis)
+    app.run()
 
 def translate_boxes_to_open3d_instance(gt_boxes):
     """
@@ -100,17 +105,21 @@ def translate_boxes_to_open3d_instance(gt_boxes):
     return line_set, box3d
 
 
-def draw_box(vis, gt_boxes, color=(0, 1, 0), ref_labels=None, score=None):
+def draw_box(vis, gt_boxes, color=(0, 0, 1), ref_labels=None, score=None):
     for i in range(gt_boxes.shape[0]):
         line_set, box3d = translate_boxes_to_open3d_instance(gt_boxes[i])
-        if ref_labels is None:
+        corners = box3d.get_box_points()
+
+        if score is None:
             line_set.paint_uniform_color(color)
+            vis.add_3d_label(corners[4], classes[ref_labels[i]])
         else:
             line_set.paint_uniform_color(box_colormap[ref_labels[i]])
 
-        vis.add_geometry(line_set)
+        name = f"gt_box_{i}_{classes[ref_labels[i]]}" if score is None else f"pred_box_{i}_{classes[ref_labels[i]]}"
+        vis.add_geometry(name, line_set)
 
-        # if score is not None:
-        #     corners = box3d.get_box_points()
-        #     vis.add_3d_label(corners[5], '%.2f' % score[i])
+        if score is not None:
+            vis.add_3d_label(corners[5], '%.1f' % score[i])
+
     return vis

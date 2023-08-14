@@ -79,15 +79,12 @@ class PVRCNNHead(RoIHeadTemplate):
 
         """
         batch_size = batch_dict['batch_size']
-        rois = batch_dict['rois']
+        rois = batch_dict['gt_boxes'][..., 0:7] if pool_gtboxes else batch_dict['rois']
         point_coords = batch_dict["point_coords"]
         point_features = batch_dict["point_features"]
         point_cls_scores = batch_dict["point_cls_scores"]
 
         point_features = point_features * point_cls_scores.view(-1, 1)
-
-        if pool_gtboxes:
-            rois = batch_dict['gt_boxes'][...,0:7]
 
         global_roi_grid_points, local_roi_grid_points = self.get_global_grid_points_of_roi(
             rois, grid_size=self.model_cfg.ROI_GRID_POOL.GRID_SIZE
@@ -166,6 +163,7 @@ class PVRCNNHead(RoIHeadTemplate):
             # Temporarily add infos to targets_dict for metrics
             targets_dict['unlabeled_inds'] = batch_dict['unlabeled_inds']
             targets_dict['ori_unlabeled_boxes'] = batch_dict['ori_unlabeled_boxes']
+            targets_dict['points'] = batch_dict['points']
 
         pooled_features = self.get_pooled_features(batch_dict)
         batch_size_rcnn = pooled_features.shape[0]
@@ -175,10 +173,10 @@ class PVRCNNHead(RoIHeadTemplate):
 
         if (self.training or self.print_loss_when_eval) and not test_only:
             # RoI-level similarity.
-            # calculate cosine similarity between unlabeled augmented RoI features and labeled nonaugmented prototypes.
+            # calculate cosine similarity between unlabeled augmented RoI features and labeled augmented prototypes.
             roi_features = pooled_features.clone().detach().view(batch_size_rcnn, -1)
             roi_scores_shape = batch_dict['roi_scores'].shape  # (B, N)
-            bank = feature_bank_registry.get('gt_noaug_lbl_prototypes')
+            bank = feature_bank_registry.get('gt_aug_lbl_prototypes')
             targets_dict['roi_sim_scores'] = bank.get_sim_scores(roi_features).view(*roi_scores_shape, -1)
 
 

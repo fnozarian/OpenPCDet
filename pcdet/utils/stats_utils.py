@@ -4,6 +4,8 @@ import torch
 import numpy as np
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 from sklearn.metrics import average_precision_score
+from matplotlib import pyplot as plt
+from visual_utils import open3d_vis_utils as V
 
 __all__ = ["metrics_registry"]
 
@@ -55,7 +57,7 @@ class PredQualityMetrics(Metric):
 
     def update(self, rois: [torch.Tensor], roi_scores: [torch.Tensor], roi_weights: [torch.Tensor],
                roi_iou_wrt_pl: [torch.Tensor], roi_target_scores: [torch.Tensor], ground_truths: [torch.Tensor],
-               roi_sim_scores: [torch.Tensor], roi_sim_labels: [torch.Tensor]) -> None:
+               roi_sim_scores: [torch.Tensor], roi_sim_labels: [torch.Tensor], points: [torch.Tensor]) -> None:
 
         _assert_inputs_are_valid(rois, roi_scores, ground_truths)
 
@@ -85,6 +87,16 @@ class PredQualityMetrics(Metric):
             self.roi_weights.append(roi_weights[i])
             self.roi_target_scores.append(roi_target_scores[i])
 
+        # Draw the last sample in batch
+        pred_boxes = sample_rois[:, :-1].clone().cpu().numpy()
+        pred_labels = sample_roi_pred_labels.clone().int().cpu().numpy()
+        pred_scores = sample_roi_iou_wrt_gt.clone().cpu().numpy()
+        gts = sample_gts[:, :-1].clone().cpu().numpy()
+        gt_labels = sample_gts[:, -1].clone().int().cpu().numpy() - 1
+        pts = points[i].clone().cpu().numpy()
+        V.draw_scenes(points=pts, gt_boxes=gts, gt_labels=gt_labels,
+                      ref_boxes=pred_boxes, ref_scores=pred_scores, ref_labels=pred_labels)
+
         self.num_samples += len(rois)
         self.num_gts += num_gts
 
@@ -96,6 +108,15 @@ class PredQualityMetrics(Metric):
                 mstate = [mstate]
             accumulated_metrics[mname] = torch.cat(mstate, dim=0)
         return accumulated_metrics
+
+    # @staticmethod
+    # def draw_sim_matrix_figure(sim_matrix, lbls):
+        # fig, ax = plt.subplots(figsize=(20, 20))
+        # cax = ax.matshow(sim_matrix, interpolation='nearest')
+        # ax.grid(True)
+        # plt.xticks(range(len(lbls)), lbls)
+        # plt.yticks(range(len(lbls)), lbls)
+        # plt.show()
 
     def compute(self):
         if self.num_samples < self.reset_state_interval:
@@ -151,7 +172,7 @@ class PredQualityMetrics(Metric):
             def add_avg_metric(key, metric):
                 classwise_metrics[f'fg_{key}'][cls] = (metric * cls_fg_mask.float()).sum() / cls_fg_mask.sum()
                 classwise_metrics[f'uc_{key}'][cls] = (metric * cls_uc_mask.float()).sum() / cls_uc_mask.sum()
-                classwise_metrics[f'bg_{key}'][cls] = (metric * cls_bg_mask.float()).sum() / cls_bg_mask.sum()
+                # classwise_metrics[f'bg_{key}'][cls] = (metric * cls_bg_mask.float()).sum() / cls_bg_mask.sum()
 
             classwise_metrics['avg_num_true_rois_per_sample'][cls] = cls_true_mask.sum() / self.num_samples
             classwise_metrics['avg_num_pred_rois_using_sem_score_per_sample'][cls] = cls_pred_mask.sum() / self.num_samples

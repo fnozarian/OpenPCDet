@@ -47,6 +47,9 @@ def update_metrics(targets_dict, mask_type='cls'):
         target_weights = targets_dict['rcnn_cls_weights'][uind][mask].detach().clone()
         metrics_input['roi_weights'].append(target_weights)
 
+        bs_id = targets_dict['points'][:, 0] == uind
+        points = targets_dict['points'][bs_id, 1:].detach().clone()
+        metrics_input['points'].append(points)
     if len(metrics_input['rois']) == 0:
         print(f'Warning: No {mask_type} rois for any unlabeled index')
         return

@@ -5,15 +5,15 @@ import numpy as np
 import torch
 from pcdet.datasets.augmentor import augmentor_utils
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
+from pcdet.ops.roiaware_pool3d import roiaware_pool3d_utils
 from .detector3d_template import Detector3DTemplate
 from .pv_rcnn import PVRCNN
 
 import common_utils
 from stats_utils import metrics_registry
 from prototype_utils import feature_bank_registry
-
-from visual_utils import visualize_utils as V
-
+from collections import defaultdict
+from visual_utils import open3d_vis_utils as V
 
 class PVRCNN_SSL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -48,20 +48,57 @@ class PVRCNN_SSL(Detector3DTemplate):
                         'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels',
                         'iteration']
         self.val_dict = {val: [] for val in vals_to_store}
-    def _update_feature_bank(self, batch_dict_ema, labeled_inds):
-        # Update the bank with teacher's gt features from unaugmented labeled data
-        bank = feature_bank_registry.get('gt_noaug_lbl_prototypes')
-        bs = batch_dict_ema['batch_size']
-        num_gts = batch_dict_ema['gt_boxes'].shape[1]
-        gt_noaug_feats = self.pv_rcnn_ema.roi_head.get_pooled_features(batch_dict_ema, pool_gtboxes=True).view(bs, num_gts, -1)
-        lbl_gt_boxes = batch_dict_ema['gt_boxes'][labeled_inds]
-        valid_mask = torch.logical_not(torch.eq(lbl_gt_boxes, 0)).all(dim=-1)
-        lbl_gt_boxes = lbl_gt_boxes[valid_mask]
-        gt_noaug_feats = gt_noaug_feats[labeled_inds][valid_mask]
-        rois_labels = lbl_gt_boxes[:, -1].detach().clone().int()
-        rois_idxs = batch_dict_ema['instance_idx'][labeled_inds][valid_mask].int()
-        smpl_idxs = torch.from_numpy(batch_dict_ema['frame_id'].astype(np.int32))[labeled_inds].int()
-        bank.update(gt_noaug_feats, rois_labels, rois_idxs, smpl_idxs, batch_dict_ema['cur_iteration'])
+
+    def _update_feature_bank(self, batch_dict, labeled_inds):
+        # Update the bank with student's features from augmented labeled data
+        bank = feature_bank_registry.get('gt_aug_lbl_prototypes')
+        bs = batch_dict['batch_size']
+        num_gts = batch_dict['gt_boxes'].shape[1]
+
+        batch_dict_temp = {
+            "batch_size": batch_dict['batch_size'],
+            "gt_boxes": batch_dict['gt_boxes'].clone().detach(),
+            "point_coords": batch_dict['point_coords'].clone().detach(),
+            "point_features": batch_dict['point_features'].clone().detach(),
+            "point_cls_scores": batch_dict['point_cls_scores'].clone().detach()
+        }
+        with torch.no_grad():
+            batch_gt_feats = self.pv_rcnn.roi_head.get_pooled_features(batch_dict_temp, pool_gtboxes=True).view(bs, num_gts, -1)
+
+        bank_input = defaultdict(list)
+        for i in labeled_inds:
+            gt_boxes = batch_dict_temp['gt_boxes'][i]
+            nonzero_mask = torch.logical_not(torch.eq(gt_boxes, 0).all(dim=-1))
+            if nonzero_mask.sum() == 0:
+                print(f"no gt instance in frame {batch_dict['frame_id'][i]}")
+                continue
+            gt_boxes = gt_boxes[nonzero_mask].clone().detach()
+            bs_mask = batch_dict['points'][:, 0].int() == i
+            points = batch_dict['points'][bs_mask, 1:4]
+            gt_feat = batch_gt_feats[i][nonzero_mask]
+            gt_labels = gt_boxes[:, -1].int() - 1
+            gt_boxes = gt_boxes[:, :7]
+            ins_idxs = batch_dict['instance_idx'][i][nonzero_mask].int()
+            smpl_id = torch.from_numpy(batch_dict['frame_id'].astype(np.int32))[i].int()
+
+            # filter out gt instances with too few points when updating the bank
+            num_points_in_gt = roiaware_pool3d_utils.points_in_boxes_cpu(points.cpu(), gt_boxes.cpu()).sum(dim=-1)
+            valid_gts_mask = (num_points_in_gt >= bank.num_points_thresh)
+            print(f"{(~valid_gts_mask).sum()} gt instance(s) with id(s) {ins_idxs[~valid_gts_mask].tolist()}"
+                  f" and num points {num_points_in_gt[~valid_gts_mask].tolist()} are filtered")
+            if valid_gts_mask.sum() == 0:
+                print(f"no valid gt instances with enough points in frame {batch_dict['frame_id'][i]}")
+                continue
+            bank_input['feats'].append(gt_feat[valid_gts_mask])
+            bank_input['labels'].append(gt_labels[valid_gts_mask])
+            bank_input['ins_ids'].append(ins_idxs[valid_gts_mask])
+            bank_input['smpl_ids'].append(smpl_id)
+
+            # valid_boxes = gt_boxes[valid_gts_mask]
+            # valid_box_labels = gt_labels[valid_gts_mask]
+            # self.vis(valid_boxes, valid_box_labels, points)
+
+        bank.update(**bank_input, iteration=batch_dict['cur_iteration'])
 
     def forward(self, batch_dict):
         if self.training:
@@ -88,8 +125,6 @@ class PVRCNN_SSL(Detector3DTemplate):
                     except TypeError as e:
                         batch_dict_ema = cur_module(batch_dict_ema)
 
-            self._update_feature_bank(batch_dict_ema, labeled_inds)
-
             pred_dicts_ens, recall_dicts_ema = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
 
             # Used for calc stats before and after filtering
@@ -110,6 +145,8 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             for cur_module in self.pv_rcnn.module_list:
                 batch_dict = cur_module(batch_dict)
+
+            self._update_feature_bank(batch_dict, labeled_inds)
 
             # For metrics calculation
             self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = unlabeled_inds
@@ -218,6 +255,13 @@ class PVRCNN_SSL(Detector3DTemplate):
             pred_dicts, recall_dicts = self.pv_rcnn.post_processing(batch_dict)
 
             return pred_dicts, recall_dicts, {}
+
+    def vis(self, boxes, box_labels, points):
+        boxes = boxes.cpu().numpy()
+        points = points.cpu().numpy()
+        box_labels = box_labels.cpu().numpy()
+        V.draw_scenes(points=points, gt_boxes=boxes, gt_labels=box_labels)
+
     def dump_statistics(self, batch_dict, unlabeled_inds):
         # Store different types of scores over all itrs and epochs and dump them in a pickle for offline modeling
         # TODO (shashank) : Can be optimized later to save computational time, currently takes about 0.002sec

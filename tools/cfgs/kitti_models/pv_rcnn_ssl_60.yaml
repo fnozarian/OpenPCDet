@@ -271,13 +271,14 @@ MODEL:
     STORE_SCORES_IN_PKL: False
 
     FEATURE_BANK_LIST:
-        - NAME: gt_noaug_lbl_prototypes
+        - NAME: gt_aug_lbl_prototypes
           BANK_SIZE: null # Determined the total number of labeled instances in all classes for each split during runtime
           FEATURE_SIZE: 27648  # 128 * 6 * 6 * 6: 128 channels of 6x6x6 grid points
           TEMPERATURE: 1.0
-          DIRECT_UPDATE: True
+          DIRECT_UPDATE: False
           RESET_STATE_INTERVAL: 37  # 1% setting for ~3700 KITTI samples
           MOMENTUM: 0.9
+          FILTER_MIN_POINTS_IN_GT: 20
     METRICS_BANK_LIST:
         - NAME: rcnn_roi_pl_gt_metrics_cls
           RESET_STATE_INTERVAL: 32
