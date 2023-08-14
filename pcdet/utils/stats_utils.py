@@ -88,14 +88,14 @@ class PredQualityMetrics(Metric):
             self.roi_target_scores.append(roi_target_scores[i])
 
         # Draw the last sample in batch
-        pred_boxes = sample_rois[:, :-1].clone().cpu().numpy()
-        pred_labels = sample_roi_pred_labels.clone().int().cpu().numpy()
-        pred_scores = sample_roi_iou_wrt_gt.clone().cpu().numpy()
-        gts = sample_gts[:, :-1].clone().cpu().numpy()
-        gt_labels = sample_gts[:, -1].clone().int().cpu().numpy() - 1
-        pts = points[i].clone().cpu().numpy()
-        V.draw_scenes(points=pts, gt_boxes=gts, gt_labels=gt_labels,
-                      ref_boxes=pred_boxes, ref_scores=pred_scores, ref_labels=pred_labels)
+        # pred_boxes = sample_rois[:, :-1].clone().cpu().numpy()
+        # pred_labels = sample_roi_pred_labels.clone().int().cpu().numpy()
+        # pred_scores = sample_roi_iou_wrt_gt.clone().cpu().numpy()
+        # gts = sample_gts[:, :-1].clone().cpu().numpy()
+        # gt_labels = sample_gts[:, -1].clone().int().cpu().numpy() - 1
+        # pts = points[i].clone().cpu().numpy()
+        # V.draw_scenes(points=pts, gt_boxes=gts, gt_labels=gt_labels,
+        #               ref_boxes=pred_boxes, ref_scores=pred_scores, ref_labels=pred_labels)
 
         self.num_samples += len(rois)
         self.num_gts += num_gts

@@ -41,7 +41,7 @@ class FeatureBank(Metric):
         print(f"Initializing the feature bank with size {self.bank_size} and feature size {self.feat_size}")
         self.prototypes = torch.zeros((self.bank_size, self.feat_size)).cuda()
         self.classwise_prototypes = torch.zeros((3, self.feat_size)).cuda()
-        self.proto_labels = labels - 1
+        self.proto_labels = labels
         self.num_updates = torch.zeros(self.bank_size).cuda()
         self.insId_protoId_mapping = {unique_ins_ids[i]: i for i in range(len(unique_ins_ids))}
     def update(self, feats: [torch.Tensor], labels: [torch.Tensor], ins_ids: [torch.Tensor], smpl_ids: torch.Tensor,
@@ -97,6 +97,7 @@ class FeatureBank(Metric):
         classwise_prototypes = torch.zeros((3, self.feat_size)).cuda()
         for i in range(3):  # TODO: refactor it
             inds = torch.where(self.proto_labels == i)[0]
+            print(f"Update classwise prototypes for class {i} with {len(inds)} instances.")
             classwise_prototypes[i] = torch.mean(self.prototypes[inds], dim=0)
         self.classwise_prototypes = self.momentum * self.classwise_prototypes + (1 - self.momentum) * classwise_prototypes
 
