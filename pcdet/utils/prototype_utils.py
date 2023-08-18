@@ -114,13 +114,14 @@ class FeatureBank(Metric):
 
     def _get_sim_scores_with_instance_prototypes(self, input_features):
         cos_sim = F.normalize(input_features) @ F.normalize(self.prototypes).t()
-        # norm_cos_sim = F.softmax(cos_sim / self.temperature, dim=-1)
+        norm_cos_sim = F.softmax(cos_sim / self.temperature, dim=-1)
         classwise_sim = cos_sim.new_zeros(input_features.shape[0], 3)
         lbs = self.proto_labels.expand_as(cos_sim).long()
-        classwise_sim.scatter_add_(1, lbs, cos_sim)
-        protos_cls_counts = torch.bincount(self.proto_labels).view(1, -1)
-        classwise_sim /= protos_cls_counts  # Note: not probability
-
+        classwise_sim.scatter_add_(1, lbs, norm_cos_sim)
+        # classwise_sim.scatter_add_(1, lbs, cos_sim)
+        # protos_cls_counts = torch.bincount(self.proto_labels).view(1, -1)
+        # classwise_sim /= protos_cls_counts  # Note: not probability
+        classwise_sim /= classwise_sim.mean(dim=0)
         return classwise_sim
 
     def get_pairwise_protos_sim_matrix(self):
