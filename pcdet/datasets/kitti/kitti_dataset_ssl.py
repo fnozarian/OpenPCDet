@@ -569,7 +569,6 @@ class KittiDatasetSSL(DatasetTemplate):
         if self.training:
             points = data_dict['points'].copy()
             gt_boxes = data_dict['gt_boxes'].copy()
-            instance_idx = data_dict['instance_idx'].copy()
             # points_ema = data_dict['points_ema'].copy()
             data_dict['points'] = data_dict['points_ema']
             data_dict['gt_boxes'] = data_dict['gt_boxes_ema']
@@ -600,7 +599,7 @@ class KittiDatasetSSL(DatasetTemplate):
 
             data_dict['points'] = points
             data_dict['gt_boxes'] = gt_boxes
-            data_dict['instance_idx'] = instance_idx
+            data_dict['instance_idx'] = data_dict['instance_idx']
             data_dict.pop('voxels', None)
             data_dict.pop('voxel_coords', None)
             data_dict.pop('voxel_num_points', None)
