@@ -133,8 +133,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             #     # PL metrics before filtering
             #     self.update_metrics(batch_dict, pred_dicts_ens, unlabeled_inds, labeled_inds)
 
-            pseudo_boxes, pseudo_scores, pseudo_sem_scores, pseudo_boxes_var, pseudo_scores_var = \
-                self._filter_pseudo_labels(pred_dicts_ens, unlabeled_inds)
+            pseudo_boxes, pseudo_scores, pseudo_sem_scores = self._filter_pseudo_labels(pred_dicts_ens, unlabeled_inds)
 
             self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, unlabeled_inds, labeled_inds)
 
@@ -400,8 +399,6 @@ class PVRCNN_SSL(Detector3DTemplate):
         pseudo_boxes = []
         pseudo_scores = []
         pseudo_sem_scores = []
-        pseudo_scores_var = []
-        pseudo_boxes_var = []
         for pseudo_box, pseudo_label, pseudo_score, pseudo_sem_score, pseudo_box_var, pseudo_score_var in zip(
                 *self._unpack_predictions(pred_dicts, unlabeled_inds)):
 
@@ -409,8 +406,6 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pseudo_boxes.append(torch.cat([pseudo_box, pseudo_label.view(-1, 1).float()], dim=1))
                 pseudo_sem_scores.append(pseudo_sem_score)
                 pseudo_scores.append(pseudo_score)
-                pseudo_scores_var.append(pseudo_score_var)
-                pseudo_boxes_var.append(pseudo_box_var)
                 continue
 
             conf_thresh = torch.tensor(self.thresh, device=pseudo_label.device).unsqueeze(
@@ -423,50 +418,16 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             valid_inds = valid_inds & (pseudo_sem_score > sem_conf_thresh.squeeze())
 
-            # TODO(farzad) can this be similarly determined by tag-based stats before and after filtering?
-            # rej_labels = pseudo_label[~valid_inds]
-            # rej_labels_per_class = torch.bincount(rej_labels, minlength=len(self.thresh) + 1)
-            # for class_ind, class_key in enumerate(self.metric_table.metric_record):
-            #     if class_key == 'class_agnostic':
-            #         self.metric_table.metric_record[class_key].metrics['rej_pseudo_lab'].update(
-            #             rej_labels_per_class[1:].sum().item())
-            #     else:
-            #         self.metric_table.metric_record[class_key].metrics['rej_pseudo_lab'].update(
-            #             rej_labels_per_class[class_ind].item())
-
             pseudo_sem_score = pseudo_sem_score[valid_inds]
             pseudo_box = pseudo_box[valid_inds]
             pseudo_label = pseudo_label[valid_inds]
             pseudo_score = pseudo_score[valid_inds]
-            pseudo_box_var = pseudo_box_var[valid_inds]
-            pseudo_score_var = pseudo_score_var[valid_inds]
-            # TODO : Two stage filtering instead of applying NMS
-            # Stage1 based on size of bbox, Stage2 is objectness thresholding
-            # Note : Two stages happen sequentially, and not independently.
-            # vol_boxes = ((pseudo_box[:, 3] * pseudo_box[:, 4] * pseudo_box[:, 5])/torch.abs(pseudo_box[:,2][0])).view(-1)
-            # vol_boxes, _ = torch.sort(vol_boxes, descending=True)
-            # # Set volume threshold to 10% of the maximum volume of the boxes
-            # keep_ind = int(self.model_cfg.PSEUDO_TWO_STAGE_FILTER.MAX_VOL_PROP * len(vol_boxes))
-            # keep_vol = vol_boxes[keep_ind]
-            # valid_inds = vol_boxes > keep_vol # Stage 1
-            # pseudo_sem_score = pseudo_sem_score[valid_inds]
-            # pseudo_box = pseudo_box[valid_inds]
-            # pseudo_label = pseudo_label[valid_inds]
-            # pseudo_score = pseudo_score[valid_inds]
-
-            # valid_inds = pseudo_score > self.model_cfg.PSEUDO_TWO_STAGE_FILTER.THRESH # Stage 2
-            # pseudo_sem_score = pseudo_sem_score[valid_inds]
-            # pseudo_box = pseudo_box[valid_inds]
-            # pseudo_label = pseudo_label[valid_inds]
-            # pseudo_score = pseudo_score[valid_inds]
 
             pseudo_boxes.append(torch.cat([pseudo_box, pseudo_label.view(-1, 1).float()], dim=1))
             pseudo_sem_scores.append(pseudo_sem_score)
             pseudo_scores.append(pseudo_score)
-            pseudo_scores_var.append(pseudo_score_var)
-            pseudo_boxes_var.append(pseudo_box_var)
 
-        return pseudo_boxes, pseudo_scores, pseudo_sem_scores, pseudo_boxes_var, pseudo_scores_var
+        return pseudo_boxes, pseudo_scores, pseudo_sem_scores
 
     def _fill_with_pseudo_labels(self, batch_dict, pseudo_boxes, unlabeled_inds, labeled_inds, key=None):
         key = 'gt_boxes' if key is None else key
