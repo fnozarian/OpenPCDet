@@ -484,12 +484,15 @@ class PVRCNN_SSL(Detector3DTemplate):
                 batch_dict[key][unlabeled_inds[i]] = pseudo_box
         else:
             ori_boxes = batch_dict['gt_boxes']
+            ori_ins_ids = batch_dict['instance_idx']
             new_boxes = torch.zeros((ori_boxes.shape[0], max_pseudo_box_num, ori_boxes.shape[2]),
                                     device=ori_boxes.device)
-            for i, inds in enumerate(labeled_inds):
-                diff = max_pseudo_box_num - ori_boxes[inds].shape[0]
-                new_box = torch.cat([ori_boxes[inds], torch.zeros((diff, 8), device=ori_boxes[inds].device)], dim=0)
-                new_boxes[inds] = new_box
+            new_ins_idx = torch.full((ori_boxes.shape[0], max_pseudo_box_num), fill_value=-1, device=ori_boxes.device)
+            for i, idx in enumerate(labeled_inds):
+                diff = max_pseudo_box_num - ori_boxes[idx].shape[0]
+                new_box = torch.cat([ori_boxes[idx], torch.zeros((diff, 8), device=ori_boxes[idx].device)], dim=0)
+                new_boxes[idx] = new_box
+                new_ins_idx[idx] = torch.cat([ori_ins_ids[idx], -torch.ones((diff,), device=ori_boxes[idx].device)], dim=0)
             for i, pseudo_box in enumerate(pseudo_boxes):
 
                 diff = max_pseudo_box_num - pseudo_box.shape[0]
@@ -497,6 +500,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                     pseudo_box = torch.cat([pseudo_box, torch.zeros((diff, 8), device=pseudo_box.device)], dim=0)
                 new_boxes[unlabeled_inds[i]] = pseudo_box
             batch_dict[key] = new_boxes
+            batch_dict['instance_idx'] = new_ins_idx
 
     def apply_augmentation(self, batch_dict, batch_dict_org, unlabeled_inds, key='rois'):
         batch_dict[key][unlabeled_inds] = augmentor_utils.random_flip_along_x_bbox(
