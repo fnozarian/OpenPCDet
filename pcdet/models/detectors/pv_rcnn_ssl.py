@@ -79,7 +79,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             gt_labels = gt_boxes[:, -1].int() - 1
             gt_boxes = gt_boxes[:, :7]
             ins_idxs = batch_dict['instance_idx'][i][nonzero_mask].int()
-            smpl_id = torch.from_numpy(batch_dict['frame_id'].astype(np.int32))[i].int()
+            smpl_id = torch.from_numpy(batch_dict['frame_id'].astype(np.int32))[i].int().to(gt_boxes.device)
 
             # filter out gt instances with too few points when updating the bank
             num_points_in_gt = roiaware_pool3d_utils.points_in_boxes_cpu(points.cpu(), gt_boxes.cpu()).sum(dim=-1)
