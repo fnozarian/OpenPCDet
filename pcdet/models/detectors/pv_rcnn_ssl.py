@@ -9,12 +9,32 @@ from pcdet.ops.roiaware_pool3d import roiaware_pool3d_utils
 from .detector3d_template import Detector3DTemplate
 from .pv_rcnn import PVRCNN
 
-import common_utils
-from stats_utils import metrics_registry
-from prototype_utils import feature_bank_registry
+from ...utils import common_utils
+from ...utils.stats_utils import metrics_registry
+from ...utils.prototype_utils import feature_bank_registry
 from collections import defaultdict
+from ...utils.weighting_methods import build_thresholding_method
 from visual_utils import open3d_vis_utils as V
 
+class dynamicThreshRegistry(object):
+    def __init__(self, **kwargs):
+        self._tag_metrics = {}
+        self.dataset = kwargs.get('dataset', None)
+        self.model_cfg = kwargs.get('model_cfg', None)
+
+    def get(self, tag=None):
+        if tag is None:
+            tag = 'default'
+        if tag in self._tag_metrics.keys():
+            metric = self._tag_metrics[tag]
+        else:
+            metric = build_thresholding_method(tag=tag, dataset=self.dataset, config=self.model_cfg)
+            self._tag_metrics[tag] = metric
+        return metric
+    
+    def tags(self):
+        return self._tag_metrics.keys()
+    
 class PVRCNN_SSL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
@@ -37,7 +57,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.unlabeled_weight = model_cfg.UNLABELED_WEIGHT
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
-
+        self.thresh_registry = dynamicThreshRegistry(dataset=self.dataset, model_cfg=model_cfg)
         for bank_configs in model_cfg.get("FEATURE_BANK_LIST", []):
             feature_bank_registry.register(tag=bank_configs["NAME"], **bank_configs)
 
@@ -84,8 +104,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             # filter out gt instances with too few points when updating the bank
             num_points_in_gt = roiaware_pool3d_utils.points_in_boxes_cpu(points.cpu(), gt_boxes.cpu()).sum(dim=-1)
             valid_gts_mask = (num_points_in_gt >= bank.num_points_thresh)
-            print(f"{(~valid_gts_mask).sum()} gt instance(s) with id(s) {ins_idxs[~valid_gts_mask].tolist()}"
-                  f" and num points {num_points_in_gt[~valid_gts_mask].tolist()} are filtered")
+            # print(f"{(~valid_gts_mask).sum()} gt instance(s) with id(s) {ins_idxs[~valid_gts_mask].tolist()}"
+            #       f" and num points {num_points_in_gt[~valid_gts_mask].tolist()} are filtered")
             if valid_gts_mask.sum() == 0:
                 print(f"no valid gt instances with enough points in frame {batch_dict['frame_id'][i]}")
                 continue
@@ -132,6 +152,9 @@ class PVRCNN_SSL(Detector3DTemplate):
             # if self.model_cfg.ROI_HEAD.get("ENABLE_EVAL", False):
             #     # PL metrics before filtering
             #     self.update_metrics(batch_dict, pred_dicts_ens, unlabeled_inds, labeled_inds)
+
+            if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
+                self.update_adaptive_thresholding_metrics(pred_dicts_ens, unlabeled_inds)
 
             pseudo_boxes, pseudo_scores, pseudo_sem_scores, pseudo_boxes_var, pseudo_scores_var = \
                 self._filter_pseudo_labels(pred_dicts_ens, unlabeled_inds)
@@ -237,6 +260,13 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             for tag in feature_bank_registry.tags():
                 feature_bank_registry.get(tag).compute()
+
+            # update dynamic thresh results
+            for tag in self.thresh_registry.tags():
+                results = self.thresh_registry.get(tag).compute()
+                if results:
+                    tag = tag + "/" if tag else ''
+                    tb_dict_.update({tag + key: val for key, val in results.items()})
 
             for tag in metrics_registry.tags():
                 results = metrics_registry.get(tag).compute()
@@ -590,3 +620,15 @@ class PVRCNN_SSL(Detector3DTemplate):
                 logger.info('Not updated weight %s: %s' % (key, str(state_dict[key].shape)))
 
         logger.info('==> Done (loaded %d/%d)' % (len(update_model_state), len(self.state_dict())))
+
+    def update_adaptive_thresholding_metrics(self, pred_dicts, unlabeled_inds, tag = 'pl_adaptive_thresh'):
+        metrics_input = defaultdict(list)
+        for ind in unlabeled_inds:
+            pseudo_score = pred_dicts[ind]['pred_scores']
+            pseudo_label = pred_dicts[ind]['pred_labels']
+            pseudo_sem_score = pred_dicts[ind]['pred_sem_scores']
+            if len(pseudo_label):
+                metrics_input['pred_labels'].append(pseudo_label)
+                metrics_input['pseudo_score'].append(pseudo_score)
+                metrics_input['pseudo_sem_score'].append(pseudo_sem_score)
+        self.thresh_registry.get(tag).update(**metrics_input)

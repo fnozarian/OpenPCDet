@@ -2,7 +2,7 @@ import torch.nn as nn
 from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
-from prototype_utils import feature_bank_registry
+from ...utils.prototype_utils import feature_bank_registry
 
 
 class PVRCNNHead(RoIHeadTemplate):

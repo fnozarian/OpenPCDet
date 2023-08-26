@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from ...utils import box_coder_utils, common_utils, loss_utils
 from ..model_utils.model_nms_utils import class_agnostic_nms
 from .target_assigner.proposal_target_layer import ProposalTargetLayer
-from stats_utils import metrics_registry
+from ...utils.stats_utils import metrics_registry
 
 from collections import defaultdict
 
