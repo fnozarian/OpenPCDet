@@ -435,12 +435,12 @@ class KittiDatasetSSL(DatasetTemplate):
                     for k in range(batch_size):
                         batch_gt_boxes3d[k, :val[k].__len__(), :] = val[k]
                     ret[key] = batch_gt_boxes3d
-                elif key in ['instance_idx','instance_idx_ema']:
+                elif key in ['instance_idx', 'instance_idx_ema']:
                     max_ind = max([len(x) for x in val])
                     batch_ind = np.zeros((batch_size, max_ind), dtype=np.int32)
                     for k in range(batch_size):
                         batch_ind[k, :val[k].__len__()] = val[k]
-                    ret[key] = batch_ind
+                    ret[key] = batch_ind.astype(np.int32)
                 else:
                     ret[key] = np.stack(val, axis=0)
             except:

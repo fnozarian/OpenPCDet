@@ -2,6 +2,7 @@ import torch
 from torch.functional import F
 from torchmetrics import Metric
 import numpy as np
+from torch.distributions import Categorical
 
 
 class FeatureBank(Metric):
@@ -44,6 +45,7 @@ class FeatureBank(Metric):
         self.proto_labels = labels
         self.num_updates = torch.zeros(self.bank_size).cuda()
         self.insId_protoId_mapping = {unique_ins_ids[i]: i for i in range(len(unique_ins_ids))}
+
     def update(self, feats: [torch.Tensor], labels: [torch.Tensor], ins_ids: [torch.Tensor], smpl_ids: torch.Tensor,
                iteration: int) -> None:
         for i in range(len(feats)):
@@ -64,14 +66,14 @@ class FeatureBank(Metric):
         ins_ids = torch.cat(self.ins_ids).int().cpu().numpy()
         iterations = torch.cat(self.iterations).int().cpu().numpy()
         assert len(features) == len(labels) == len(ins_ids) == len(iterations), \
-                "length of features, labels, ins_ids, and iterations should be the same"
+            "length of features, labels, ins_ids, and iterations should be the same"
         sorted_ins_ids, arg_sorted_ins_ids = np.sort(ins_ids), np.argsort(ins_ids)
         unique_ins_ids, split_indices = np.unique(sorted_ins_ids, return_index=True)
 
         if not self.initialized:
             self._init(unique_ins_ids, labels[arg_sorted_ins_ids[split_indices]])
 
-        # Groupby ins_ids
+        # Group by ins_ids
         inds_groupby_ins_ids = np.split(arg_sorted_ins_ids, split_indices[1:])
         # For each group sort instance ids by iterations in ascending order and apply reduction operation
         for grouped_inds in inds_groupby_ins_ids:
@@ -101,16 +103,16 @@ class FeatureBank(Metric):
             classwise_prototypes[i] = torch.mean(self.prototypes[inds], dim=0)
         self.classwise_prototypes = self.momentum * self.classwise_prototypes + (1 - self.momentum) * classwise_prototypes
 
+    @torch.no_grad()
     def get_sim_scores(self, input_features, use_classwise_prototypes=True):
         assert input_features.shape[1] == self.feat_size, "input feature size is not equal to the bank feature size"
         if not self.initialized:
             return input_features.new_zeros(input_features.shape[0], 3)
-        return (
-            F.normalize(input_features)
-            @ F.normalize(self.classwise_prototypes).t()
-            if use_classwise_prototypes
-            else self._get_sim_scores_with_instance_prototypes(input_features)
-        )
+        if use_classwise_prototypes:
+            cos_sim = F.normalize(input_features) @ F.normalize(self.classwise_prototypes).t()
+            return F.softmax(cos_sim / self.temperature, dim=-1)
+        else:
+            self._get_sim_scores_with_instance_prototypes(input_features)
 
     def _get_sim_scores_with_instance_prototypes(self, input_features):
         cos_sim = F.normalize(input_features) @ F.normalize(self.prototypes).t()
@@ -130,6 +132,19 @@ class FeatureBank(Metric):
         sim_matrix = F.normalize(protos) @ F.normalize(protos).t()
 
         return sim_matrix.cpu().numpy(), sorted_lbs.cpu().numpy()
+
+    def get_proto_contrastive_loss(self, feats, labels):
+        """
+        :param feats: pseudo-box features of the strongly augmented unlabeled samples (N, C)
+        :param labels: pseudo-labels of the strongly augmented unlabeled samples (N,)
+        :return:
+        """
+        if not self.initialized:
+            return None
+        sim_scores = F.normalize(feats) @ F.normalize(self.classwise_prototypes).t()
+        log_probs = F.log_softmax(sim_scores / self.temperature, dim=-1)
+        return -log_probs[torch.arange(len(labels)), labels]
+
 
 class FeatureBankRegistry(object):
     def __init__(self, **kwargs):
@@ -153,5 +168,6 @@ class FeatureBankRegistry(object):
 
     def tags(self):
         return self._banks.keys()
+
 
 feature_bank_registry = FeatureBankRegistry()

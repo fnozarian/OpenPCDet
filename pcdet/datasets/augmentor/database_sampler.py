@@ -34,10 +34,10 @@ class DataBaseSampler(object):
  
         for class_name in self.class_names:
             for i,val in enumerate(self.db_infos[class_name]):
-                val['instance_idx'] = int(val['image_idx']) * 100 + int(val['gt_idx']) #NOTE: img_idx_gt_idx is unique identifier #Not filtered by difficulty
-                val['class_name'] = class_name #NOTE: for verification later
+                val['instance_idx'] = int(val['image_idx']) * 100 + int(val['gt_idx'])
+                val['class_name'] = class_name
         for func_name, val in sampler_cfg.PREPARE.items():
-            self.db_infos = getattr(self, func_name)(self.db_infos, val) #dict_items([('filter_by_min_points', ['Car:5', 'Pedestrian:5', 'Cyclist:5']), ('filter_by_difficulty', [-1])])
+            self.db_infos = getattr(self, func_name)(self.db_infos, val)
 
         self.gt_database_data_key = self.load_db_to_shared_memory() if self.use_shared_memory else None
 

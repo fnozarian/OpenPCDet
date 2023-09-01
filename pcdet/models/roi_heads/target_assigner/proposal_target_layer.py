@@ -30,9 +30,7 @@ class ProposalTargetLayer(nn.Module):
                 rcnn_cls_labels: (B, M)
         """
 
-        targets_dict = self.sample_rois_for_rcnn(batch_dict=batch_dict)
-
-        return targets_dict
+        return self.sample_rois_for_rcnn(batch_dict=batch_dict)
 
     def sample_rois_for_rcnn(self, batch_dict):
         """
@@ -51,17 +49,15 @@ class ProposalTargetLayer(nn.Module):
         code_size = rois.shape[-1]
         batch_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size)
         batch_roi_scores = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
+        batch_roi_scores_multiclass = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, 3)
         batch_roi_labels = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
         batch_gt_of_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size + 1)
         batch_roi_ious = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
-        # batch_gt_scores = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
         batch_reg_valid_mask = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
         batch_cls_labels = -rois.new_ones(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
         interval_mask = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, dtype=torch.bool)
-        batch_pcv_scores = rois.new_ones((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE))
 
         for index in range(batch_size):
-            # TODO(farzad) WARNING!!! The index for cur_gt_boxes was missing and caused an error. FIX this in other branches.
             cur_gt_boxes = batch_dict['gt_boxes'][index]
             k = cur_gt_boxes.__len__() - 1
             while k >= 0 and cur_gt_boxes[k].sum() == 0:
@@ -76,35 +72,22 @@ class ProposalTargetLayer(nn.Module):
                     sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = self.subsample_labeled_rois(batch_dict, index)
                 else:
                     sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = subsample_unlabeled_rois(batch_dict, index)
-                cur_roi = batch_dict['rois'][index][sampled_inds]
-                cur_roi_scores = batch_dict['roi_scores'][index][sampled_inds]
-                cur_roi_labels = batch_dict['roi_labels'][index][sampled_inds]
-                batch_roi_ious[index] = roi_ious
-                # batch_gt_scores[index] = batch_dict['pred_scores_ema'][index][sampled_inds]
-                batch_gt_of_rois[index] = cur_gt_boxes[gt_assignment[sampled_inds]]
             else:
                 sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = self.subsample_labeled_rois(batch_dict, index)
-                cur_roi = batch_dict['rois'][index][sampled_inds]
-                cur_roi_scores = batch_dict['roi_scores'][index][sampled_inds]
-                cur_roi_labels = batch_dict['roi_labels'][index][sampled_inds]
-                batch_roi_ious[index] = roi_ious
-                batch_gt_of_rois[index] = cur_gt_boxes[gt_assignment[sampled_inds]]
-
-            batch_rois[index] = cur_roi
-            batch_roi_labels[index] = cur_roi_labels
-            batch_roi_scores[index] = cur_roi_scores
-            interval_mask[index] = cur_interval_mask
+            batch_rois[index] = batch_dict['rois'][index][sampled_inds]
+            batch_gt_of_rois[index] = cur_gt_boxes[gt_assignment[sampled_inds]]
+            batch_roi_ious[index] = roi_ious
+            batch_roi_scores[index] = batch_dict['roi_scores'][index][sampled_inds]
+            batch_roi_scores_multiclass[index] = batch_dict['roi_scores_multiclass'][index][sampled_inds]
+            batch_roi_labels[index] = batch_dict['roi_labels'][index][sampled_inds]
             batch_reg_valid_mask[index] = cur_reg_valid_mask
             batch_cls_labels[index] = cur_cls_labels
+            interval_mask[index] = cur_interval_mask
 
-        targets_dict = {'rois': batch_rois, 'gt_of_rois': batch_gt_of_rois, 'gt_iou_of_rois': batch_roi_ious,
-                        'roi_scores': batch_roi_scores, 'roi_labels': batch_roi_labels,
-                        'reg_valid_mask': batch_reg_valid_mask,
-                        'rcnn_cls_labels': batch_cls_labels,
-                        'interval_mask': interval_mask,
-                        'pcv_scores': batch_pcv_scores}
-
-        return targets_dict
+        return {'rois': batch_rois, 'gt_of_rois': batch_gt_of_rois, 'gt_iou_of_rois': batch_roi_ious,
+                'roi_scores': batch_roi_scores, 'roi_scores_multiclass': batch_roi_scores_multiclass,
+                'roi_labels': batch_roi_labels, 'reg_valid_mask': batch_reg_valid_mask,
+                'rcnn_cls_labels': batch_cls_labels, 'interval_mask': interval_mask}
 
     def subsample_unlabeled_rois_default(self, batch_dict, index):
         cur_roi = batch_dict['rois'][index]
@@ -120,8 +103,6 @@ class ProposalTargetLayer(nn.Module):
             iou3d = iou3d_nms_utils.boxes_iou3d_gpu(cur_roi, cur_gt_boxes[:, 0:7])  # (M, N)
             max_overlaps, gt_assignment = torch.max(iou3d, dim=1)
 
-        # TODO(farzad) Define a better sampler! This might limit the full flexibility of pre_loss_filtering!
-        # sampled_inds = self.subsample_rois(max_overlaps=max_overlaps)
         fg_rois_per_image = int(np.round(self.roi_sampler_cfg.FG_RATIO * self.roi_sampler_cfg.ROI_PER_IMAGE))
         bg_rois_per_image = self.roi_sampler_cfg.ROI_PER_IMAGE - fg_rois_per_image
         if self.roi_sampler_cfg.get('UNLABELED_SAMPLE_EASY_BG', False):
@@ -137,11 +118,38 @@ class ProposalTargetLayer(nn.Module):
             sampled_inds = torch.cat([sampled_inds, easy_bg_inds])
 
         roi_ious = max_overlaps[sampled_inds]
+        sampled_gt_assignment = gt_assignment[sampled_inds]
+        sampled_gt_assigned_boxes = cur_gt_boxes[sampled_gt_assignment]
+        sampled_cur_roi_labels = cur_roi_labels[sampled_inds].detach().clone() - 1
 
-        # interval_mask, reg_valid_mask and cls_labels are defined in pre_loss_filtering based on advanced thresholding.
-        cur_reg_valid_mask = torch.zeros_like(sampled_inds, dtype=torch.int)
-        cur_cls_labels = -torch.ones_like(sampled_inds, dtype=torch.float)
-        interval_mask = torch.zeros_like(sampled_inds, dtype=torch.bool)
+        # ----------- REG_VALID_MASK -----------
+        reg_fg_thresh = self.roi_sampler_cfg.UNLABELED_REG_FG_THRESH
+        reg_fg_thresh = roi_ious.new_tensor(reg_fg_thresh).reshape(1, -1).repeat(len(roi_ious), 1)
+        reg_fg_thresh = torch.gather(reg_fg_thresh, dim=-1, index=sampled_cur_roi_labels.unsqueeze(-1)).squeeze(-1)
+        cur_reg_valid_mask = (roi_ious > reg_fg_thresh).long()
+
+        # ----------- RCNN_CLS_LABELS -----------
+        cls_fg_thresh = self.roi_sampler_cfg.UNLABELED_CLS_FG_THRESH
+        fg_thresh = roi_ious.new_tensor(cls_fg_thresh).reshape(1, -1).repeat(len(roi_ious), 1)
+        cls_fg_thresh = torch.gather(fg_thresh, dim=-1, index=sampled_cur_roi_labels.unsqueeze(-1)).squeeze(-1)
+        cls_bg_thresh = self.roi_sampler_cfg.UNLABELED_CLS_BG_THRESH
+
+        fg_mask = roi_ious > cls_fg_thresh
+        bg_mask = roi_ious < cls_bg_thresh
+        interval_mask = ~(fg_mask | bg_mask)
+        # ignore_mask = torch.eq(roi_ious, 0).all(dim=-1)
+        ignore_mask = torch.eq(sampled_gt_assigned_boxes, 0).all(dim=-1)
+
+        cur_cls_labels = roi_ious.clone().detach()
+        # Hard labeling for FGs/BGs, soft labeling for UCs
+        cur_cls_labels[ignore_mask] = -1
+        if self.roi_sampler_cfg.get("UNLABELED_SHARP_RCNN_CLS_LABELS", False):
+            cur_cls_labels[fg_mask] = 1.
+            cur_cls_labels[bg_mask] = 0.
+        # Normalize raw IoUs as per FG and BG thresholds
+        if self.roi_sampler_cfg.get("UNLABELED_USE_CALIBRATED_IOUS", False):
+            cur_cls_labels[interval_mask] = (cur_cls_labels[interval_mask] - cls_bg_thresh) \
+                                            / (cls_fg_thresh[interval_mask] - cls_bg_thresh)
 
         return sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, interval_mask
 

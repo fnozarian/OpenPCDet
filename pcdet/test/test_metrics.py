@@ -329,7 +329,7 @@ class MyTestModule(torch.nn.Module):
 
     def forward(self, pseudo_boxes_list, ori_boxes_list, pseudo_scores, pseudo_sem_scores):
         self.map_metric.update(pseudo_boxes_list, ori_boxes_list, pseudo_scores, pseudo_sem_scores)
-        results = self.map_metric.compute
+        results = self.map_metric.compute()
         return results
 
 

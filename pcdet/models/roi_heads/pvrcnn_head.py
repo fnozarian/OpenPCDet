@@ -65,7 +65,7 @@ class PVRCNNHead(RoIHeadTemplate):
                     nn.init.constant_(m.bias, 0)
         nn.init.normal_(self.reg_layers[-1].weight, mean=0, std=0.001)
 
-    def roi_grid_pool(self, batch_dict, pool_gtboxes=False):
+    def roi_grid_pool(self, batch_dict, use_gtboxes=False):
         """
         Args:
             batch_dict:
@@ -79,7 +79,7 @@ class PVRCNNHead(RoIHeadTemplate):
 
         """
         batch_size = batch_dict['batch_size']
-        rois = batch_dict['gt_boxes'][..., 0:7] if pool_gtboxes else batch_dict['rois']
+        rois = batch_dict['gt_boxes'][..., 0:7] if use_gtboxes else batch_dict['rois']
         point_coords = batch_dict["point_coords"]
         point_features = batch_dict["point_features"]
         point_cls_scores = batch_dict["point_cls_scores"]
@@ -136,8 +136,8 @@ class PVRCNNHead(RoIHeadTemplate):
                           - (local_roi_size.unsqueeze(dim=1) / 2)  # (B, 6x6x6, 3)
         return roi_grid_points
 
-    def get_pooled_features(self, batch_dict, pool_gtboxes=False):
-        pooled_features = self.roi_grid_pool(batch_dict, pool_gtboxes=pool_gtboxes)  # (BxN, 6x6x6, C)
+    def pool_features(self, batch_dict, use_gtboxes=False):
+        pooled_features = self.roi_grid_pool(batch_dict, use_gtboxes=use_gtboxes)  # (BxN, 6x6x6, C)
         grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
         batch_size_rcnn = pooled_features.shape[0]
         pooled_features = pooled_features.permute(0, 2, 1). \
@@ -165,7 +165,7 @@ class PVRCNNHead(RoIHeadTemplate):
             targets_dict['ori_unlabeled_boxes'] = batch_dict['ori_unlabeled_boxes']
             targets_dict['points'] = batch_dict['points']
 
-        pooled_features = self.get_pooled_features(batch_dict)
+        pooled_features = self.pool_features(batch_dict)
         batch_size_rcnn = pooled_features.shape[0]
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
@@ -177,8 +177,8 @@ class PVRCNNHead(RoIHeadTemplate):
             roi_features = pooled_features.clone().detach().view(batch_size_rcnn, -1)
             roi_scores_shape = batch_dict['roi_scores'].shape  # (B, N)
             bank = feature_bank_registry.get('gt_aug_lbl_prototypes')
-            targets_dict['roi_sim_scores'] = bank.get_sim_scores(roi_features).view(*roi_scores_shape, -1)
-
+            sim_scores = bank.get_sim_scores(roi_features)
+            targets_dict['roi_sim_scores'] = sim_scores.view(*roi_scores_shape, -1)
 
         if not self.training or self.predict_boxes_when_training:
             batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(

@@ -18,7 +18,7 @@ DATA_CONFIG:
               NUM_POINT_FEATURES: 4
               DATABASE_WITH_FAKELIDAR: False
               REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]
-              LIMIT_WHOLE_SCENE: False
+              LIMIT_WHOLE_SCENE: True  # Temporarily enabled to fix KeyError bug in prototyping
 
             - NAME: random_world_flip
               ALONG_AXIS_LIST: ['x']
@@ -160,8 +160,9 @@ MODEL:
         NAME: PVRCNNHead
         CLASS_AGNOSTIC: True
         ENABLE_VIS: False
-        ENABLE_RELIABILITY: False
-        ENABLE_SOFT_TEACHER: False
+        ENABLE_PROTO_CONTRASTIVE_LOSS: False
+        PROTO_CONTRASTIVE_LOSS_WEIGHT: 1.0
+        ENABLE_SOFT_TEACHER: True
         ENABLE_ULB_CLS_DIST_LOSS: False
         ENABLE_EVAL: True
         METRICS_PRED_TYPES: [roi_pl_gt, pl_gt_metrics_before_filtering]
@@ -208,18 +209,15 @@ MODEL:
 
             REG_FG_THRESH: 0.55
             UNLABELED_REG_FG_THRESH: [0.55, 0.55, 0.55]
-            UNLABELED_SAMPLER_TYPE: subsample_unlabeled_rois_classwise
-            UNLABELED_SAMPLE_EASY_BG: True
+            UNLABELED_SAMPLER_TYPE: subsample_unlabeled_rois_default
+            UNLABELED_SAMPLE_EASY_BG: False
             UNLABELED_SHARP_RCNN_CLS_LABELS: True
             UNLABELED_USE_CALIBRATED_IOUS: True
-            UNLABELED_TEACHER_SCORES_FOR_RVM: False
-            UNLABELED_INTERVAL_WITH_TEACHER_SCORES: False
             USE_ULB_CLS_FG_THRESH_FOR_LB: False
             DISABLE_ST_WEIGHTS: False
 
         LOSS_CONFIG:
-            UL_RCNN_CLS_WEIGHT_TYPE: 'interval-only' # two options: `all` or `interval-only`
-            USE_BOX_REG_VAR: False
+            UL_RCNN_CLS_WEIGHT_TYPE: 'rev_uc-bg'
             CLS_LOSS: BinaryCrossEntropy
             REG_LOSS: smooth-l1
             CORNER_LOSS_REGULARIZATION: True
@@ -257,12 +255,12 @@ MODEL:
             NMS_PRE_MAXSIZE: 4096
             NMS_POST_MAXSIZE: 500
 
-    THRESH: [0.8, 0.4, 0.4]
+    THRESH: [0.95, 0.85, 0.85]
     UNLABELED_SUPERVISE_CLS: True
     UNLABELED_SUPERVISE_OBJ: False
     UNLABELED_SUPERVISE_REFINE: True
     UNLABELED_WEIGHT: 1.0
-    SEM_THRESH: [0.2, 0.0, 0.0]
+    SEM_THRESH: [0.0, 0.0, 0.0]
     SUPERVISE_MODE: 0
     NO_NMS: False
     EMA_ALPHA: 0.999
@@ -274,7 +272,7 @@ MODEL:
         - NAME: gt_aug_lbl_prototypes
           BANK_SIZE: null # Determined the total number of labeled instances in all classes for each split during runtime
           FEATURE_SIZE: 27648  # 128 * 6 * 6 * 6: 128 channels of 6x6x6 grid points
-          TEMPERATURE: 1.0
+          TEMPERATURE: 0.1
           DIRECT_UPDATE: False
           RESET_STATE_INTERVAL: 37  # 1% setting for ~3700 KITTI samples
           MOMENTUM: 0.9
