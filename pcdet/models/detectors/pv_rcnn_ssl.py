@@ -145,6 +145,21 @@ class PVRCNN_SSL(Detector3DTemplate):
                     except TypeError as e:
                         batch_dict_ema = cur_module(batch_dict_ema)
 
+            if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
+                thresh_reg = self.thresh_registry.get(tag='pl_adaptive_thresh')
+                pred_weak_aug_before_nms = torch.sigmoid(batch_dict_ema['batch_cls_preds']).detach().clone()
+                # to be used later for updating the EMA (p_model/p_target)
+                pred_weak_aug_before_nms_org = pred_weak_aug_before_nms.clone()
+                if thresh_reg.iteration_count > 0:
+                    pred_weak_aug_unlab_before_nms = pred_weak_aug_before_nms[unlabeled_inds, ...]
+                    pred_weak_aug_unlab_before_nms_aligned = pred_weak_aug_unlab_before_nms * \
+                        (thresh_reg.ema_pred_weak_aug_lab_before_nms + 1e-6) / (thresh_reg.ema_pred_weak_aug_unlab_before_nms + 1e-6)
+                    pred_weak_aug_unlab_before_nms_aligned = thresh_reg.normalize_(pred_weak_aug_unlab_before_nms_aligned)
+                    pred_weak_aug_before_nms[unlabeled_inds, ...] = pred_weak_aug_unlab_before_nms_aligned
+                
+                batch_dict_ema['batch_cls_preds'] = pred_weak_aug_before_nms
+                batch_dict_ema['cls_preds_normalized'] = True
+
             pred_dicts_ens, recall_dicts_ema = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
 
             # Used for calc stats before and after filtering
@@ -152,9 +167,6 @@ class PVRCNN_SSL(Detector3DTemplate):
             # if self.model_cfg.ROI_HEAD.get("ENABLE_EVAL", False):
             #     # PL metrics before filtering
             #     self.update_metrics(batch_dict, pred_dicts_ens, unlabeled_inds, labeled_inds)
-
-            if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
-                self.update_adaptive_thresholding_metrics(pred_dicts_ens, unlabeled_inds)
 
             pseudo_boxes, pseudo_scores, pseudo_sem_scores, pseudo_boxes_var, pseudo_scores_var = \
                 self._filter_pseudo_labels(pred_dicts_ens, unlabeled_inds)
@@ -168,6 +180,20 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             for cur_module in self.pv_rcnn.module_list:
                 batch_dict = cur_module(batch_dict)
+
+            if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
+                
+                pred_strong_aug_before_nms_org = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
+                pred_dicts_std, recall_dicts_std = self.pv_rcnn_ema.post_processing(batch_dict,
+                                                                                    no_recall_dict=True)
+                metrics_input = defaultdict(list)
+                for ind in range(len(pred_dicts_std)):
+                    batch_type = 'unlab' if ind in unlabeled_inds else 'lab'
+                    metrics_input[f'pred_weak_aug_{batch_type}_before_nms'].append(pred_weak_aug_before_nms_org[ind])
+                    metrics_input[f'pred_weak_aug_{batch_type}_after_nms'].append(pred_dicts_ens[ind]['pred_scores'].clone().detach())
+                    metrics_input[f'pred_strong_aug_{batch_type}_before_nms'].append(pred_strong_aug_before_nms_org[ind])
+                    metrics_input[f'pred_strong_aug_{batch_type}_after_nms'].append(pred_dicts_std[ind]['pred_scores'].clone().detach())
+                self.thresh_registry.get(tag='pl_adaptive_thresh').update(**metrics_input)
 
             self._update_feature_bank(batch_dict, labeled_inds)
 

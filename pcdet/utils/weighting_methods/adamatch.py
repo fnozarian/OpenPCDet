@@ -1,8 +1,24 @@
 import torch
 from torchmetrics import Metric
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
 
 """
 Adamatch based relative Thresholding
+mean conf. of the top-1 prediction on the weakly aug source data multiplied by a user provided threshold
+
+Adamatch based Dist. Alignment 
+Rectify the target unlabeled pseudo-labels by multiplying them by the ratio of the expected 
+value of the weakly aug source labels E[YcapSL;w] to the expected
+value of the target labels E[YcapTU;w], obtaining the final pseudo-labels YtildaTU;w
+
+REF: UPS FRAMEWORK DA
+probs_x_ulb_w = accumulated_metrics['pred_weak_aug_unlab_before_nms'].view(-1)
+probs_x_lb_s = accumulated_metrics['pred_weak_aug_lab_before_nms'].view(-1)
+self.p_model = self.momentum  * self.p_model + (1 - self.momentum) * torch.mean(probs_x_ulb_w)
+self.p_target = self.momentum  * self.p_target + (1 - self.momentum) * torch.mean(probs_x_lb_s)
+probs_x_ulb_aligned = probs_x_ulb_w * (self.p_target + 1e-6) / (self.p_model + 1e-6)
 """
 class AdaMatchThreshold(Metric):
     full_state_update: bool = False
@@ -12,64 +28,181 @@ class AdaMatchThreshold(Metric):
         self.config = kwargs.get('config', None)
         self.reset_state_interval = self.config.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('RESET_STATE_INTERVAL', 32)
         self.pre_filtering_thresh=self.config.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('PRE_FILTERING_THRESH', 0.1)
+        self.enable_plots=self.config.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE_PLOTS', False)
         self.enable_clipping = self.config.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE_CLIPPING', False)
+        self.relative_val= self.config.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('RELATIVE_VAL', 0.95)
         self.momentum= self.config.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('MOMENTUM', 0.99)
-
-        self.class_names = {0: 'Car', 1: 'Pedestrian', 2: 'Cyclist'}
         self.num_classes = 3
+        self.iteration_count=0
+        self.states_name = ['pred_weak_aug_unlab_before_nms', 'pred_weak_aug_unlab_after_nms', 
+                            'pred_weak_aug_lab_before_nms', 'pred_weak_aug_lab_after_nms',
+                            'pred_strong_aug_unlab_before_nms', 'pred_strong_aug_unlab_after_nms', 
+                            'pred_strong_aug_lab_before_nms', 'pred_strong_aug_lab_after_nms']
+
+        for name in self.states_name:
+            self.add_state(name, default=[], dist_reduce_fx='cat')
+
+        self.relative_threshold = torch.tensor(1.0 / self.num_classes)
+        self.relative_ema_threshold = torch.tensor(1.0 / self.num_classes)
+
+        self.ema_pred_weak_aug_unlab_before_nms   = torch.tensor(1.0 / self.num_classes)
+        self.ema_pred_weak_aug_lab_before_nms     = torch.tensor(1.0 / self.num_classes)
         
-        self.add_state("lab_roi_labels", default=[], dist_reduce_fx='cat')
-        self.add_state("lab_roi_scores", default=[], dist_reduce_fx='cat')
-        self.add_state("lab_gt_iou_of_rois", default=[], dist_reduce_fx='cat')
+        self.ema_pred_strong_aug_unlab_before_nms = torch.tensor(1.0 / self.num_classes)
+        self.ema_pred_strong_aug_lab_before_nms   = torch.tensor(1.0 / self.num_classes)
 
-        self.cls_local_thresholds = torch.ones((self.num_classes)) / self.num_classes
-        self.iou_local_thresholds = torch.ones((self.num_classes)) / self.num_classes
 
-    def update(self, lab_roi_labels: torch.Tensor, 
-               lab_roi_scores: torch.Tensor,
-              lab_gt_iou_of_rois: torch.Tensor, ) -> None:
+    def update(self, **kwargs):
+        for state_name in self.states_name:
+            value = kwargs.get(state_name)
+            if value is not None:
+                getattr(self, state_name).append(value)
 
-        self.lab_roi_labels.append(lab_roi_labels)
-        self.lab_roi_scores.append(lab_roi_scores)
-        self.lab_gt_iou_of_rois.append(lab_gt_iou_of_rois)
+
+    def _accumulate_metrics(self, prefilter=False):
+        accumulated_metrics = {}
+        for mname in self.states_name:
+            mstate = getattr(self, mname)
+            if isinstance(mstate, torch.Tensor):
+                mstate = [mstate]
+            if isinstance(mstate[0], list):  # Check if mstate is a list of pairs
+                mstate = [torch.cat(pair, dim=0) for pair in mstate]
+            mstate = torch.cat(mstate, dim=0)
+            if prefilter:
+                mstate = mstate[mstate>self.pre_filtering_thresh]
+            accumulated_metrics[mname]=mstate
         
-
-
+        return accumulated_metrics
+        
+    
+    def normalize_(self, data_in, prefilter=False):
+        min_val = data_in.min()
+        max_val = data_in.max()
+        data_out = (data_in - min_val) / (max_val - min_val)
+        if prefilter:
+            data_out = data_out[data_out>self.pre_filtering_thresh]
+        return data_out
+    
+    
     def compute(self):
         results = {}
 
-        if  len(self.unlab_gt_iou_of_rois) >= self.reset_state_interval:
-
-            lab_roi_labels = [i.clone().detach() for i in self.lab_roi_labels]
-            lab_roi_scores = [i.clone().detach() for i in self.lab_roi_scores]    
-            lab_gt_iou_of_rois = [i.clone().detach() for i in self.lab_gt_iou_of_rois]
-            lab_roi_labels = torch.cat(lab_roi_labels, dim=0)
-            lab_roi_scores = torch.cat(lab_roi_scores, dim=0)
-            lab_gt_iou_of_rois = torch.cat(lab_gt_iou_of_rois, dim=0)
-            lab_roi_labels -= 1
+        if  len(self.pred_weak_aug_lab_before_nms) >= self.reset_state_interval:
+            self.iteration_count+=1
             
+            accumulated_metrics = self._accumulate_metrics(prefilter=True)  # shape (N, 1)
+            
+            pred_weak_aug_unlab_before_nms   = accumulated_metrics['pred_weak_aug_unlab_before_nms'].view(-1)
+            pred_weak_aug_lab_before_nms     = accumulated_metrics['pred_weak_aug_lab_before_nms'].view(-1)
+            pred_strong_aug_unlab_before_nms = accumulated_metrics['pred_strong_aug_unlab_before_nms'].view(-1)
+            pred_strong_aug_lab_before_nms   = accumulated_metrics['pred_strong_aug_lab_before_nms'].view(-1)
 
-            # estimation using labeled data
-            for cind in range(self.num_classes):
-                cls_mask = lab_roi_labels == cind
-                cls_score = lab_roi_scores[cls_mask]
-                cls_score = cls_score[cls_score>self.pre_filtering_thresh]
-                iou_score = lab_gt_iou_of_rois[cls_mask]
-                iou_score = iou_score[iou_score>self.pre_filtering_thresh]
 
-                self.cls_local_thresholds[cind] = 0.9 * cls_score.mean()
-                self.iou_local_thresholds[cind] = 0.9 * iou_score.mean()
+            mu_pred_weak_aug_unlab_before_nms   = pred_weak_aug_unlab_before_nms.mean()
+            mu_pred_weak_aug_lab_before_nms     = pred_weak_aug_lab_before_nms.mean()
+            mu_pred_strong_aug_unlab_before_nms = pred_strong_aug_unlab_before_nms.mean()
+            mu_pred_strong_aug_lab_before_nms   = pred_strong_aug_lab_before_nms.mean()
 
+
+            self.ema_pred_weak_aug_unlab_before_nms     = self.momentum  * self.ema_pred_weak_aug_unlab_before_nms   + (1 - self.momentum) * mu_pred_weak_aug_unlab_before_nms
+            self.ema_pred_weak_aug_lab_before_nms       = self.momentum  * self.ema_pred_weak_aug_lab_before_nms     + (1 - self.momentum) * mu_pred_weak_aug_lab_before_nms
+            self.ema_pred_strong_aug_unlab_before_nms   = self.momentum  * self.ema_pred_strong_aug_unlab_before_nms + (1 - self.momentum) * mu_pred_strong_aug_unlab_before_nms
+            self.ema_pred_strong_aug_lab_before_nms     = self.momentum  * self.ema_pred_strong_aug_lab_before_nms   + (1 - self.momentum) * mu_pred_strong_aug_lab_before_nms
+
+            # 1. relative threshold using pred_weak_aug_lab_before_nms
+            self.relative_threshold = self.relative_val * mu_pred_weak_aug_lab_before_nms
+            self.relative_ema_threshold = self.relative_val * self.ema_pred_weak_aug_lab_before_nms
+            
+            # 2. DA of weak-augmnted-unlabeled data using target as weak-augmnted-labled (using Teacher predictions)
+            pred_weak_aug_unlab_before_nms_aligned = pred_weak_aug_unlab_before_nms * \
+                (self.ema_pred_weak_aug_lab_before_nms + 1e-6) / (self.ema_pred_weak_aug_unlab_before_nms + 1e-6)
+            pred_weak_aug_unlab_before_nms_aligned = self.normalize_(pred_weak_aug_unlab_before_nms_aligned, prefilter=True)
+            
+            # 3. DA of strong-augmnted-unlabeled data using target as strong-augmnted-labled (using Student predictions)
+            pred_strong_aug_unlab_before_nms_aligned = pred_strong_aug_unlab_before_nms * \
+                (self.ema_pred_strong_aug_lab_before_nms + 1e-6) / (self.ema_pred_strong_aug_unlab_before_nms + 1e-6)
+            pred_strong_aug_unlab_before_nms_aligned = self.normalize_(pred_strong_aug_unlab_before_nms_aligned, prefilter=True)
+            
 
             if self.enable_clipping:
-                self.cls_local_thresholds = torch.clip(self.cls_local_thresholds, 0.1, 0.9)
-                self.iou_local_thresholds = torch.clip(self.iou_local_thresholds, 0.1, 0.9)
+                self.relative_threshold = torch.clip(self.relative_threshold, 0.1, 0.9)
+                self.relative_ema_threshold = torch.clip(self.relative_ema_threshold, 0.1, 0.9)
 
-            results.update(**{'adamatch_cls_local_thr': {cls_name: self.cls_local_thresholds[i].item() for i, cls_name in self.class_names.items()},
-                       'adamatch_iou_local_thr': {cls_name: self.iou_local_thresholds[i].item() for i, cls_name in self.class_names.items()},
-                       })
-            
+            results['adamatch_mu_weak_unlab']= mu_pred_weak_aug_unlab_before_nms.item()
+            results['adamatch_mu_weak_lab']= mu_pred_weak_aug_lab_before_nms.item()
+            results['adamatch_ema_mu_weak_unlab']= self.ema_pred_weak_aug_unlab_before_nms.item()
+            results['adamatch_ema_mu_weak_lab']= self.ema_pred_weak_aug_lab_before_nms.item()
+            results['adamatch_ema_relative_threshold']= self.relative_ema_threshold.item()
+            results['adamatch_mu_weak_lab_relative_threshold']= self.relative_threshold.item()
+            results['adamatch_ema_mu_weak_lab_relative_threshold']= self.relative_ema_threshold.item()
+
+            if self.enable_plots:
+                HIST_BIN = np.linspace(self.pre_filtering_thresh, 1, 30)
+                palettes = {t: c for t, c in zip(['fp', 'tn', 'tp', 'fn'], sns.color_palette("hls", 4))}
+                BS = len(self.pred_weak_aug_lab_before_nms[0])
+                WS = self.reset_state_interval * BS
+                info = f"Iter: {self.iteration_count}    Interval: {self.reset_state_interval}    BS: {BS}    W: {(self.iteration_count - 1) * WS} - {self.iteration_count * WS}"
                 
+                # plot states
+                num_rows = 2
+                num_cols = len(self.states_name) // 2
+                fig, axs = plt.subplots(num_rows, num_cols, figsize=(12, 6), sharex='col', sharey='row', layout="compressed")
+                before_nms_states = [state_name for state_name in self.states_name if 'before_nms' in state_name]
+                after_nms_states = [state_name for state_name in self.states_name if 'after_nms' in state_name]
+                for col, state_name in enumerate(before_nms_states + after_nms_states):
+                    row = 0 if col < num_cols else 1
+                    col %= num_cols
+                    current_metric = accumulated_metrics[state_name].view(-1).cpu().numpy()
+                    axs[row, col].hist(current_metric, bins=HIST_BIN, alpha=0.7, label=state_name, edgecolor='black', color=palettes['fp'])
+                    axs[row, col].axvline(current_metric.mean().item(), linestyle='--', label='mu', color=palettes['fp'], alpha=0.9)
+                    if 'before_nms' in state_name:
+                        axs[row, col].axvline(eval(f"self.ema_{state_name}").item(), linestyle='--', label='ema', color=palettes['tp'], alpha=0.9)
+                    axs[row, col].legend(loc='upper right', fontsize='x-small')
+                    axs[row, col].set_xlabel('score', fontsize='x-small')
+                    axs[row, col].set_ylabel('count', fontsize='x-small')
+                    axs[row, col].set_ylim(0, 800)
+                plt.suptitle(info, fontsize='x-small')
+                #fig_title = f'iteration_acc_{self.iteration_count}.png'
+                #fig.get_figure().savefig(fig_title)
+                results['adamatch_acc_states_plot'] = fig.get_figure()
+                plt.close()
+
+                fig, axs = plt.subplots(1, 1, figsize=(12, 6), layout="compressed")
+                axs.hist(pred_strong_aug_unlab_before_nms.cpu().numpy(), bins=HIST_BIN, alpha=0.5, label='strong-aug unlab', edgecolor='black', color=palettes['fp'])
+                axs.hist(pred_strong_aug_lab_before_nms.cpu().numpy(), bins=HIST_BIN, alpha=0.5, label='strong-aug lab', edgecolor='black', color=palettes['tp'])
+                axs.hist(pred_strong_aug_unlab_before_nms_aligned.cpu().numpy(), bins=HIST_BIN, alpha=0.8, label='rectified strong-aug unlab', edgecolor='black', color=palettes['fn'])
+                axs.axvline(self.ema_pred_strong_aug_unlab_before_nms.item(), linestyle='--', label='ema unlab', color=palettes['fp'], alpha=0.9)
+                axs.axvline(self.ema_pred_strong_aug_lab_before_nms.item(), linestyle='--', label='ema lab (target)', color=palettes['tp'], alpha=0.9)
+                axs.axvline(mu_pred_strong_aug_unlab_before_nms.item(), linestyle='--', label='mu unlab', color=palettes['fn'], alpha=0.9)
+                axs.axvline(mu_pred_strong_aug_lab_before_nms.item(), linestyle='--', label='mu lab (target)', color=palettes['tn'], alpha=0.9)
+                axs.legend(loc='upper right', fontsize='x-small')
+                axs.set_xlabel('score', fontsize='x-small')
+                axs.set_ylabel('count', fontsize='x-small')
+                axs.set_ylim(0, 800)
+                plt.suptitle(info, fontsize='x-small')
+                #fig_title = f'iteration_acc_{self.iteration_count}.png'
+                #fig.get_figure().savefig(fig_title)
+                results['adamatch_strong_align_plot'] = fig.get_figure()
+                plt.close()
+
+                fig, axs = plt.subplots(1, 1, figsize=(12, 6), layout="compressed")
+                axs.hist(pred_weak_aug_unlab_before_nms.cpu().numpy(), bins=HIST_BIN, alpha=0.5, label='weak-aug unlab', edgecolor='black', color=palettes['fp'])
+                axs.hist(pred_weak_aug_lab_before_nms.cpu().numpy(), bins=HIST_BIN, alpha=0.5, label='weak-aug lab', edgecolor='black', color=palettes['tp'])
+                axs.hist(pred_weak_aug_unlab_before_nms_aligned.cpu().numpy(), bins=HIST_BIN, alpha=0.8, label='rectified weak-aug unlab', edgecolor='black', color=palettes['fn'])
+                axs.axvline(self.ema_pred_weak_aug_unlab_before_nms.item(), linestyle='--', label='ema unlab', color=palettes['fp'], alpha=0.9)
+                axs.axvline(self.ema_pred_weak_aug_lab_before_nms.item(), linestyle='--', label='ema lab (target)', color=palettes['tp'], alpha=0.9)
+                axs.axvline(mu_pred_weak_aug_unlab_before_nms.item(), linestyle='--', label='mu unlab', color=palettes['fn'], alpha=0.9)
+                axs.axvline(mu_pred_weak_aug_lab_before_nms.item(), linestyle='--', label='mu lab (target)', color=palettes['tn'], alpha=0.9)
+                axs.legend(loc='upper right', fontsize='x-small')
+                axs.set_xlabel('score', fontsize='x-small')
+                axs.set_ylabel('count', fontsize='x-small')
+                axs.set_ylim(0, 800)
+                plt.suptitle(info, fontsize='x-small')
+                #fig_title = f'iteration_acc_{self.iteration_count}.png'
+                #fig.get_figure().savefig(fig_title)
+                results['adamatch_weak_align_plot'] = fig.get_figure()
+                plt.close()
+
             self.reset()
 
         return results
