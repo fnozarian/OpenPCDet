@@ -9,11 +9,11 @@ from pcdet.ops.roiaware_pool3d import roiaware_pool3d_utils
 from .detector3d_template import Detector3DTemplate
 from .pv_rcnn import PVRCNN
 
-import common_utils
-from stats_utils import metrics_registry
-from prototype_utils import feature_bank_registry
+from pcdet.utils import common_utils
+from pcdet.utils.stats_utils import metrics_registry
+from pcdet.utils.prototype_utils import feature_bank_registry
+from tools.visual_utils import open3d_vis_utils as V
 from collections import defaultdict
-from visual_utils import open3d_vis_utils as V
 
 
 class PVRCNN_SSL(Detector3DTemplate):

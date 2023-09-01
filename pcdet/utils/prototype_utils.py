@@ -10,7 +10,7 @@ class FeatureBank(Metric):
 
     def __init__(self, **kwargs):
 
-        super().__init__(**kwargs)
+        super().__init__()
         self.tag = kwargs.get('NAME', None)
 
         self.temperature = kwargs.get('TEMPERATURE')
