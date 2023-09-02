@@ -469,7 +469,13 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pseudo_boxes_var.append(pseudo_box_var)
                 continue
 
-            conf_thresh = torch.tensor(self.thresh, device=pseudo_label.device).unsqueeze(
+            pl_thresh = self.thresh
+            if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
+                thresh_reg = self.thresh_registry.get(tag='pl_adaptive_thresh')
+                if thresh_reg.relative_ema_threshold is not None:
+                   pl_thresh = [thresh_reg.relative_ema_threshold.item()] * len(self.thresh)
+
+            conf_thresh = torch.tensor(pl_thresh, device=pseudo_label.device).unsqueeze(
                 0).repeat(len(pseudo_label), 1).gather(dim=1, index=(pseudo_label - 1).unsqueeze(-1))
 
             sem_conf_thresh = torch.tensor(self.sem_thresh, device=pseudo_label.device).unsqueeze(
