@@ -19,7 +19,13 @@ def log_tb_dict(tb_log, tb_dict, accumulated_iter):
             for sub_key, sub_val in val.items():
                 tb_log.add_pr_curve(cat + key + "_" + sub_key, sub_val['labels'], sub_val['predictions'], accumulated_iter)
         elif isinstance(val, dict):
-            tb_log.add_scalars(cat + key, val, accumulated_iter)
+            if isinstance(list(val.values())[0], plt.Figure):# dict of figures
+                for kkey, vval in val.items():
+                    if isinstance(vval, plt.Figure):
+                        tb_log.add_figure(cat + key +  "/" + kkey, vval, accumulated_iter)
+            else:
+                tb_log.add_scalars(cat + key, val, accumulated_iter)
+
         elif isinstance(val, plt.Figure):
             tb_log.add_figure(cat + key, val, accumulated_iter)
         else:
