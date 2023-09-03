@@ -119,7 +119,7 @@ class RoIHeadTemplate(nn.Module):
         rois = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_box_preds.shape[-1]))
         roi_scores = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
         roi_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
-
+        roi_scores_multiclass = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_cls_preds.shape[-1]))
         for index in range(batch_size):
             if batch_dict.get('batch_index', None) is not None:
                 assert batch_cls_preds.shape.__len__() == 2
@@ -142,9 +142,11 @@ class RoIHeadTemplate(nn.Module):
             rois[index, :len(selected), :] = box_preds[selected]
             roi_scores[index, :len(selected)] = cur_roi_scores[selected]
             roi_labels[index, :len(selected)] = cur_roi_labels[selected]
+            roi_scores_multiclass[index, :len(selected), :] = cls_preds[selected]
 
         batch_dict['rois'] = rois
         batch_dict['roi_scores'] = roi_scores
+        batch_dict['roi_scores_multiclass'] = roi_scores_multiclass
         batch_dict['roi_labels'] = roi_labels + 1
         batch_dict['has_class_labels'] = True if batch_cls_preds.shape[-1] > 1 else False
         batch_dict.pop('batch_index', None)
