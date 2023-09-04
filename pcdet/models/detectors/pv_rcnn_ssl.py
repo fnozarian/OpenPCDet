@@ -134,20 +134,20 @@ class PVRCNN_SSL(Detector3DTemplate):
 
     def _rectify_pl_scores(self, batch_dict_ema, unlabeled_inds):
         thresh_reg = self.thresh_registry.get(tag='pl_adaptive_thresh')
-        pred_weak_aug_before_nms = torch.sigmoid(batch_dict_ema['batch_cls_preds']).detach().clone()
+        pred_weak_aug = torch.sigmoid(batch_dict_ema['batch_cls_preds']).detach().clone()
         # to be used later for updating the EMA (p_model/p_target)
-        pred_weak_aug_before_nms_org = pred_weak_aug_before_nms.clone()
+        pred_weak_aug_org = pred_weak_aug.clone()
         if thresh_reg.iteration_count > 0:
-            pred_weak_aug_unlab_before_nms = pred_weak_aug_before_nms[unlabeled_inds, ...]
-            pred_weak_aug_unlab_before_nms_aligned = pred_weak_aug_unlab_before_nms * (thresh_reg.ema_pred_weak_aug_lab_before_nms + 1e-6) / (thresh_reg.ema_pred_weak_aug_unlab_before_nms + 1e-6)
-            pred_weak_aug_unlab_before_nms_aligned = thresh_reg.normalize_(pred_weak_aug_unlab_before_nms_aligned)
-            pred_weak_aug_before_nms[unlabeled_inds, ...] = pred_weak_aug_unlab_before_nms_aligned
+            pred_weak_aug_unlab = pred_weak_aug[unlabeled_inds, ...]
+            pred_weak_aug_unlab *=  (thresh_reg.emas['pred_pre_gt_sample_lab'] + 1e-6) / (thresh_reg.emas['pred_weak_aug_unlab'] + 1e-6)
+            # pred_weak_aug_unlab_aligned = thresh_reg.normalize_(pred_weak_aug_unlab_aligned)
+            pred_weak_aug[unlabeled_inds, ...] = torch.clip(pred_weak_aug_unlab, 0.0, 1.0)
 
-        batch_dict_ema['batch_cls_preds_org'] = pred_weak_aug_before_nms_org
-        batch_dict_ema['batch_cls_preds'] = pred_weak_aug_before_nms
+        batch_dict_ema['batch_cls_preds_org'] = pred_weak_aug_org
+        batch_dict_ema['batch_cls_preds'] = pred_weak_aug
         batch_dict_ema['cls_preds_normalized'] = True
 
-    def _gen_pseudo_labels(self, batch_dict_ema, ulb_inds):
+    def _gen_pseudo_labels(self, batch_dict_ema, ulb_inds, rectify=False):
         with torch.no_grad():
             # self.pv_rcnn_ema.eval()  # https://github.com/yezhen17/3DIoUMatch-PVRCNN/issues/6
             for cur_module in self.pv_rcnn_ema.module_list:
@@ -156,7 +156,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 except TypeError as e:
                     batch_dict_ema = cur_module(batch_dict_ema)
 
-        if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
+        if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False) and rectify:
             self._rectify_pl_scores(batch_dict_ema, ulb_inds)
 
         pseudo_labels, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
@@ -164,17 +164,18 @@ class PVRCNN_SSL(Detector3DTemplate):
         return pseudo_labels
 
     @staticmethod
-    def _split_ema_batch(batch_dict):
-        batch_dict_ema = {}
+    def _split_batch(batch_dict, tag='ema'):
+        assert tag in ['ema', 'pre_gt_sample'], f'{tag} not in list [ema, pre_gt_sample]'
+        batch_dict_out = {}
         keys = list(batch_dict.keys())
         for k in keys:
-            if f'{k}_ema' in keys:
+            if f'{k}_{tag}' in keys:
                 continue
-            if k.endswith('_ema'):
-                batch_dict_ema[k[:-4]] = batch_dict[k]
+            if k.endswith(f'_{tag}'):
+                batch_dict_out[k[:-(len(tag)+1)]] = batch_dict[k]
             else:
-                batch_dict_ema[k] = batch_dict[k]
-        return batch_dict_ema
+                batch_dict_out[k] = batch_dict[k]
+        return batch_dict_out
 
     @staticmethod
     def _prep_batch_dict(batch_dict):
@@ -188,14 +189,13 @@ class PVRCNN_SSL(Detector3DTemplate):
 
     def _forward_training(self, batch_dict):
         lbl_inds, ulb_inds = self._prep_batch_dict(batch_dict)
-        batch_dict_ema = self._split_ema_batch(batch_dict)
-
-        pseudo_labels = self._gen_pseudo_labels(batch_dict_ema, ulb_inds)
-
+        batch_dict_pre_gt_sample= self._split_batch(batch_dict, tag='pre_gt_sample')
+        _ = self._gen_pseudo_labels(batch_dict_pre_gt_sample, ulb_inds)
+        
+        batch_dict_ema = self._split_batch(batch_dict, tag='ema')
+        pseudo_labels = self._gen_pseudo_labels(batch_dict_ema, ulb_inds, rectify=True)
         pseudo_boxes, pseudo_scores, pseudo_sem_scores = self._filter_pseudo_labels(pseudo_labels, ulb_inds)
-
         self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, ulb_inds, lbl_inds)
-
         # apply student's augs on teacher's pseudo-labels (filtered) only (not points)
         batch_dict = self.apply_augmentation(batch_dict, batch_dict, ulb_inds, key='gt_boxes')
 
@@ -203,16 +203,26 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict = cur_module(batch_dict)
 
         if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
-            pred_strong_aug_before_nms_org = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
-            pred_dicts_std, recall_dicts_std = self.pv_rcnn_ema.post_processing(batch_dict, no_recall_dict=True)
+            pred_weak_aug = batch_dict_ema['batch_cls_preds_org'].detach().clone()
+            rect_pred_weak_aug = batch_dict_ema['batch_cls_preds'].detach().clone()
 
+            pred_strong_aug = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
+            pred_pre_gt_sample = torch.sigmoid(batch_dict_pre_gt_sample['batch_cls_preds']).detach().clone()
+            #roi_scores_multiclass_weak_aug = batch_dict_ema['roi_scores_multiclass'].detach().clone() # BS, 100, 3
             metrics_input = defaultdict(list)
-            for ind in range(len(pred_dicts_std)):
+            # TODO Discuss with Farzad, should only keep before nms metrics and ignore strong augmented (student dict)
+            for ind in range(len(pseudo_labels )):
                 batch_type = 'unlab' if ind in ulb_inds else 'lab'
-                metrics_input[f'pred_weak_aug_{batch_type}_before_nms'].append(batch_dict_ema['batch_cls_preds_org'][ind])
-                metrics_input[f'pred_weak_aug_{batch_type}_after_nms'].append(pseudo_labels[ind]['pred_scores'].clone().detach())
-                metrics_input[f'pred_strong_aug_{batch_type}_before_nms'].append(pred_strong_aug_before_nms_org[ind])
-                metrics_input[f'pred_strong_aug_{batch_type}_after_nms'].append(pred_dicts_std[ind]['pred_scores'].clone().detach())
+                # roi_scores_weak_aug, roi_labels_weak_aug = torch.max(roi_scores_multiclass_weak_aug[ind], dim=1)
+                # roi_scores_weak_aug = torch.sigmoid(roi_scores_weak_aug)
+                # metrics_input[f'roi_score_weak_aug_{batch_type}'].append(roi_scores_weak_aug)
+                # metrics_input[f'roi_labels_weak_aug_{batch_type}'].append(roi_labels_weak_aug)
+                metrics_input[f'pred_weak_aug_{batch_type}'].append(pred_weak_aug[ind])
+                metrics_input[f'rect_pred_weak_aug_{batch_type}'].append(rect_pred_weak_aug[ind])
+
+                metrics_input[f'pred_strong_aug_{batch_type}'].append(pred_strong_aug[ind])
+                metrics_input[f'pred_pre_gt_sample_{batch_type}'].append(pred_pre_gt_sample[ind])
+
             self.thresh_registry.get(tag='pl_adaptive_thresh').update(**metrics_input)
 
         # Update the bank with student's features from augmented labeled data

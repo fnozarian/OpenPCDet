@@ -173,7 +173,7 @@ MODEL:
             MOMENTUM: 0.9
             PRE_FILTERING_THRESH: 0.1
             RESET_STATE_INTERVAL: 32
-            ENABLE_PLOTS: True
+            ENABLE_PLOTS: False
             ENABLE_CLIPPING: False
             GMM_POLICY: high
             MU1: 0.1
