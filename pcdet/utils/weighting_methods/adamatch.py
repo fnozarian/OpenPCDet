@@ -5,20 +5,20 @@ import numpy as np
 import seaborn as sns
 
 """
-Adamatch based relative Thresholding
-mean conf. of the top-1 prediction on the weakly aug source data multiplied by a user provided threshold
+    Adamatch based relative Thresholding
+    mean conf. of the top-1 prediction on the weakly aug source data multiplied by a user provided threshold
 
-Adamatch based Dist. Alignment 
-Rectify the target unlabeled pseudo-labels by multiplying them by the ratio of the expected 
-value of the weakly aug source labels E[YcapSL;w] to the expected
-value of the target labels E[YcapTU;w], obtaining the final pseudo-labels YtildaTU;w
+    Adamatch based Dist. Alignment 
+    Rectify the target unlabeled pseudo-labels by multiplying them by the ratio of the expected 
+    value of the weakly aug source labels E[YcapSL;w] to the expected
+    value of the target labels E[YcapTU;w], obtaining the final pseudo-labels YtildaTU;w
 
-REF: UPS FRAMEWORK DA
-probs_x_ulb_w = accumulated_metrics['pred_weak_aug_unlab'].view(-1)
-probs_x_lb_s = accumulated_metrics['pred_weak_aug_lab'].view(-1)
-self.p_model = self.momentum  * self.p_model + (1 - self.momentum) * torch.mean(probs_x_ulb_w)
-self.p_target = self.momentum  * self.p_target + (1 - self.momentum) * torch.mean(probs_x_lb_s)
-probs_x_ulb_aligned = probs_x_ulb_w * (self.p_target + 1e-6) / (self.p_model + 1e-6)
+    REF: UPS FRAMEWORK DA
+    probs_x_ulb_w = accumulated_metrics['pred_weak_aug_unlab'].view(-1)
+    probs_x_lb_s = accumulated_metrics['pred_weak_aug_lab'].view(-1)
+    self.p_model = self.momentum  * self.p_model + (1 - self.momentum) * torch.mean(probs_x_ulb_w)
+    self.p_target = self.momentum  * self.p_target + (1 - self.momentum) * torch.mean(probs_x_lb_s)
+    probs_x_ulb_aligned = probs_x_ulb_w * (self.p_target + 1e-6) / (self.p_model + 1e-6)
 """
 class AdaMatchThreshold(Metric):
     full_state_update: bool = False
@@ -32,7 +32,7 @@ class AdaMatchThreshold(Metric):
         self.pre_filtering_thresh = config_roi_head.get('PRE_FILTERING_THRESH', 0.1)
         self.enable_plots = config_roi_head.get('ENABLE_PLOTS', False)
         self.enable_clipping = config_roi_head.get('ENABLE_CLIPPING', False)
-        self.relative_val = config_roi_head.get('RELATIVE_VAL', 1)
+        self.relative_val = config_roi_head.get('RELATIVE_VAL', 0.8)
         self.momentum = config_roi_head.get('MOMENTUM', 0.9)
         self.num_classes = 3
         self.iteration_count = 0
@@ -94,11 +94,11 @@ class AdaMatchThreshold(Metric):
                 self.means[key] = val.mean()
                 self._update_ema(key)
 
-            self._update_relative_thresholds(tag='ema_pred_pre_gt_sample_lab')
+            self._update_relative_thresholds(tag='pred_pre_gt_sample_lab')
             
             results.update(self._get_results_dict())
             if self.enable_plots:
-                results['adamatch_acc_states_plot'] = self._generate_histogram_plot(accumulated_metrics)
+                results['acc_states_plot'] = self._generate_histogram_plot(accumulated_metrics)
 
             self.reset()
 
@@ -110,7 +110,7 @@ class AdaMatchThreshold(Metric):
         else:
             self.emas[tag] = self.momentum * self.emas[tag] + (1 - self.momentum) * self.means[tag]
 
-    def _update_relative_thresholds(self, tag='ema_pred_pre_gt_sample_lab'):
+    def _update_relative_thresholds(self, tag='pred_pre_gt_sample_lab'):
         self.relative_threshold = self.relative_val * self.means[tag]
         self.relative_ema_threshold = self.relative_val * self.emas[tag]
 
@@ -149,13 +149,12 @@ class AdaMatchThreshold(Metric):
 
     def _get_results_dict(self):
         results={}
-        for tag in self.states_name:
-            results[f'adamatch_ema_{tag}'] = self.emas[tag].item()
-            results[f'adamatch_mu_{tag}'] = self.means[tag].item()
-        results['adamatch_rt_mu_pred_pre_gt_sample_lab']= self.relative_threshold.item()
-        results['adamatch_rt_ema_pred_pre_gt_sample_lab']= self.relative_ema_threshold.item()
-        results['adamatch_ratio_mu']=  self.means['pred_pre_gt_sample_lab'].item()/self.means['pred_weak_aug_unlab'].item()
-        results['adamatch_ratio_ema']=  self.emas['pred_pre_gt_sample_lab'].item()/self.emas['pred_weak_aug_unlab'].item()
+        results['ema']={k: v.item() for k, v in self.emas.items()}
+        results['mu']={k: v.item() for k, v in self.means.items()}
+        results.update({'rt_mu_pred_pre_gt_sample_lab': self.relative_threshold.item(),
+                        'rt_ema_pred_pre_gt_sample_lab': self.relative_ema_threshold.item(),
+                        'ratio_mu' : (self.means['pred_pre_gt_sample_lab']/self.means['pred_weak_aug_unlab']).item(),
+                        'ratio_ema': (self.emas['pred_pre_gt_sample_lab']/self.emas['pred_weak_aug_unlab']).item()})
         return results
     
 
