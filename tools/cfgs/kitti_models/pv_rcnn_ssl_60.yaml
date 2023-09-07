@@ -164,16 +164,21 @@ MODEL:
         PROTO_CONTRASTIVE_LOSS_WEIGHT: 1.0
         ENABLE_SOFT_TEACHER: False
         ENABLE_ULB_CLS_DIST_LOSS: False
-        ENABLE_EVAL: True
+        ENABLE_EVAL: False
         METRICS_PRED_TYPES: [roi_pl_gt, pl_gt_metrics_before_filtering]
         ADAPTIVE_THRESH_CONFIG:
             NAME: AdaMatchThreshold
             ENABLE: True
+            ENABLE_PL_SCORE_FILTERING: True
+            ENABLE_ROI_SCORE_FILTERING: True
+            ENABLE_PL_ALIGNMENT: True
+            ENABLE_ROI_ALIGNMENT: False
+            RELATIVE_VAL: 0.9
             PERCENT: 0.1
             MOMENTUM: 0.9
             PRE_FILTERING_THRESH: 0.1
             RESET_STATE_INTERVAL: 32
-            ENABLE_PLOTS: False
+            ENABLE_PLOTS: True
             ENABLE_CLIPPING: False
             GMM_POLICY: high
             MU1: 0.1

@@ -24,7 +24,11 @@ def log_tb_dict(tb_log, tb_dict, accumulated_iter):
                     if isinstance(vval, plt.Figure):
                         tb_log.add_figure(cat + key +  "/" + kkey, vval, accumulated_iter)
             else:
-                tb_log.add_scalars(cat + key, val, accumulated_iter)
+                try: # needs revision
+                    tb_log.add_scalars(cat + key, val, accumulated_iter)
+                except:
+                    for kkey, vval in val.items():
+                        tb_log.add_scalars(cat + key +  "/" + kkey, vval, accumulated_iter)
 
         elif isinstance(val, plt.Figure):
             tb_log.add_figure(cat + key, val, accumulated_iter)

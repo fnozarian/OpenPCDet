@@ -23,14 +23,23 @@ class DynamicThreshRegistry(object):
         self._tag_metrics = {}
         self.dataset = kwargs.get('dataset', None)
         self.model_cfg = kwargs.get('model_cfg', None)
-
+        self.states_name = []
+        for batch_type in ['lab', 'unlab']:
+            self.states_name.append(f'pl_scores_wa_{batch_type}')
+            self.states_name.append(f'pl_scores_sa_{batch_type}')
+            self.states_name.append(f'rect_pl_scores_wa_{batch_type}')
+            self.states_name.append(f'pl_scores_pre_gt_{batch_type}')
+            self.states_name.append(f'roi_scores_wa_{batch_type}')
+            self.states_name.append(f'rect_roi_scores_wa_{batch_type}')
+            self.states_name.append(f'roi_scores_sa_{batch_type}')
+            self.states_name.append(f'roi_scores_pre_gt_{batch_type}')
     def get(self, tag=None):
         if tag is None:
             tag = 'default'
         if tag in self._tag_metrics.keys():
             metric = self._tag_metrics[tag]
         else:
-            metric = build_thresholding_method(tag=tag, dataset=self.dataset, config=self.model_cfg)
+            metric = build_thresholding_method(tag=tag, states=self.states_name, dataset=self.dataset, config=self.model_cfg)
             self._tag_metrics[tag] = metric
         return metric
 
@@ -132,19 +141,21 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         return pred_dicts, recall_dicts, {}
 
-    def _rectify_pl_scores(self, batch_dict_ema, unlabeled_inds):
+    def _rectify_pl_scoress(self, batch_dict_ema, unlabeled_inds):
         thresh_reg = self.thresh_registry.get(tag='pl_adaptive_thresh')
-        pred_weak_aug = torch.sigmoid(batch_dict_ema['batch_cls_preds']).detach().clone()
+        pl_scores_wa = torch.sigmoid(batch_dict_ema['batch_cls_preds']).detach().clone()
         # to be used later for updating the EMA (p_model/p_target)
-        pred_weak_aug_org = pred_weak_aug.clone()
+        pl_scores_wa_org = pl_scores_wa.clone()
         if thresh_reg.iteration_count > 0:
-            pred_weak_aug_unlab = pred_weak_aug[unlabeled_inds, ...]
-            pred_weak_aug_unlab *=  (thresh_reg.emas['pred_pre_gt_sample_lab'] + 1e-6) / (thresh_reg.emas['pred_weak_aug_unlab'] + 1e-6)
-            # pred_weak_aug_unlab_aligned = thresh_reg.normalize_(pred_weak_aug_unlab_aligned)
-            pred_weak_aug[unlabeled_inds, ...] = torch.clip(pred_weak_aug_unlab, 0.0, 1.0)
+            pl_scores_wa_unlab = pl_scores_wa[unlabeled_inds, ...]
+            # TODO: MEAN OF CLASSWISE_EXPECTATION (SHOULD WE KEEP CLASS-ADAPTIVE MEAN) OR (SHOULD WE EXTRACT CLASSWISE PLS) 
+            pl_scores_wa_unlab *=  ((thresh_reg.emas['pl_scores_pre_gt_lab'] + 1e-6) / \
+                                    (thresh_reg.emas['pl_scores_wa_unlab'] + 1e-6)).mean().to(pl_scores_wa_unlab.device)
+            # pl_scores_wa_unlab_aligned = thresh_reg.normalize_(pl_scores_wa_unlab_aligned)
+            pl_scores_wa[unlabeled_inds, ...] = torch.clip(pl_scores_wa_unlab, 0.0, 1.0)
 
-        batch_dict_ema['batch_cls_preds_org'] = pred_weak_aug_org
-        batch_dict_ema['batch_cls_preds'] = pred_weak_aug
+        batch_dict_ema['batch_cls_preds_org'] = pl_scores_wa_org
+        batch_dict_ema['batch_cls_preds'] = pl_scores_wa
         batch_dict_ema['cls_preds_normalized'] = True
 
     def _gen_pseudo_labels(self, batch_dict_ema, ulb_inds, rectify=False):
@@ -155,9 +166,10 @@ class PVRCNN_SSL(Detector3DTemplate):
                     batch_dict_ema = cur_module(batch_dict_ema, test_only=True)
                 except TypeError as e:
                     batch_dict_ema = cur_module(batch_dict_ema)
-
-        if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False) and rectify:
-            self._rectify_pl_scores(batch_dict_ema, ulb_inds)
+        
+        thresh_config = self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG
+        if thresh_config.get('ENABLE', False) and thresh_config.get('ENABLE_PL_ALIGNMENT', False) and rectify:
+            self._rectify_pl_scoress(batch_dict_ema, ulb_inds)
 
         pseudo_labels, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
 
@@ -189,10 +201,14 @@ class PVRCNN_SSL(Detector3DTemplate):
 
     def _forward_training(self, batch_dict):
         lbl_inds, ulb_inds = self._prep_batch_dict(batch_dict)
-        batch_dict_pre_gt_sample= self._split_batch(batch_dict, tag='pre_gt_sample')
-        _ = self._gen_pseudo_labels(batch_dict_pre_gt_sample, ulb_inds)
-        
         batch_dict_ema = self._split_batch(batch_dict, tag='ema')
+
+        if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
+            batch_dict_pre_gt_sample= self._split_batch(batch_dict, tag='pre_gt_sample')
+            _ = self._gen_pseudo_labels(batch_dict_pre_gt_sample, ulb_inds)
+            if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE_ROI_ALIGNMENT', False):
+                batch_dict_ema['thresh_registry'] = self.thresh_registry # to perform roi dist alignemnt
+        
         pseudo_labels = self._gen_pseudo_labels(batch_dict_ema, ulb_inds, rectify=True)
         pseudo_boxes, pseudo_scores, pseudo_sem_scores = self._filter_pseudo_labels(pseudo_labels, ulb_inds)
         self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, ulb_inds, lbl_inds)
@@ -203,25 +219,22 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict = cur_module(batch_dict)
 
         if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
-            pred_weak_aug = batch_dict_ema['batch_cls_preds_org'].detach().clone()
-            rect_pred_weak_aug = batch_dict_ema['batch_cls_preds'].detach().clone()
+            pl_scores_wa = batch_dict_ema['batch_cls_preds_org'].detach().clone()
+            rect_pl_scores_wa = batch_dict_ema['batch_cls_preds'].detach().clone()
+            pl_scores_sa = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
+            pl_scores_pre_gt = torch.sigmoid(batch_dict_pre_gt_sample['batch_cls_preds']).detach().clone()
 
-            pred_strong_aug = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
-            pred_pre_gt_sample = torch.sigmoid(batch_dict_pre_gt_sample['batch_cls_preds']).detach().clone()
-            #roi_scores_multiclass_weak_aug = batch_dict_ema['roi_scores_multiclass'].detach().clone() # BS, 100, 3
-            metrics_input = defaultdict(list)
-            # TODO Discuss with Farzad, should only keep before nms metrics and ignore strong augmented (student dict)
-            for ind in range(len(pseudo_labels )):
-                batch_type = 'unlab' if ind in ulb_inds else 'lab'
-                # roi_scores_weak_aug, roi_labels_weak_aug = torch.max(roi_scores_multiclass_weak_aug[ind], dim=1)
-                # roi_scores_weak_aug = torch.sigmoid(roi_scores_weak_aug)
-                # metrics_input[f'roi_score_weak_aug_{batch_type}'].append(roi_scores_weak_aug)
-                # metrics_input[f'roi_labels_weak_aug_{batch_type}'].append(roi_labels_weak_aug)
-                metrics_input[f'pred_weak_aug_{batch_type}'].append(pred_weak_aug[ind])
-                metrics_input[f'rect_pred_weak_aug_{batch_type}'].append(rect_pred_weak_aug[ind])
-
-                metrics_input[f'pred_strong_aug_{batch_type}'].append(pred_strong_aug[ind])
-                metrics_input[f'pred_pre_gt_sample_{batch_type}'].append(pred_pre_gt_sample[ind])
+            roi_scores_wa = torch.sigmoid(batch_dict_ema['roi_scores_multiclass']).detach().clone() # BS, 100, 3
+            rect_roi_scores_wa = torch.sigmoid(batch_dict_ema['roi_scores_multiclass']).detach().clone()
+            roi_scores_sa = torch.sigmoid(batch_dict['roi_scores_multiclass']).detach().clone() # BS, 128, 3
+            roi_scores_pre_gt = torch.sigmoid(batch_dict_pre_gt_sample['roi_scores_multiclass']).detach().clone() # BS, 100, 3
+            
+            metrics_input = {}
+            for state_name in self.thresh_registry.states_name:
+                if 'unlab' in state_name:
+                    metrics_input[state_name] = eval(state_name.replace('_unlab', ''))[ulb_inds]
+                else:
+                    metrics_input[state_name] = eval(state_name.replace('_lab', ''))[lbl_inds]
 
             self.thresh_registry.get(tag='pl_adaptive_thresh').update(**metrics_input)
 
@@ -502,6 +515,17 @@ class PVRCNN_SSL(Detector3DTemplate):
         pseudo_boxes = []
         pseudo_scores = []
         pseudo_sem_scores = []
+        pl_thresh = self.thresh
+        sem_thresh = self.sem_thresh
+        
+        if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
+            thresh_reg = self.thresh_registry.get(tag='pl_adaptive_thresh')
+            if thresh_reg.relative_ema_threshold:
+                if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE_PL_SCORE_FILTERING', False):
+                    pl_thresh = thresh_reg.relative_ema_threshold['pl_scores_pre_gt_lab'].tolist()
+                if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE_ROI_SCORE_FILTERING', False):
+                    sem_thresh = thresh_reg.relative_ema_threshold['roi_scores_pre_gt_lab'].tolist()
+
         for pseudo_box, pseudo_label, pseudo_score, pseudo_sem_score, pseudo_box_var, pseudo_score_var in zip(
                 *self._unpack_predictions(pred_dicts, unlabeled_inds)):
 
@@ -511,16 +535,10 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pseudo_scores.append(pseudo_score)
                 continue
 
-            pl_thresh = self.thresh
-            if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
-                thresh_reg = self.thresh_registry.get(tag='pl_adaptive_thresh')
-                if thresh_reg.relative_ema_threshold is not None:
-                   pl_thresh = [thresh_reg.relative_ema_threshold.item()] * len(self.thresh)
-
             conf_thresh = torch.tensor(pl_thresh, device=pseudo_label.device).unsqueeze(
                 0).repeat(len(pseudo_label), 1).gather(dim=1, index=(pseudo_label - 1).unsqueeze(-1))
 
-            sem_conf_thresh = torch.tensor(self.sem_thresh, device=pseudo_label.device).unsqueeze(
+            sem_conf_thresh = torch.tensor(sem_thresh, device=pseudo_label.device).unsqueeze(
                 0).repeat(len(pseudo_label), 1).gather(dim=1, index=(pseudo_label - 1).unsqueeze(-1))
 
             valid_inds = pseudo_score > conf_thresh.squeeze()
