@@ -54,8 +54,8 @@ class AdaMatchThreshold(Metric):
 
         self.relative_mu_threshold = {}
         self.relative_ema_threshold = {}
-        self.means = {s_name: torch.ones((self.num_classes)) / self.num_classes for s_name in self.states_name}
-        self.emas = {s_name: torch.ones((self.num_classes)) / self.num_classes for s_name in self.states_name}
+        self.means = {s_name: torch.ones((self.num_classes)) * self.pre_filtering_thresh for s_name in self.states_name}
+        self.emas = {s_name: torch.ones((self.num_classes)) * self.pre_filtering_thresh for s_name in self.states_name}
 
     def update(self, **kwargs):
         for state_name in self.states_name:
@@ -126,21 +126,25 @@ class AdaMatchThreshold(Metric):
                         axs[cind].hist(cls_roi_scores.view(-1).cpu().numpy(), bins=30, alpha=0.7, label=roi_state, edgecolor='black', color=palettes['fp'])
                         axs[cind].axvline(self.means[pl_state][cind], linestyle='--', label='pl-mu', color=palettes['tp'], alpha=0.9)
                         axs[cind].axvline(self.means[roi_state][cind], linestyle='--', label='roi-mu', color=palettes['fp'], alpha=0.9)
-                        axs[cind].axvline(self.emas[pl_state][cind], linestyle='-', label='pl-ema', color=palettes['tp'], alpha=0.9, linewidth=3)
-                        axs[cind].axvline(self.emas[roi_state][cind], linestyle='-', label='roi-ema', color=palettes['fp'], alpha=0.9, linewidth=3)
+                        axs[cind].axvline(self.emas[pl_state][cind], linestyle='-', label='pl-ema', color=palettes['tp'], alpha=0.9, linewidth=1)
+                        axs[cind].axvline(self.emas[roi_state][cind], linestyle='-', label='roi-ema', color=palettes['fp'], alpha=0.9, linewidth=1)
+                        if 'rect' in pl_state and 'pl_scores_pre_gt_lab' in self.relative_ema_threshold:
+                            axs[cind].axvline(self.relative_ema_threshold['pl_scores_pre_gt_lab'][cind], linestyle=':', label='pl-rt', color=palettes['tp'], alpha=0.9, linewidth=3)
+                            axs[cind].axvline(self.relative_ema_threshold['roi_scores_pre_gt_lab'][cind], linestyle=':', label='roi-rt', color=palettes['fp'], alpha=0.9, linewidth=3)
                         axs[cind].set_title(cls,fontsize='x-small')
                         axs[cind].legend(loc='upper right', fontsize='x-small')
                         axs[cind].set_xlabel('score', fontsize='x-small')
                         axs[cind].set_ylabel('count', fontsize='x-small')
                         axs[cind].set_ylim(0, 800)
+                
+                if 'pre_gt_lab' in pl_state:
+                    self._update_relative_thresholds(tag='pl_scores_pre_gt_lab')
+                    self._update_relative_thresholds(tag='roi_scores_pre_gt_lab')
 
                 self._update_ema(roi_state)
                 self._update_ema(pl_state)
                 if self.enable_plots:
                     results[f'{self.thresh_tag}_plots'][roi_state] = fig.get_figure()
-
-            self._update_relative_thresholds(tag='pl_scores_pre_gt_lab')
-            self._update_relative_thresholds(tag='roi_scores_pre_gt_lab')
 
             results.update(**self._get_results_dict())
             self.reset()
@@ -172,6 +176,10 @@ class AdaMatchThreshold(Metric):
         results = {}
 
         for rec in ['pl', 'roi']:
+            for cind, cls in enumerate(self.class_names):
+                results[f'{self.thresh_tag}_{rec}_summary_{cls}'] = {'rect': self.emas[f'rect_{rec}_scores_wa_unlab'][cind].item(),
+                                                                    'org': self.emas[f'{rec}_scores_wa_unlab'][cind].item(),
+                                                                    'rt': self.relative_ema_threshold[f'{rec}_scores_pre_gt_lab'][cind].item()}
             results[f'{self.thresh_tag}_ratio/{rec}_mu'] = {cls: (self.means[f'{rec}_scores_pre_gt_lab'][cind] / self.means[f'{rec}_scores_wa_unlab'][cind]).item() for cind, cls in enumerate(self.class_names)} 
             results[f'{self.thresh_tag}_ratio/{rec}_ema'] = {cls: (self.emas[f'{rec}_scores_pre_gt_lab'][cind] / self.emas[f'{rec}_scores_wa_unlab'][cind]).item() for cind, cls in enumerate(self.class_names)} 
             for sname in self.states_name:
@@ -183,5 +191,6 @@ class AdaMatchThreshold(Metric):
             results[f'{self.thresh_tag}_rt_mu/{key}'] = {cls_name: val[i].item() for i, cls_name in enumerate(self.class_names)}
         for key, val in self.relative_ema_threshold.items():
             results[f'{self.thresh_tag}_rt_ema/{key}'] = {cls_name: val[i].item() for i, cls_name in enumerate(self.class_names)}
+
 
         return results

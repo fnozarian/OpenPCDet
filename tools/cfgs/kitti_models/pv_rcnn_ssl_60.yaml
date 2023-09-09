@@ -173,7 +173,7 @@ MODEL:
             ENABLE_ROI_SCORE_FILTERING: True
             ENABLE_PL_ALIGNMENT: True
             ENABLE_CW_PL_ALIGNMENT: True
-            ENABLE_ROI_ALIGNMENT: False
+            ENABLE_ROI_ALIGNMENT: True
             RELATIVE_VAL: 0.9
             MOMENTUM: 0.9
             PRE_FILTERING_THRESH: 0.1

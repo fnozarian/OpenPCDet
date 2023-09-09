@@ -27,12 +27,12 @@ class DynamicThreshRegistry(object):
         for batch_type in ['lab', 'unlab']:
             self.states_name.append(f'pl_scores_wa_{batch_type}')
             self.states_name.append(f'pl_scores_sa_{batch_type}')
-            self.states_name.append(f'rect_pl_scores_wa_{batch_type}')
             self.states_name.append(f'pl_scores_pre_gt_{batch_type}')
+            self.states_name.append(f'rect_pl_scores_wa_{batch_type}')
             self.states_name.append(f'roi_scores_wa_{batch_type}')
-            self.states_name.append(f'rect_roi_scores_wa_{batch_type}')
             self.states_name.append(f'roi_scores_sa_{batch_type}')
             self.states_name.append(f'roi_scores_pre_gt_{batch_type}')
+            self.states_name.append(f'rect_roi_scores_wa_{batch_type}')
     def get(self, tag=None):
         if tag is None:
             tag = 'default'
@@ -226,8 +226,21 @@ class PVRCNN_SSL(Detector3DTemplate):
                 batch_dict_ema['thresh_registry'] = self.thresh_registry # to perform roi dist alignemnt
         
         pseudo_labels = self._gen_pseudo_labels(batch_dict_ema, ulb_inds, rectify=True)
+        pseudo_boxes_cls_count_pre_filter = []
+        for ind in ulb_inds:
+            pseudo_label = pseudo_labels[ind]['pred_labels']
+            if len(pseudo_label):
+                pseudo_boxes_cls_count_pre_filter.append(pseudo_label)
+        pseudo_boxes_cls_count_pre_filter = torch.bincount(torch.cat(pseudo_boxes_cls_count_pre_filter).int(), minlength=4).tolist()[1:]
         pseudo_boxes, pseudo_scores, pseudo_sem_scores = self._filter_pseudo_labels(pseudo_labels, ulb_inds)
         self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, ulb_inds, lbl_inds)
+        pseudo_boxes_cls_count_post_filter = torch.bincount(batch_dict['gt_boxes'][ulb_inds][...,-1].view(-1).int(), minlength=4).tolist()[1:]
+        gt_boxes_cls_count = torch.bincount(batch_dict['ori_unlabeled_boxes'][...,-1].view(-1).int()+1, minlength=4).tolist()[1:]
+        pl_count_dict = {}
+        for cind, cls in enumerate(self.class_names):
+            pl_count_dict[f'pl_iter_count_{cls}'] = {'gt':  gt_boxes_cls_count[cind],
+                                                    'pl_pre_filter': pseudo_boxes_cls_count_pre_filter[cind],
+                                                    'pl_post_filter': pseudo_boxes_cls_count_post_filter[cind]}
         # apply student's augs on teacher's pseudo-labels (filtered) only (not points)
         batch_dict = self.apply_augmentation(batch_dict, batch_dict, ulb_inds, key='gt_boxes')
 
@@ -280,7 +293,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 tb_dict['proto_cont_loss'] = proto_cont_loss.item()
 
         tb_dict_ = self._prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn)
-
+        tb_dict_.update(**pl_count_dict)
         if self.model_cfg.get('STORE_SCORES_IN_PKL', False):
             self.dump_statistics(batch_dict, ulb_inds)
 
@@ -678,8 +691,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         pl_scores_sa = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
         pl_scores_pre_gt = torch.sigmoid(batch_dict_pre_gt_sample['batch_cls_preds']).detach().clone()
 
-        roi_scores_wa = torch.sigmoid(batch_dict_ema['roi_scores_multiclass']).detach().clone() # BS, 100, 3
-        rect_roi_scores_wa = torch.sigmoid(batch_dict_ema['roi_scores_multiclass']).detach().clone()
+        roi_scores_wa = torch.sigmoid(batch_dict_ema['roi_scores_multiclass_org']).detach().clone() # BS, 100, 3
+        rect_roi_scores_wa = batch_dict_ema['roi_scores_multiclass'].detach().clone()
         roi_scores_sa = torch.sigmoid(batch_dict['roi_scores_multiclass']).detach().clone() # BS, 128, 3
         roi_scores_pre_gt = torch.sigmoid(batch_dict_pre_gt_sample['roi_scores_multiclass']).detach().clone() # BS, 100, 3
         

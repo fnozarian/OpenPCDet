@@ -113,20 +113,7 @@ class RoIHeadTemplate(nn.Module):
         if batch_dict.get('rois', None) is not None:
             return batch_dict
         #  batch_dict['batch_cls_preds'] is being updated by generate_predicted_boxes for pl
-        if 'thresh_registry' in batch_dict and 'unlabeled_inds' in batch_dict:
-            thresh_reg = batch_dict['thresh_registry'].get(tag='pl_adaptive_thresh')
-            rect_batch_cls_preds = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
-            # to be used later for updating the EMA (p_model/p_target)
-            # batch_cls_preds_roi_org = batch_cls_preds.clone()
-            if thresh_reg.iteration_count > 0:
-                rect_batch_cls_preds_unlab = rect_batch_cls_preds[batch_dict['unlabeled_inds'], ...]
-                rect_batch_cls_preds_unlab *=  ((thresh_reg.emas['roi_scores_pre_gt_lab'] + 1e-6) / \
-                                         (thresh_reg.emas['roi_scores_wa_unlab'] + 1e-6)).to(rect_batch_cls_preds_unlab.device)
-                # rect_batch_cls_preds_unlab = thresh_reg.normalize_(rect_batch_cls_preds_unlab)
-                rect_batch_cls_preds[batch_dict['unlabeled_inds'], ...] = torch.clip(rect_batch_cls_preds_unlab, 0.0, 1.0)
-            #batch_dict['batch_cls_preds_roi_org'] = batch_cls_preds_roi_org
-            batch_dict['batch_cls_preds'] = rect_batch_cls_preds
-            batch_dict['cls_preds_normalized'] = True
+
         
         batch_size = batch_dict['batch_size']
         batch_box_preds = batch_dict['batch_box_preds']
@@ -159,9 +146,24 @@ class RoIHeadTemplate(nn.Module):
             roi_labels[index, :len(selected)] = cur_roi_labels[selected]
             roi_scores_multiclass[index, :len(selected), :] = cls_preds[selected]
 
+        roi_scores_multiclass_org = roi_scores_multiclass.clone()
+        if 'thresh_registry' in batch_dict and 'unlabeled_inds' in batch_dict:
+            thresh_reg = batch_dict['thresh_registry'].get(tag='adaptive_thresh')
+            roi_scores_multiclass = torch.sigmoid(roi_scores_multiclass).detach().clone()
+            # to be used later for updating the EMA (p_model/p_target)
+            if thresh_reg.iteration_count > 0:
+                p_target = thresh_reg.emas['roi_scores_pre_gt_lab']
+                p_model = thresh_reg.emas['roi_scores_wa_unlab']
+                p_ratio = ( p_target + 1e-6) / (p_model + 1e-6)
+                
+                rect_roi_scores_multiclass_unlab =roi_scores_multiclass[batch_dict['unlabeled_inds'], ...]
+                rect_roi_scores_multiclass_unlab *= p_ratio.to(rect_roi_scores_multiclass_unlab.device)
+                roi_scores_multiclass[batch_dict['unlabeled_inds'], ...] = torch.clip(rect_roi_scores_multiclass_unlab, 0.0, 1.0)
+
         batch_dict['rois'] = rois
         batch_dict['roi_scores'] = roi_scores
         batch_dict['roi_scores_multiclass'] = roi_scores_multiclass
+        batch_dict['roi_scores_multiclass_org'] = roi_scores_multiclass_org
         batch_dict['roi_labels'] = roi_labels + 1
         batch_dict['has_class_labels'] = True if batch_cls_preds.shape[-1] > 1 else False
         batch_dict.pop('batch_index', None)
