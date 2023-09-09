@@ -12,7 +12,7 @@ __all__ = {
 
 
 def build_thresholding_method(tag, states, dataset, config):
-    model = __all__[config.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.NAME](
+    model = __all__[config.NAME](
         tag=tag, states=states, dataset=dataset, config=config
     )
 

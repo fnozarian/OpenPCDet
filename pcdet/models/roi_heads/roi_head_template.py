@@ -112,7 +112,7 @@ class RoIHeadTemplate(nn.Module):
         """
         if batch_dict.get('rois', None) is not None:
             return batch_dict
-
+        #  batch_dict['batch_cls_preds'] is being updated by generate_predicted_boxes for pl
         if 'thresh_registry' in batch_dict and 'unlabeled_inds' in batch_dict:
             thresh_reg = batch_dict['thresh_registry'].get(tag='pl_adaptive_thresh')
             rect_batch_cls_preds = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
