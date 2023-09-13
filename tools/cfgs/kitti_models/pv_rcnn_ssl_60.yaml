@@ -169,11 +169,11 @@ MODEL:
         ADAPTIVE_THRESH_CONFIG:
             NAME: AdaMatchThreshold
             ENABLE: True
-            ENABLE_PL_SCORE_FILTERING: True
-            ENABLE_ROI_SCORE_FILTERING: True
-            ENABLE_PL_ALIGNMENT: True
-            ENABLE_CW_PL_ALIGNMENT: True
-            ENABLE_ROI_ALIGNMENT: True
+            ENABLE_PL_SCORE_FILTERING: False
+            ENABLE_ROI_SCORE_FILTERING: False
+            ENABLE_PL_ALIGNMENT: False
+            ENABLE_CW_PL_ALIGNMENT: False
+            ENABLE_ROI_ALIGNMENT: False
             RELATIVE_VAL: 0.9
             MOMENTUM: 0.9
             PRE_FILTERING_THRESH: 0.1

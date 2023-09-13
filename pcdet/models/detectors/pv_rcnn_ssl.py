@@ -152,10 +152,13 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         if self.thresh_config.get('ENABLE_PL_ALIGNMENT', False) and thresh_reg.iteration_count:
             pl_scores_wa_unlab = pl_scores_wa[unlabeled_inds, ...]
-            p_target = thresh_reg.emas['pl_scores_pre_gt_lab']
-            p_model = thresh_reg.emas['pl_scores_wa_unlab']
+            # SEMANTIC SCORE
+            p_target = thresh_reg.self.p_model_ema['pl_scores_pre_gt_lab'] #[0.85, 0.1, 0.05] 
+            p_model = thresh_reg.self.p_model_ema['pl_scores_wa_unlab'] 
             p_ratio = ( p_target + 1e-6) / (p_model + 1e-6)
-
+            # CONF. SCORE
+            #p_target = SCALAR_VALUE #thresh_reg.emas['pl_scores_pre_gt_lab']
+            #p_model = SCALAR_VALUE  #thresh_reg.emas['pl_scores_wa_unlab']
             if self.thresh_config.get('ENABLE_CW_PL_ALIGNMENT', False):
                 roi_scores_wa = batch_dict_ema['roi_scores_multiclass'].detach().clone() # BS, 100, 3
                 roi_scores_wa = torch.sigmoid(roi_scores_wa[unlabeled_inds, ...])
@@ -235,7 +238,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         pseudo_boxes, pseudo_scores, pseudo_sem_scores = self._filter_pseudo_labels(pseudo_labels, ulb_inds)
         self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, ulb_inds, lbl_inds)
         pseudo_boxes_cls_count_post_filter = torch.bincount(batch_dict['gt_boxes'][ulb_inds][...,-1].view(-1).int(), minlength=4).tolist()[1:]
-        gt_boxes_cls_count = torch.bincount(batch_dict['ori_unlabeled_boxes'][...,-1].view(-1).int()+1, minlength=4).tolist()[1:]
+        gt_boxes_cls_count = torch.bincount(batch_dict['ori_unlabeled_boxes'][...,-1].view(-1).int(), minlength=4).tolist()[1:]
         pl_count_dict = {}
         for cind, cls in enumerate(self.class_names):
             pl_count_dict[f'pl_iter_count_{cls}'] = {'gt':  gt_boxes_cls_count[cind],
@@ -691,11 +694,12 @@ class PVRCNN_SSL(Detector3DTemplate):
         pl_scores_sa = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
         pl_scores_pre_gt = torch.sigmoid(batch_dict_pre_gt_sample['batch_cls_preds']).detach().clone()
 
-        roi_scores_wa = torch.sigmoid(batch_dict_ema['roi_scores_multiclass_org']).detach().clone() # BS, 100, 3
+        roi_scores_wa = batch_dict_ema['roi_scores_multiclass_org'].detach().clone() # BS, 100, 3 
         rect_roi_scores_wa = batch_dict_ema['roi_scores_multiclass'].detach().clone()
-        roi_scores_sa = torch.sigmoid(batch_dict['roi_scores_multiclass']).detach().clone() # BS, 128, 3
-        roi_scores_pre_gt = torch.sigmoid(batch_dict_pre_gt_sample['roi_scores_multiclass']).detach().clone() # BS, 100, 3
-        
+        roi_scores_sa = batch_dict['roi_scores_multiclass'].detach().clone() # BS, 128, 3
+        roi_scores_pre_gt = batch_dict_pre_gt_sample['roi_scores_multiclass'].detach().clone() # BS, 100, 3
+
+
         metrics_input = {}
         for state_name in self.thresh_registry.states_name:
             if 'unlab' in state_name:
