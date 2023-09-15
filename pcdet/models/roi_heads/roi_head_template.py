@@ -112,9 +112,7 @@ class RoIHeadTemplate(nn.Module):
         """
         if batch_dict.get('rois', None) is not None:
             return batch_dict
-        #  batch_dict['batch_cls_preds'] is being updated by generate_predicted_boxes for pl
 
-        
         batch_size = batch_dict['batch_size']
         batch_box_preds = batch_dict['batch_box_preds']
         batch_cls_preds = batch_dict['batch_cls_preds']
@@ -145,26 +143,12 @@ class RoIHeadTemplate(nn.Module):
             roi_scores[index, :len(selected)] = cur_roi_scores[selected]
             roi_labels[index, :len(selected)] = cur_roi_labels[selected]
             roi_scores_multiclass[index, :len(selected), :] = cls_preds[selected]
-        temprature = 3 # add in cfg
-        roi_scores_multiclass = torch.softmax(roi_scores_multiclass/temprature, dim=-1)
-        roi_scores_multiclass_org = roi_scores_multiclass.clone()
-        if 'thresh_registry' in batch_dict and 'unlabeled_inds' in batch_dict:
-            thresh_reg = batch_dict['thresh_registry'].get(tag='adaptive_thresh')
-            # to be used later for updating the EMA (p_model/p_target)
-            if thresh_reg.iteration_count > 0:
-                p_target = thresh_reg.self.p_model_ema['roi_scores_pre_gt_lab'] #[0.85, 0.1, 0.05] 
-                p_model = thresh_reg.self.p_model_ema['roi_scores_wa_unlab'] 
-                p_ratio = ( p_target + 1e-6) / (p_model + 1e-6)
-                rect_roi_scores_multiclass_unlab =roi_scores_multiclass[batch_dict['unlabeled_inds'], ...]
-                rect_roi_scores_multiclass_unlab *= p_ratio.to(rect_roi_scores_multiclass_unlab.device)
-                roi_scores_multiclass[batch_dict['unlabeled_inds'], ...] = torch.clip(rect_roi_scores_multiclass_unlab, 0.0, 1.0) # normalisation
 
         batch_dict['rois'] = rois
         batch_dict['roi_scores'] = roi_scores
         batch_dict['roi_scores_multiclass'] = roi_scores_multiclass
-        batch_dict['roi_scores_multiclass_org'] = roi_scores_multiclass_org
         batch_dict['roi_labels'] = roi_labels + 1
-        batch_dict['has_class_labels'] = True if batch_cls_preds.shape[-1] > 1 else False
+        batch_dict['has_class_labels'] = batch_cls_preds.shape[-1] > 1
         batch_dict.pop('batch_index', None)
         return batch_dict
 

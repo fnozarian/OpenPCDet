@@ -11,9 +11,7 @@ __all__ = {
     }
 
 
-def build_thresholding_method(tag, states, dataset, config):
-    model = __all__[config.NAME](
-        tag=tag, states=states, dataset=dataset, config=config
-    )
+def build_thresholding_method(tag, dataset, config):
+    model = __all__[config.NAME](tag=tag, dataset=dataset, config=config)
 
     return model

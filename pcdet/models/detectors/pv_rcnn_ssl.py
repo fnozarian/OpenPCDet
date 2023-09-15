@@ -12,7 +12,6 @@ from .pv_rcnn import PVRCNN
 from pcdet.utils import common_utils
 from pcdet.utils.stats_utils import metrics_registry
 from pcdet.utils.prototype_utils import feature_bank_registry
-from tools.visual_utils import open3d_vis_utils as V
 from collections import defaultdict
 from pcdet.utils.weighting_methods import build_thresholding_method
 from visual_utils import open3d_vis_utils as V
@@ -23,23 +22,13 @@ class DynamicThreshRegistry(object):
         self._tag_metrics = {}
         self.dataset = kwargs.get('dataset', None)
         self.thresh_config = kwargs.get('thresh_config', None)
-        self.states_name = []
-        for batch_type in ['lab', 'unlab']:
-            self.states_name.append(f'pl_scores_wa_{batch_type}')
-            self.states_name.append(f'pl_scores_sa_{batch_type}')
-            self.states_name.append(f'pl_scores_pre_gt_{batch_type}')
-            self.states_name.append(f'rect_pl_scores_wa_{batch_type}')
-            self.states_name.append(f'roi_scores_wa_{batch_type}')
-            self.states_name.append(f'roi_scores_sa_{batch_type}')
-            self.states_name.append(f'roi_scores_pre_gt_{batch_type}')
-            self.states_name.append(f'rect_roi_scores_wa_{batch_type}')
     def get(self, tag=None):
         if tag is None:
             tag = 'default'
         if tag in self._tag_metrics.keys():
             metric = self._tag_metrics[tag]
         else:
-            metric = build_thresholding_method(tag=tag, states=self.states_name, dataset=self.dataset, config=self.thresh_config)
+            metric = build_thresholding_method(tag=tag, dataset=self.dataset, config=self.thresh_config)
             self._tag_metrics[tag] = metric
         return metric
 
@@ -142,42 +131,6 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         return pred_dicts, recall_dicts, {}
 
-    def _rectify_pl_scoress(self, batch_dict_ema, unlabeled_inds):
-        thresh_reg = self.thresh_registry.get(tag='adaptive_thresh')
-        pl_scores_wa = batch_dict_ema['batch_cls_preds'].detach().clone()
-        if not batch_dict_ema['cls_preds_normalized']:
-            pl_scores_wa = torch.sigmoid(pl_scores_wa) 
-        # to be used later for updating the EMA (p_model/p_target)
-        pl_scores_wa_org = pl_scores_wa.clone()
-
-        if self.thresh_config.get('ENABLE_PL_ALIGNMENT', False) and thresh_reg.iteration_count:
-            pl_scores_wa_unlab = pl_scores_wa[unlabeled_inds, ...]
-            # SEMANTIC SCORE
-            p_target = thresh_reg.self.p_model_ema['pl_scores_pre_gt_lab'] #[0.85, 0.1, 0.05] 
-            p_model = thresh_reg.self.p_model_ema['pl_scores_wa_unlab'] 
-            p_ratio = ( p_target + 1e-6) / (p_model + 1e-6)
-            # CONF. SCORE
-            #p_target = SCALAR_VALUE #thresh_reg.emas['pl_scores_pre_gt_lab']
-            #p_model = SCALAR_VALUE  #thresh_reg.emas['pl_scores_wa_unlab']
-            if self.thresh_config.get('ENABLE_CW_PL_ALIGNMENT', False):
-                roi_scores_wa = batch_dict_ema['roi_scores_multiclass'].detach().clone() # BS, 100, 3
-                roi_scores_wa = torch.sigmoid(roi_scores_wa[unlabeled_inds, ...])
-                _, cur_roi_labels = torch.max(roi_scores_wa, dim=-1)
-                for cind, cls in enumerate(self.class_names):
-                    lab_mask = cur_roi_labels == cind
-                    if not lab_mask.sum(): continue
-                    pl_scores_wa_unlab[lab_mask] *= p_ratio[cind].item()
-            else: # default
-                pl_scores_wa_unlab *=  p_ratio.mean().item()
-            
-            # Adamatch ensures that the distribution still sums to 1, 
-            # pl_scores, do not have this characterstics, only min-max limit is sufficient
-            pl_scores_wa[unlabeled_inds, ...] = torch.clip(pl_scores_wa_unlab, 0.0, 1.0)
-
-        batch_dict_ema['batch_cls_preds_org'] = pl_scores_wa_org
-        batch_dict_ema['batch_cls_preds'] = pl_scores_wa
-        batch_dict_ema['cls_preds_normalized'] = True
-
     def _gen_pseudo_labels(self, batch_dict_ema, ulb_inds, rectify=False):
         with torch.no_grad():
             # self.pv_rcnn_ema.eval()  # https://github.com/yezhen17/3DIoUMatch-PVRCNN/issues/6
@@ -187,8 +140,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                 except TypeError as e:
                     batch_dict_ema = cur_module(batch_dict_ema)
         
-        if self.thresh_config.get('ENABLE', False) and rectify:
-            self._rectify_pl_scoress(batch_dict_ema, ulb_inds)
+        if rectify:
+            self.thresh_registry.get(tag='adaptive_thresh')._rectify_pl_scores(batch_dict_ema, ulb_inds)
 
         pseudo_labels, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
 
@@ -223,27 +176,29 @@ class PVRCNN_SSL(Detector3DTemplate):
         batch_dict_ema = self._split_batch(batch_dict, tag='ema')
 
         if self.thresh_config.get('ENABLE', False):
-            batch_dict_pre_gt_sample= self._split_batch(batch_dict, tag='pre_gt_sample')
-            _ = self._gen_pseudo_labels(batch_dict_pre_gt_sample, ulb_inds)
-            if self.thresh_config.get('ENABLE_ROI_ALIGNMENT', False):
-                batch_dict_ema['thresh_registry'] = self.thresh_registry # to perform roi dist alignemnt
-        
-        pseudo_labels = self._gen_pseudo_labels(batch_dict_ema, ulb_inds, rectify=True)
-        pseudo_boxes_cls_count_pre_filter = []
-        for ind in ulb_inds:
-            pseudo_label = pseudo_labels[ind]['pred_labels']
-            if len(pseudo_label):
-                pseudo_boxes_cls_count_pre_filter.append(pseudo_label)
-        pseudo_boxes_cls_count_pre_filter = torch.bincount(torch.cat(pseudo_boxes_cls_count_pre_filter).int(), minlength=4).tolist()[1:]
+            batch_dict_pre_gt_sample = self._split_batch(batch_dict, tag='pre_gt_sample')
+            self._gen_pseudo_labels(batch_dict_pre_gt_sample, ulb_inds)
+
+        enable_rectify = self.thresh_config.get('ENABLE_PL_ALIGNMENT', False)
+        pseudo_labels = self._gen_pseudo_labels(batch_dict_ema, ulb_inds, rectify=enable_rectify)
+
+        ulb_pred_labels = torch.cat([pseudo_labels[ind]['pred_labels'] for ind in ulb_inds]).int()
+        pl_cls_count_pre_filter = torch.bincount(ulb_pred_labels, minlength=4).tolist()[1:]
+
         pseudo_boxes, pseudo_scores, pseudo_sem_scores = self._filter_pseudo_labels(pseudo_labels, ulb_inds)
         self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, ulb_inds, lbl_inds)
-        pseudo_boxes_cls_count_post_filter = torch.bincount(batch_dict['gt_boxes'][ulb_inds][...,-1].view(-1).int(), minlength=4).tolist()[1:]
-        gt_boxes_cls_count = torch.bincount(batch_dict['ori_unlabeled_boxes'][...,-1].view(-1).int(), minlength=4).tolist()[1:]
-        pl_count_dict = {}
-        for cind, cls in enumerate(self.class_names):
-            pl_count_dict[f'pl_iter_count_{cls}'] = {'gt':  gt_boxes_cls_count[cind],
-                                                    'pl_pre_filter': pseudo_boxes_cls_count_pre_filter[cind],
-                                                    'pl_post_filter': pseudo_boxes_cls_count_post_filter[cind]}
+
+        pl_cls_count_post_filter = torch.bincount(batch_dict['gt_boxes'][ulb_inds][...,-1].view(-1).int(), minlength=4).tolist()[1:]
+        gt_cls_count = torch.bincount(batch_dict['ori_unlabeled_boxes'][...,-1].view(-1).int(), minlength=4).tolist()[1:]
+        pl_count_dict = {
+            f'pl_iter_count_{cls}': {
+                'gt': gt_cls_count[cind],
+                'pl_pre_filter': pl_cls_count_pre_filter[cind],
+                'pl_post_filter': pl_cls_count_post_filter[cind],
+            }
+            for cind, cls in enumerate(self.class_names)
+        }
+
         # apply student's augs on teacher's pseudo-labels (filtered) only (not points)
         batch_dict = self.apply_augmentation(batch_dict, batch_dict, ulb_inds, key='gt_boxes')
 
@@ -251,7 +206,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict = cur_module(batch_dict)
 
         if self.thresh_config.get('ENABLE', False):
-            self.update_adaptive_thresholding_metrics(batch_dict, batch_dict_pre_gt_sample, 
+            self.update_adaptive_thresholding_metrics(batch_dict, batch_dict_pre_gt_sample,
                                         batch_dict_ema, ulb_inds, lbl_inds, tag = 'adaptive_thresh')
 
         # Update the bank with student's features from augmented labeled data
@@ -688,13 +643,13 @@ class PVRCNN_SSL(Detector3DTemplate):
 
     def update_adaptive_thresholding_metrics(self, batch_dict, batch_dict_pre_gt_sample, batch_dict_ema,
                                             ulb_inds, lbl_inds, tag = 'adaptive_thresh'):
-                
+
         pl_scores_wa = batch_dict_ema['batch_cls_preds_org'].detach().clone()
         rect_pl_scores_wa = batch_dict_ema['batch_cls_preds'].detach().clone()
         pl_scores_sa = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
         pl_scores_pre_gt = torch.sigmoid(batch_dict_pre_gt_sample['batch_cls_preds']).detach().clone()
 
-        roi_scores_wa = batch_dict_ema['roi_scores_multiclass_org'].detach().clone() # BS, 100, 3 
+        roi_scores_wa = batch_dict_ema['roi_scores_multiclass_org'].detach().clone() # BS, 100, 3
         rect_roi_scores_wa = batch_dict_ema['roi_scores_multiclass'].detach().clone()
         roi_scores_sa = batch_dict['roi_scores_multiclass'].detach().clone() # BS, 128, 3
         roi_scores_pre_gt = batch_dict_pre_gt_sample['roi_scores_multiclass'].detach().clone() # BS, 100, 3
