@@ -146,7 +146,7 @@ class RoIHeadTemplate(nn.Module):
 
         batch_dict['rois'] = rois
         batch_dict['roi_scores'] = roi_scores
-        batch_dict['roi_scores_multiclass'] = roi_scores_multiclass
+        batch_dict['roi_scores_multiclass'] = torch.sigmoid(roi_scores_multiclass)
         batch_dict['roi_labels'] = roi_labels + 1
         batch_dict['has_class_labels'] = batch_cls_preds.shape[-1] > 1
         batch_dict.pop('batch_index', None)

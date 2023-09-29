@@ -160,29 +160,13 @@ MODEL:
         NAME: PVRCNNHead
         CLASS_AGNOSTIC: True
         ENABLE_VIS: False
+        ENABLE_PROTOTYPING: False
         ENABLE_PROTO_CONTRASTIVE_LOSS: False
         PROTO_CONTRASTIVE_LOSS_WEIGHT: 1.0
         ENABLE_SOFT_TEACHER: False
         ENABLE_ULB_CLS_DIST_LOSS: False
         ENABLE_EVAL: False
-        METRICS_PRED_TYPES: [roi_pl_gt, pl_gt_metrics_before_filtering]
-        ADAPTIVE_THRESH_CONFIG:
-            NAME: AdaMatchThreshold
-            ENABLE: True
-            ENABLE_PL_SCORE_FILTERING: False
-            ENABLE_ROI_SCORE_FILTERING: False
-            ENABLE_PL_ALIGNMENT: False
-            ENABLE_CW_PL_ALIGNMENT: False
-            ENABLE_ROI_ALIGNMENT: False
-            RELATIVE_VAL: 0.9
-            MOMENTUM: 0.9
-            PRE_FILTERING_THRESH: 0.1
-            RESET_STATE_INTERVAL: 32
-            ENABLE_PLOTS: True
-            ENABLE_CLIPPING: False
-            GMM_POLICY: high
-            MU1: 0.1
-            MU2: 0.9
+        METRICS_PRED_TYPES: [roi_pl_gt]
         SHARED_FC: [256, 256]
         CLS_FC: [256, 256]
         REG_FC: [256, 256]
@@ -298,6 +282,18 @@ MODEL:
         - NAME: rcnn_roi_pl_gt_metrics_cls
           RESET_STATE_INTERVAL: 32
           BG_THRESH: 0.25
+    ADAPTIVE_THRESH_CONFIG:
+      AdaMatch:
+        ENABLE: True
+        ENABLE_PL_ALIGNMENT: False
+        RELATIVE_VAL: 0.9
+        MOMENTUM: 0.9
+        PRE_FILTERING_THRESH: 0.33
+        RESET_STATE_INTERVAL: 32
+        ENABLE_PLOTS: True
+        GMM_POLICY: high
+        MU1: 0.1
+        MU2: 0.9
 
 OPTIMIZATION:
     BATCH_SIZE_PER_GPU: 1 #2

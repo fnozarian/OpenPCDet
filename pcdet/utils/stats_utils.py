@@ -183,16 +183,16 @@ class PredQualityMetrics(Metric):
         y_labels = one_hot_labels.int().cpu().numpy()
         y_scores = scores.cpu().numpy()
         y_sim_scores = sim_scores.cpu().numpy()
-        classwise_metrics['multiclass_avg_precision_sem_score_micro'] = average_precision_score(y_labels, y_scores, average='micro')
         classwise_metrics['multiclass_avg_precision_sem_score_weighted'] = average_precision_score(y_labels, y_scores, average='weighted')
-        classwise_metrics['multiclass_avg_precision_sem_score_macro'] = average_precision_score(y_labels, y_scores, average='macro')
-        classwise_metrics['multiclass_avg_precision_sim_score_micro'] = average_precision_score(y_labels, y_sim_scores, average='micro')
         classwise_metrics['multiclass_avg_precision_sim_score_weighted'] = average_precision_score(y_labels, y_sim_scores, average='weighted')
-        classwise_metrics['multiclass_avg_precision_sim_score_macro'] = average_precision_score(y_labels, y_sim_scores, average='macro')
+        # classwise_metrics['multiclass_avg_precision_sem_score_macro'] = average_precision_score(y_labels, y_scores, average='macro')
+        # classwise_metrics['multiclass_avg_precision_sim_score_macro'] = average_precision_score(y_labels, y_sim_scores, average='macro')
+        # classwise_metrics['multiclass_avg_precision_sem_score_micro'] = average_precision_score(y_labels, y_scores, average='micro')
+        # classwise_metrics['multiclass_avg_precision_sim_score_micro'] = average_precision_score(y_labels, y_sim_scores, average='micro')
 
         for cind, cls in enumerate(self.dataset.class_names):
             cls_pred_mask = pred_labels == cind
-            # cls_sim_mask = sim_labels == cind
+            cls_sim_mask = sim_labels == cind
 
             # By using cls_true_mask we assume that the performance of RPN classification is perfect.
             cls_roi_scores = scores[cls_pred_mask, cind]
@@ -221,7 +221,7 @@ class PredQualityMetrics(Metric):
 
             classwise_metrics['avg_num_true_rois_per_sample'][cls] = cls_pred_mask.sum() / self.num_samples
             classwise_metrics['avg_num_pred_rois_using_sem_score_per_sample'][cls] = cls_pred_mask.sum() / self.num_samples
-            classwise_metrics['avg_num_pred_rois_using_sim_score_per_sample'][cls] = cls_pred_mask.sum() / self.num_samples
+            classwise_metrics['avg_num_pred_rois_using_sim_score_per_sample'][cls] = cls_sim_mask.sum() / self.num_samples
             # classwise_metrics['avg_num_gts_per_sample'].append()
 
             classwise_metrics['rois_fg_ratio'][cls] = cls_fg_mask.sum() / cls_pred_mask.sum()
