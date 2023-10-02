@@ -215,8 +215,8 @@ class PredQualityMetrics(Metric):
             cls_uc_mask = ~(cls_bg_mask | cls_fg_mask)
 
             def add_avg_metric(key, metric):
-                classwise_metrics[f'fg_{key}'][cls] = (metric * cls_fg_mask.float()).sum() / cls_fg_mask.sum() + 1e-6
-                classwise_metrics[f'uc_{key}'][cls] = (metric * cls_uc_mask.float()).sum() / cls_uc_mask.sum() + 1e-6
+                classwise_metrics[f'fg_{key}'][cls] = (metric * cls_fg_mask.float()).sum() / (cls_fg_mask.sum() + 1e-6)
+                classwise_metrics[f'uc_{key}'][cls] = (metric * cls_uc_mask.float()).sum() / (cls_uc_mask.sum() + 1e-6)
                 # classwise_metrics[f'bg_{key}'][cls] = (metric * cls_bg_mask.float()).sum() / cls_bg_mask.sum()
 
             classwise_metrics['avg_num_pred_rois_using_sem_score_per_sample'][cls] = cls_pred_mask.sum() / self.num_samples
