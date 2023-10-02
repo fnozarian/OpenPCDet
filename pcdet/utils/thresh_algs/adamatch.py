@@ -10,6 +10,7 @@ import warnings
 
 # TODO: can we delay the teacher/student weight updates until all the reset_state_interval number of samples are obtained?
 # TODO: Test the effect of the reset_state_interval on the performance
+# TODO: Set the FG of lbl data based on GTs
 
 def _lbl(tensor, mask=None):
     return _lbl(tensor)[_lbl(mask)] if mask is not None else tensor.chunk(2)[0]
@@ -141,7 +142,7 @@ class AdaMatch(Metric):
 
             fg_cls_prob_mean_ulb = _ulb(sem_scores_wa, fg_mask).mean(dim=0)
             self._update_ema('p_model', fg_cls_prob_mean_ulb, sname)
-            results[f'p_model/{sname}'] = self._arr2dict(self.p_target[sname])
+            results[f'p_model/{sname}'] = self._arr2dict(self.p_model[sname])
 
             if self.enable_plots:
                 fig = self.draw_dist_plots(fg_max_scores_lbl, fg_labels_lbl, fg_max_scores_ulb, fg_labels_ulb, sname)
@@ -151,11 +152,6 @@ class AdaMatch(Metric):
         ratio =  self.p_target['sem_scores_pre_gt_wa'] / (self.p_model['sem_scores_wa'] + 1e-6)
         self._update_ema('ratio', ratio, 'default')
         results['ratio/pre_gt_wa_over_wa'] = self._arr2dict(self.ratio['default'])
-        # For debugging
-        ratio_wa = self.p_target['sem_scores_wa'] / self.p_model['sem_scores_wa']
-        ratio_pre_gt_wa = self.p_target['sem_scores_pre_gt_wa'] / self.p_model['sem_scores_pre_gt_wa']
-        results['ratio/wa'] = self._arr2dict(ratio_wa)
-        results['ratio/pre_gt_wa'] = self._arr2dict(ratio_pre_gt_wa)
 
         results['threshold/pre_gt_wa'] = self._get_threshold(tag='sem_scores_pre_gt_wa')
 
@@ -178,9 +174,9 @@ class AdaMatch(Metric):
                 torch.cat([max_scores_ulb.view(-1, 1), labels_ulb.view(-1, 1)], dim=-1).cpu().numpy(),
                 columns=['scores', 'labels'])
             sns.histplot(data=fg_scores_labels_lbl_df, ax=axes[0], x='scores', hue='labels', kde=True).set(
-                title=f"Target dist on WA LBL input {tag} ")
+                title=f"Dist of FG max-scores on WA LBL input {tag} ")
             sns.histplot(data=fg_scores_labels_ulb_df, ax=axes[1], x='scores', hue='labels', kde=True).set(
-                title=f"Model dist on WA ULB input {tag}")
+                title=f"Dist of FG max-scores on WA ULB input {tag}")
             plt.tight_layout()
         # plt.show()
 
@@ -203,7 +199,7 @@ class AdaMatch(Metric):
         rect_scores /= rect_scores.sum(dim=-1, keepdims=True)
         sem_scores_ulb[fg_mask] = rect_scores[fg_mask]  # Only rectify FG rois
 
-        return rect_scores
+        return sem_scores_ulb
 
     def _update_ema(self, p_name, probs, tag):
         prob = getattr(self, p_name)
