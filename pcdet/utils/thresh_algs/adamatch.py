@@ -42,7 +42,7 @@ class AdaMatch(Metric):
         super().__init__(**configs)
 
         self.reset_state_interval = configs.get('RESET_STATE_INTERVAL', 32)
-        self.pre_filtering_thresh = configs.get('PRE_FILTERING_THRESH', 0.33)
+        self.prior_sem_fg_thresh = configs.get('SEM_FG_THRESH', 0.33)
         self.enable_plots = configs.get('ENABLE_PLOTS', False)
         self.relative_val = configs.get('RELATIVE_VAL', 0.9)
         self.momentum = configs.get('MOMENTUM', 0.9)
@@ -114,7 +114,7 @@ class AdaMatch(Metric):
             sem_scores_wa = accumulated_metrics[sname]
 
             max_scores, labels = torch.max(sem_scores_wa, dim=-1)
-            fg_mask = max_scores > 0.33  # TODO: Make it dynamic. Also not the same for both labeled and unlabeled data
+            fg_mask = max_scores > self.prior_sem_fg_thresh  # TODO: Make it dynamic. Also not the same for both labeled and unlabeled data
 
             fg_max_scores_lbl = _lbl(max_scores, fg_mask)
             fg_labels_lbl = _lbl(labels, fg_mask)
@@ -193,7 +193,7 @@ class AdaMatch(Metric):
             return
 
         max_scores, labels = torch.max(sem_scores_ulb, dim=-1)
-        fg_mask = max_scores > 0.33
+        fg_mask = max_scores > self.prior_sem_fg_thresh
 
         rect_scores = sem_scores_ulb * self.ratio['default']
         rect_scores /= rect_scores.sum(dim=-1, keepdims=True)
@@ -206,8 +206,9 @@ class AdaMatch(Metric):
         prob[tag] = probs if prob[tag] is None else self.momentum * prob[tag] + (1 - self.momentum) * probs
 
     def get_mask(self, rect_scores):
+        # TODO(farzad): The rect_scores passed to this function are after NMS!
         max_rect_scores, labels = torch.max(rect_scores, dim=-1)
-        fg_mask = max_rect_scores > 0.33
+        fg_mask = max_rect_scores > self.prior_sem_fg_thresh
         thresh_mask = max_rect_scores > self._get_threshold()
         return thresh_mask & fg_mask
 
@@ -215,7 +216,7 @@ class AdaMatch(Metric):
         if sem_scores_wa_lbl is None:
             return self.p_max_model_lbl[tag].mean() * self.relative_val
         max_scores, labels = torch.max(sem_scores_wa_lbl, dim=-1)
-        fg_mask = max_scores > 0.33
+        fg_mask = max_scores > self.prior_sem_fg_thresh
         fg_max_scores_lbl = max_scores[fg_mask]
         return fg_max_scores_lbl.mean() * self.relative_val
 

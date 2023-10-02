@@ -119,7 +119,7 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         return pred_dicts, recall_dicts, {}
     @torch.no_grad()
-    def _gen_pseudo_labels(self, batch_dict_ema, ulb_inds, rectify=False):
+    def _gen_pseudo_labels(self, batch_dict_ema):
         # self.pv_rcnn_ema.eval()  # https://github.com/yezhen17/3DIoUMatch-PVRCNN/issues/6
         for cur_module in self.pv_rcnn_ema.module_list:
             try:
@@ -127,16 +127,6 @@ class PVRCNN_SSL(Detector3DTemplate):
             except TypeError as e:
                 batch_dict_ema = cur_module(batch_dict_ema)
 
-        if rectify and self.thresh_alg.iteration_count > 0:
-            roi_scores_multiclass = batch_dict_ema['roi_scores_multiclass']
-            batch_dict_ema['roi_scores_multiclass_org'] = roi_scores_multiclass.clone()
-            ulb_pl_scores = roi_scores_multiclass[ulb_inds]
-            rect_scores = self.thresh_alg.rectify_sem_scores(ulb_pl_scores)
-            roi_scores_multiclass[ulb_inds] = rect_scores
-
-        pseudo_labels, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
-
-        return pseudo_labels
 
     @staticmethod
     def _split_batch(batch_dict, tag='ema'):
@@ -166,15 +156,22 @@ class PVRCNN_SSL(Detector3DTemplate):
         lbl_inds, ulb_inds = self._prep_batch_dict(batch_dict)
         batch_dict_ema = self._split_batch(batch_dict, tag='ema')
 
-        pseudo_labels_dict = self._gen_pseudo_labels(batch_dict_ema, ulb_inds, rectify=self.adapt_thresholding)
+        self._gen_pseudo_labels(batch_dict_ema)
 
         if self.adapt_thresholding:
             batch_dict_pre_gt_sample = self._split_batch(batch_dict, tag='pre_gt_sample')
-            self._gen_pseudo_labels(batch_dict_pre_gt_sample, ulb_inds)
+            self._gen_pseudo_labels(batch_dict_pre_gt_sample)
 
             metrics_input = {'sem_scores_wa': batch_dict_ema['roi_scores_multiclass'].detach().clone(),
                              'sem_scores_pre_gt_wa': batch_dict_pre_gt_sample['roi_scores_multiclass'].detach().clone()}
             self.thresh_alg.update(**metrics_input)
+
+            if self.thresh_alg.iteration_count > 0:
+                batch_dict_ema['roi_scores_multiclass_org'] = batch_dict_ema['roi_scores_multiclass'].clone()
+                rect_scores = self.thresh_alg.rectify_sem_scores(batch_dict_ema['roi_scores_multiclass'][ulb_inds])
+                batch_dict_ema['roi_scores_multiclass'][ulb_inds] = rect_scores
+
+        pseudo_labels_dict, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
 
         ulb_pred_labels = torch.cat([pseudo_labels_dict[ind]['pred_labels'] for ind in ulb_inds]).int().detach()
         pl_cls_count_pre_filter = torch.bincount(ulb_pred_labels, minlength=4).tolist()[1:]

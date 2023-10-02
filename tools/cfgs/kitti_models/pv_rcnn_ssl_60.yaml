@@ -288,7 +288,7 @@ MODEL:
         ENABLE_PL_ALIGNMENT: False
         RELATIVE_VAL: 0.9
         MOMENTUM: 0.9
-        PRE_FILTERING_THRESH: 0.33
+        SEM_FG_THRESH: 0.33
         RESET_STATE_INTERVAL: 32
         ENABLE_PLOTS: True
         GMM_POLICY: high
