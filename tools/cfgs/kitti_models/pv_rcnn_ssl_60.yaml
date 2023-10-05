@@ -286,10 +286,10 @@ MODEL:
       AdaMatch:
         ENABLE: True
         ENABLE_PL_ALIGNMENT: False
-        RELATIVE_VAL: 0.9
+        FIXED_THRESH: 0.9
         MOMENTUM: 0.9
         SEM_FG_THRESH: 0.33
-        RESET_STATE_INTERVAL: 32
+        RESET_STATE_INTERVAL: 8
         ENABLE_PLOTS: True
         GMM_POLICY: high
         MU1: 0.1

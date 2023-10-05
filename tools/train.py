@@ -52,7 +52,7 @@ def parse_config():
     parser.add_argument('--num_epochs_to_eval', type=int, default=0, help='number of checkpoints to be evaluated')
     parser.add_argument('--save_to_file', action='store_true', default=False, help='')
     parser.add_argument('--split', type=str, default='train_0.01_1')
-    parser.add_argument('--repeat', type=int, default=1)
+    parser.add_argument('--repeat', type=int, default=5)
     parser.add_argument('--thresh', type=str, default='0.5, 0.25, 0.25')
     parser.add_argument('--sem_thresh', type=str, default='0.4, 0.0, 0.0')
     parser.add_argument('--unlabeled_weight', type=float, default=1.0)

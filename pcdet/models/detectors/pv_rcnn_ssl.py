@@ -166,11 +166,6 @@ class PVRCNN_SSL(Detector3DTemplate):
                              'sem_scores_pre_gt_wa': batch_dict_pre_gt_sample['roi_scores_multiclass'].detach().clone()}
             self.thresh_alg.update(**metrics_input)
 
-            if self.thresh_alg.iteration_count > 0:
-                batch_dict_ema['roi_scores_multiclass_org'] = batch_dict_ema['roi_scores_multiclass'].clone()
-                rect_scores = self.thresh_alg.rectify_sem_scores(batch_dict_ema['roi_scores_multiclass'][ulb_inds])
-                batch_dict_ema['roi_scores_multiclass'][ulb_inds] = rect_scores
-
         pseudo_labels_dict, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
 
         ulb_pred_labels = torch.cat([pseudo_labels_dict[ind]['pred_labels'] for ind in ulb_inds]).int().detach()
@@ -477,7 +472,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             conf_score_mask = scores > conf_thresh.squeeze()
 
             if self.adapt_thresholding and self.thresh_alg.iteration_count > 0:
-                sem_score_mask = self.thresh_alg.get_mask(sem_scores_multi)
+                sem_score_mask = self.thresh_alg.get_mask(sem_scores_multi, thresh_alg='FreeMatch')
             else:
                 sem_conf_thresh = torch.tensor(self.sem_thresh, device=labels.device).unsqueeze(
                     0).repeat(len(labels), 1).gather(dim=1, index=(labels - 1).unsqueeze(-1))
