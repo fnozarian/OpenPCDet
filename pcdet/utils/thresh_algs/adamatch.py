@@ -42,7 +42,8 @@ class AdaMatch(Metric):
         super().__init__(**configs)
 
         self.reset_state_interval = configs.get('RESET_STATE_INTERVAL', 32)
-        self.prior_sem_fg_thresh = configs.get('SEM_FG_THRESH', 0.33)
+        # self.prior_sem_fg_thresh = configs.get('SEM_FG_THRESH', 0.33)
+        self.pre_filtering_thresh  = configs.get('PRE_FILTERING_THRESH', 0.1)
         self.enable_plots = configs.get('ENABLE_PLOTS', False)
         self.relative_val = configs.get('RELATIVE_VAL', 0.9)
         self.momentum = configs.get('MOMENTUM', 0.9)
@@ -51,11 +52,12 @@ class AdaMatch(Metric):
         self.states_name = ['sem_scores_wa', 'sem_scores_pre_gt_wa']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
         self.iteration_count = 0
-
         # States are of shape (N, M, P) where N is # samples, M is # RoIs and P = 4 is the Car, Ped, Cyc, FG scores
         for name in self.states_name:
             self.add_state(name, default=[], dist_reduce_fx='cat')
 
+        self.fg_thr_lbl = {s_name: None for s_name in self.states_name}
+        self.fg_thr_ulb = {s_name: None for s_name in self.states_name}
         self.p_target = {s_name: None for s_name in self.states_name}
         self.p_model = {s_name: None for s_name in self.states_name}
         # P(max(y)|x, argmax(y)) on WA version of *entire* labeled data
@@ -67,7 +69,7 @@ class AdaMatch(Metric):
         self.p_target['gt'] = torch.tensor([0.85, 0.1, 0.05]).cuda()
 
         # GMM
-        self.gmm_policy=configs.get('GMM_POLICY', 'high')
+        self.gmm_policy=configs.get('GMM_POLICY', 'middle')
         self.mu1=configs.get('MU1', 0.1)
         self.mu2=configs.get('MU2', 0.9)
         self.gmm = GaussianMixture(
@@ -76,7 +78,7 @@ class AdaMatch(Metric):
             means_init=[[self.mu1], [self.mu2]],
             precisions_init=[[[1.0]], [[1.0]]],
             init_params='k-means++',
-            tol=1e-9,
+            tol=1e-11,
             max_iter=1000
         )
 
@@ -114,10 +116,8 @@ class AdaMatch(Metric):
             sem_scores_wa = accumulated_metrics[sname]
 
             max_scores, labels = torch.max(sem_scores_wa, dim=-1)
-            fg_mask = max_scores > self.prior_sem_fg_thresh  # TODO: Make it dynamic. Also not the same for both labeled and unlabeled data
-
-            fg_max_scores_lbl = _lbl(max_scores, fg_mask)
-            fg_labels_lbl = _lbl(labels, fg_mask)
+            max_scores_lbl, labels_lbl  = _lbl(max_scores), _lbl(labels)
+            fg_mask_lbl, fg_max_scores_lbl, fg_labels_lbl, fg_thr_lbl = self.get_fg_scores(max_scores_lbl, labels_lbl)
 
             p_max_model_lbl = labels.new_zeros(3, dtype=max_scores.dtype).scatter_add_(0, fg_labels_lbl, fg_max_scores_lbl)
             fg_labels_hist_lbl = torch.bincount(fg_labels_lbl, minlength=3)
@@ -125,8 +125,8 @@ class AdaMatch(Metric):
             self._update_ema('p_max_model_lbl', p_max_model_lbl, sname)
             results[f'p_max_model_lbl/{sname}'] = self._arr2dict(self.p_max_model_lbl[sname])
 
-            fg_max_scores_ulb = _ulb(max_scores, fg_mask)
-            fg_labels_ulb = _ulb(labels, fg_mask)
+            max_scores_ulb, labels_ulb = _ulb(max_scores), _ulb(labels)
+            fg_mask_ulb, fg_max_scores_ulb, fg_labels_ulb, fg_thr_ulb = self.get_fg_scores(max_scores_ulb, labels_ulb)
 
             # For debugging
             fg_cls_prob_hist_lbl = self._get_cls_hist_probs(fg_labels_lbl)
@@ -135,12 +135,12 @@ class AdaMatch(Metric):
             # or one-hot version of the mean approach (fg_cls_prob_mean_lbl)
             results[f'fg_cls_prob_hist_lbl_sharpened_p_target)/{sname}'] = self._arr2dict(fg_cls_prob_hist_lbl)
             results[f'fg_cls_prob_hist_ulb_sharpened_p_model)/{sname}'] = self._arr2dict(fg_cls_prob_hist_ulb)
-
-            fg_cls_prob_mean_lbl = _lbl(sem_scores_wa, fg_mask).mean(dim=0)
+            
+            fg_cls_prob_mean_lbl = _lbl(sem_scores_wa)[fg_mask_lbl].mean(dim=0)
             self._update_ema('p_target', fg_cls_prob_mean_lbl, sname)
             results[f'p_target/{sname}'] = self._arr2dict(self.p_target[sname])
-
-            fg_cls_prob_mean_ulb = _ulb(sem_scores_wa, fg_mask).mean(dim=0)
+            
+            fg_cls_prob_mean_ulb = _ulb(sem_scores_wa)[fg_mask_ulb].mean(dim=0)
             self._update_ema('p_model', fg_cls_prob_mean_ulb, sname)
             results[f'p_model/{sname}'] = self._arr2dict(self.p_model[sname])
 
@@ -148,6 +148,10 @@ class AdaMatch(Metric):
                 fig = self.draw_dist_plots(fg_max_scores_lbl, fg_labels_lbl, fg_max_scores_ulb, fg_labels_ulb, sname)
                 results[f'dist_plots_{sname}'] = fig
                 plt.close()
+            self._update_ema('fg_thr_lbl', fg_thr_lbl, sname)
+            self._update_ema('fg_thr_ulb', fg_thr_ulb, sname)
+            results[f'fg_thr_lbl/{sname}'] = self._arr2dict(fg_thr_lbl)
+            results[f'fg_thr_ulb/{sname}'] = self._arr2dict(fg_thr_ulb)
 
         ratio =  self.p_target['sem_scores_pre_gt_wa'] / (self.p_model['sem_scores_wa'] + 1e-6)
         self._update_ema('ratio', ratio, 'default')
@@ -193,13 +197,13 @@ class AdaMatch(Metric):
             return
 
         max_scores, labels = torch.max(sem_scores_ulb, dim=-1)
-        fg_mask = max_scores > self.prior_sem_fg_thresh
-
+        fg_sem_thresh = self.fg_thr_ulb['sem_scores_wa'].to(labels.device).unsqueeze(0).repeat(
+            max_scores.shape[0], max_scores.shape[1], 1).gather(dim=2, index=labels.unsqueeze(-1)).squeeze()
+        fg_mask = max_scores > fg_sem_thresh
         rect_scores = sem_scores_ulb * self.ratio['default']
         rect_scores /= rect_scores.sum(dim=-1, keepdims=True)
         sem_scores_ulb[fg_mask] = rect_scores[fg_mask]  # Only rectify FG rois
-
-        return sem_scores_ulb
+        return sem_scores_ulb, fg_mask
 
     def _update_ema(self, p_name, probs, tag):
         prob = getattr(self, p_name)
@@ -208,17 +212,55 @@ class AdaMatch(Metric):
     def get_mask(self, rect_scores):
         # TODO(farzad): The rect_scores passed to this function are after NMS!
         max_rect_scores, labels = torch.max(rect_scores, dim=-1)
-        fg_mask = max_rect_scores > self.prior_sem_fg_thresh
-        thresh_mask = max_rect_scores > self._get_threshold()
+        fg_sem_thresh = self.fg_thr_ulb['sem_scores_wa'].to(labels.device).unsqueeze(0).repeat(
+            len(labels), 1).gather(dim=1, index=labels.unsqueeze(-1))
+        fg_mask = max_rect_scores >  fg_sem_thresh.squeeze()
+        thresh_mask = max_rect_scores > self._get_threshold() # rt
         return thresh_mask & fg_mask
 
     def _get_threshold(self, sem_scores_wa_lbl=None, tag='sem_scores_pre_gt_wa'):
         if sem_scores_wa_lbl is None:
             return self.p_max_model_lbl[tag].mean() * self.relative_val
         max_scores, labels = torch.max(sem_scores_wa_lbl, dim=-1)
-        fg_mask = max_scores > self.prior_sem_fg_thresh
+        fg_mask = max_scores > self.adaptive_sem_fg_thresh
         fg_max_scores_lbl = max_scores[fg_mask]
         return fg_max_scores_lbl.mean() * self.relative_val
 
     def _arr2dict(self, array):
         return {cls: array[cind] for cind, cls in enumerate(self.class_names)}
+
+    def get_fg_scores(self, max_scores, labels):
+        fg_thr = self.get_adaptive_thresholds(max_scores, labels)
+        fg_sem_thresh = fg_thr.to(labels.device).unsqueeze(0).repeat(
+            len(labels), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
+        fg_mask = max_scores > fg_sem_thresh
+        return fg_mask, max_scores[fg_mask], labels[fg_mask], fg_thr
+    
+    def get_adaptive_thresholds(self, scores, labels):
+        adaptive_thr = torch.ones(len(self.class_names)) / len(self.class_names)
+        for cind in range(len(self.class_names)):
+            cls_mask = labels==cind
+            cls_scores = scores[cls_mask]
+            cls_scores = cls_scores[cls_scores>self.pre_filtering_thresh].cpu().numpy().reshape(-1, 1)
+            self.gmm.fit(cls_scores)
+            gmm_assignment = self.gmm.predict(cls_scores)  
+            gmm_scores = self.gmm.score_samples(cls_scores) 
+            pos_thr = self.apply_policy_gmm(cls_scores, gmm_assignment, gmm_scores, gmm_policy=self.gmm_policy)
+            if pos_thr is not None:
+                adaptive_thr[cind] = pos_thr.item()
+        return adaptive_thr
+    
+    def apply_policy_gmm(self, scores, gmm_assignment, gmm_scores, gmm_policy='high'):
+        adaptive_thr = None
+        if np.any(gmm_assignment == 1):  
+            if gmm_policy == 'high':
+                gmm_scores[gmm_assignment == 0] = -np.inf  
+                index = np.argmax(gmm_scores, axis=0) 
+                pos_indx = ((gmm_assignment == 1) & (scores >= scores[index]).squeeze())  
+                if np.sum(pos_indx):  adaptive_thr = np.min(scores[pos_indx])
+            elif gmm_policy == 'middle': adaptive_thr = np.min(scores[gmm_assignment == 1])
+            elif gmm_policy == 'percentile75': adaptive_thr = np.percentile(scores[gmm_assignment == 1], 75)
+            elif gmm_policy == 'percentile25': adaptive_thr = np.percentile(scores[gmm_assignment == 1], 25)
+            else:
+                raise ValueError("Invalid policy. Policy can be 'high', 'middle', 'percentile75', or 'percentile25'.")
+        return adaptive_thr
