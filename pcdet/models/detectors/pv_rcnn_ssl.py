@@ -3,6 +3,7 @@ import os
 import pickle
 import numpy as np
 import torch
+import torch.nn.functional as F
 from pcdet.datasets.augmentor import augmentor_utils
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 from pcdet.ops.roiaware_pool3d import roiaware_pool3d_utils
@@ -187,9 +188,9 @@ class PVRCNN_SSL(Detector3DTemplate):
     def _forward_training(self, batch_dict):
         lbl_inds, ulb_inds = self._prep_batch_dict(batch_dict)
         batch_dict_ema = self._split_ema_batch(batch_dict)
+        batch_dict_pair = copy.deepcopy(batch_dict_ema)
 
         pseudo_labels = self._gen_pseudo_labels(batch_dict_ema, ulb_inds)
-
         pseudo_boxes, pseudo_scores, pseudo_sem_scores = self._filter_pseudo_labels(pseudo_labels, ulb_inds)
 
         self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, ulb_inds, lbl_inds)
@@ -199,6 +200,18 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         for cur_module in self.pv_rcnn.module_list:
             batch_dict = cur_module(batch_dict)
+
+        #1. @Student - Get shared_features over GTs
+        batch_dict = self.pv_rcnn.roi_head.forward(batch_dict, test_only=True,use_gtboxes=True)
+
+
+        #2. @Student - Get shared_features over flipped_gts (BATCH_DICT_PAIR)
+        with torch.no_grad():
+            for cur_module in self.pv_rcnn.module_list:
+                try:
+                    batch_dict_pair = cur_module(batch_dict_pair, test_only=True,use_gtboxes=True)
+                except TypeError as e:
+                    batch_dict_pair = cur_module(batch_dict_pair)        
 
         if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
             pred_strong_aug_before_nms_org = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
@@ -253,6 +266,11 @@ class PVRCNN_SSL(Detector3DTemplate):
             if proto_cont_loss is not None:
                 loss += proto_cont_loss * self.model_cfg['ROI_HEAD']['PROTO_CONTRASTIVE_LOSS_WEIGHT']
                 tb_dict['proto_cont_loss'] = proto_cont_loss.item()
+        if self.model_cfg['ROI_HEAD'].get('ENABLE_INSTANCE_SUP_LOSS', False):
+            lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict,batch_dict_pair,lbl_inds, stop_epoch=60)
+            if lbl_inst_cont_loss is not None:
+                loss += lbl_inst_cont_loss * self.model_cfg['ROI_HEAD']['INSTANCE_CONTRASTIVE_LOSS_WEIGHT']
+                tb_dict['proto_cont_loss'] = lbl_inst_cont_loss.item()
 
         tb_dict_ = self._prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn)
 
@@ -278,6 +296,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         }
         return ret_dict, tb_dict_, disp_dict
 
+
     def _get_proto_contrastive_loss(self, batch_dict, bank, ulb_inds):
         gt_boxes = batch_dict['gt_boxes']
         B, N = gt_boxes.shape[:2]
@@ -292,6 +311,93 @@ class PVRCNN_SSL(Detector3DTemplate):
             print(f"No pl instances predicted for strongly augmented frame(s) {batch_dict['frame_id'][ulb_inds]}")
             return
         return proto_cont_loss.view(B, N)[ulb_inds][ulb_nonzero_mask].mean()
+
+    def _get_instance_contrastive_loss(self, batch_dict,batch_dict_pair,lbl_inds,temperature=0.07,base_temperature=0.07, stop_epoch=60):
+        '''
+        Args:
+            features: hidden vector of shape [bsz, n_views, ...].
+            labels: roi_labels[B,N].
+            mask: contrastive mask of shape [bsz, bsz], mask_{i,j}=1 if sample j
+                has the same class as sample i. Can be asymmetric.
+        '''
+        if batch_dict['cur_epoch'] > stop_epoch:  # To ablate effects of stopping supervised contrastive loss earlier than regular supervised loss
+            return 
+
+        batch_size_labeled = len(lbl_inds)
+        shared_ft = batch_dict['shared_features_gt']
+        shared_ft_pair = batch_dict_pair['shared_features_gt']
+        device = shared_ft.device
+        labels = batch_dict['gt_boxes'][:,:,7][lbl_inds]
+        labels_pair = batch_dict_pair['gt_boxes'][:,:,7][lbl_inds]
+        instance_idx = batch_dict['instance_idx'][lbl_inds]
+        instance_idx_pair = batch_dict_pair['instance_idx'][lbl_inds]
+        instance_mask = instance_idx!=-1
+        instance_mask_pair = instance_idx_pair!=-1
+
+        instance_idx = instance_idx[instance_mask]
+        instance_idx_pair = instance_idx_pair[instance_mask_pair]
+
+        nonzero_mask = labels!=0
+        labels = labels[nonzero_mask]
+
+        nonzero_mask_pair = labels_pair!=0
+        labels_pair = labels_pair[nonzero_mask_pair]
+
+            #instance_nonzero_mask = instance_mask[nonzero_mask] == instance_mask_pair[nonzero_mask_pair]
+
+        # When edge cases not common values
+        common_values = np.intersect1d(instance_idx.cpu().numpy(), instance_idx_pair.cpu().numpy())
+        indices_tensor1 = np.where(np.isin(instance_idx.cpu().numpy(), common_values))
+        indices_tensor2 = np.where(np.isin(instance_idx_pair.cpu().numpy(), common_values))
+
+        indices_tensor1 = torch.tensor(indices_tensor1)
+        indices_tensor2 = torch.tensor(indices_tensor2)
+
+
+        shared_ft = shared_ft.view(batch_dict['batch_size'],-1,256)
+        shared_ft = shared_ft[lbl_inds]
+        shared_ft = shared_ft[indices_tensor1]
+
+        shared_ft_pair = shared_ft_pair.view(batch_dict['batch_size'],-1,256)
+        shared_ft_pair = shared_ft_pair[lbl_inds]
+        shared_ft_pair = shared_ft_pair[indices_tensor2]
+
+        assert not torch.allclose(shared_ft, shared_ft_pair)
+
+        '''Mask out self-contrast cases'''
+        labels = labels.contiguous().view(-1, 1)
+        labels_pair = labels_pair.contiguous().view(-1, 1)
+
+        mask = torch.eq(labels, labels.T).float().to(device) # (B*N, B*N)  # 48,48
+
+        combined_shared_features = torch.cat([shared_ft.unsqueeze(1), shared_ft_pair.unsqueeze(1)], dim=1) # B*N,num_pairs,channel_dim
+
+        num_pairs = combined_shared_features.shape[1]
+        assert num_pairs == 2 # Since contrasting a pair of Gts, contrast_count = 2
+        contrast_feature = torch.cat(torch.unbind(combined_shared_features, dim=1), dim=0) 
+        contrast_feature = F.normalize(contrast_feature.view(-1,combined_shared_features.shape[-1]))
+        # compute logits
+        anchor_dot_contrast = torch.div(torch.matmul(contrast_feature, contrast_feature.T),temperature)
+        # for numerical stability
+        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+        logits = anchor_dot_contrast - logits_max.detach()
+        # Doubling label_mask dimensions to accomodate paired_fts too
+        mask = mask.repeat(num_pairs, num_pairs)
+        # mask-out self-contrast cases
+        # self_contrastive_mask = 1 - torch.eye(labels.shape[0])
+        # self_contrastive_mask = self_contrastive_mask.repeat(num_pairs,num_pairs).to(device)
+        self_contrastive_mask = torch.scatter(torch.ones_like(mask),1,torch.arange(batch_size_labeled * num_pairs).view(-1, 1).to(device),0)
+        mask = mask * self_contrastive_mask #mask * logits_mask
+
+        exp_logits = torch.exp(logits) * self_contrastive_mask # compute log_prob
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
+        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)         # compute mean of log-likelihood over positive
+
+        instance_loss = - ( temperature/ base_temperature) * mean_log_prob_pos
+        if instance_loss is None:
+            return
+        instance_loss = instance_loss.mean()
+        return instance_loss 
 
     @staticmethod
     def _prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn):
@@ -343,6 +449,7 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         self.pv_rcnn.roi_head.forward_ret_dict['rcnn_cls_score_teacher'] = rcnn_cls_score_teacher
         self.pv_rcnn.roi_head.forward_ret_dict['batch_box_preds_teacher'] = batch_box_preds_teacher # for metrics
+
 
     @staticmethod
     def vis(boxes, box_labels, points):

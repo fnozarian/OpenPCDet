@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
 from ...utils import common_utils
@@ -79,7 +80,10 @@ class PVRCNNHead(RoIHeadTemplate):
 
         """
         batch_size = batch_dict['batch_size']
-        rois = batch_dict['gt_boxes'][..., 0:7] if use_gtboxes else batch_dict['rois']
+        if use_gtboxes:
+            rois = batch_dict['gt_boxes'][..., 0:7]
+        else:
+            rois = batch_dict['rois']
         point_coords = batch_dict["point_coords"]
         point_features = batch_dict["point_features"]
         point_cls_scores = batch_dict["point_cls_scores"]
@@ -145,7 +149,7 @@ class PVRCNNHead(RoIHeadTemplate):
 
         return pooled_features
 
-    def forward(self, batch_dict, test_only=False):
+    def forward(self, batch_dict, test_only=False,use_gtboxes=False):
         """
         :param input_data: input dict
         :return:
@@ -165,7 +169,13 @@ class PVRCNNHead(RoIHeadTemplate):
             targets_dict['ori_unlabeled_boxes'] = batch_dict['ori_unlabeled_boxes']
             targets_dict['points'] = batch_dict['points']
 
-        pooled_features = self.pool_features(batch_dict)
+        pooled_features = self.pool_features(batch_dict,use_gtboxes=use_gtboxes)
+        if use_gtboxes == True:
+            # batch_dict['pooled_features_gt'] = pooled_features
+            batch_size_rcnn = pooled_features.shape[0]
+            shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
+            batch_dict['shared_features_gt'] = shared_features
+            return batch_dict
         batch_size_rcnn = pooled_features.shape[0]
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
