@@ -312,7 +312,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             return
         return proto_cont_loss.view(B, N)[ulb_inds][ulb_nonzero_mask].mean()
 
-    def _get_instance_contrastive_loss(self, batch_dict,batch_dict_pair,lbl_inds,temperature=0.07,base_temperature=0.07, stop_epoch=60):
+    def _get_instance_contrastive_loss(self, batch_dict,batch_dict_pair,lbl_inds,temperature=1.0,base_temperature=1.0, stop_epoch=60):
         '''
         Args:
             features: hidden vector of shape [bsz, n_views, ...].
@@ -324,50 +324,74 @@ class PVRCNN_SSL(Detector3DTemplate):
             return 
 
         batch_size_labeled = len(lbl_inds)
-        shared_ft = batch_dict['shared_features_gt']
-        shared_ft_pair = batch_dict_pair['shared_features_gt']
+        shared_ft = batch_dict['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
+        shared_ft_pair = batch_dict_pair['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
         device = shared_ft.device
-        labels = batch_dict['gt_boxes'][:,:,7][lbl_inds]
-        labels_pair = batch_dict_pair['gt_boxes'][:,:,7][lbl_inds]
-        instance_idx = batch_dict['instance_idx'][lbl_inds]
-        instance_idx_pair = batch_dict_pair['instance_idx'][lbl_inds]
-        instance_mask = instance_idx!=-1
-        instance_mask_pair = instance_idx_pair!=-1
+        labels = batch_dict['gt_boxes'][:,:,7][lbl_inds].view(-1)
+        labels_pair = batch_dict_pair['gt_boxes'][:,:,7][lbl_inds].view(-1)
+        instance_idx = batch_dict['instance_idx'][lbl_inds].view(-1)
+        instance_idx_pair = batch_dict_pair['instance_idx'][lbl_inds].view(-1)
+        shared_ft = shared_ft.view(-1,256)
+        shared_ft_pair = shared_ft_pair.view(-1,256)
 
-        instance_idx = instance_idx[instance_mask]
-        instance_idx_pair = instance_idx_pair[instance_mask_pair]
+        prefinal_mask = labels!=0
+        prefinal_mask_pair = labels_pair!=0
 
-        nonzero_mask = labels!=0
-        labels = labels[nonzero_mask]
+        labels = labels[prefinal_mask]
+        labels_pair =labels_pair[prefinal_mask_pair]
 
-        nonzero_mask_pair = labels_pair!=0
-        labels_pair = labels_pair[nonzero_mask_pair]
+        shared_ft = shared_ft[prefinal_mask]
+        shared_ft_pair = shared_ft_pair[prefinal_mask_pair]
+        
+        meta_data = {'to_mask':''}
+        if len(labels) <= len(labels_pair):
+            tmp = instance_idx[prefinal_mask] #small
+            tmp_big = instance_idx_pair[prefinal_mask_pair] #big
+            meta_data['to_mask'] = 'ft_pair'
+        else:
+            tmp = instance_idx_pair[prefinal_mask_pair]
+            tmp_big = instance_idx[prefinal_mask]
+            meta_data['to_mask'] = 'ft'
 
-            #instance_nonzero_mask = instance_mask[nonzero_mask] == instance_mask_pair[nonzero_mask_pair]
-
-        # When edge cases not common values
-        common_values = np.intersect1d(instance_idx.cpu().numpy(), instance_idx_pair.cpu().numpy())
-        indices_tensor1 = np.where(np.isin(instance_idx.cpu().numpy(), common_values))
-        indices_tensor2 = np.where(np.isin(instance_idx_pair.cpu().numpy(), common_values))
-
-        indices_tensor1 = torch.tensor(indices_tensor1)
-        indices_tensor2 = torch.tensor(indices_tensor2)
 
 
-        shared_ft = shared_ft.view(batch_dict['batch_size'],-1,256)
-        shared_ft = shared_ft[lbl_inds]
-        shared_ft = shared_ft[indices_tensor1]
+        '''Edge case - Handle more labeled indices in batch_dict_pair's dataloader batch than batch_dict's dataloader(or vice-versa)'''        
+        # final_mask = torch.zeros_like(tmp_big)
+        final_mask = []
+        # args2 =[]
+        for idx, item in enumerate(tmp_big,0):
+            if item in tmp:
+                final_mask.append(idx)
+                tmp[torch.where(tmp==item)[0][0]] = -1
+                
 
-        shared_ft_pair = shared_ft_pair.view(batch_dict['batch_size'],-1,256)
-        shared_ft_pair = shared_ft_pair[lbl_inds]
-        shared_ft_pair = shared_ft_pair[indices_tensor2]
+        final_mask = torch.tensor(final_mask, device=device)
 
-        assert not torch.allclose(shared_ft, shared_ft_pair)
+        # for idx, item in enumerate(instance_idx_pair,0):
+        #     if item in instance_idx:
+        #         args2.append(idx)
+        # args2 = torch.tensor(args2, device=device)
 
+        final_mask = final_mask.long()
+        if meta_data['to_mask'] == 'ft':
+            instance_idx = tmp_big[final_mask]   
+            labels = labels[final_mask]
+            shared_ft = shared_ft[final_mask]
+        
+        elif meta_data['to_mask'] == 'ft_pair':
+            instance_idx_pair = tmp_big[final_mask]   
+            labels_pair = labels_pair[final_mask]
+            shared_ft_pair = shared_ft_pair[final_mask]
+        
+
+        # labels= labels[args]
+        # shared_ft = shared_ft[args]
+
+        # labels_pair= labels_pair
+        # shared_ft_pair = shared_ft_pair
+        assert torch.equal(labels, labels_pair)
         '''Mask out self-contrast cases'''
         labels = labels.contiguous().view(-1, 1)
-        labels_pair = labels_pair.contiguous().view(-1, 1)
-
         mask = torch.eq(labels, labels.T).float().to(device) # (B*N, B*N)  # 48,48
 
         combined_shared_features = torch.cat([shared_ft.unsqueeze(1), shared_ft_pair.unsqueeze(1)], dim=1) # B*N,num_pairs,channel_dim
