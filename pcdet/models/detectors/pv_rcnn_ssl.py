@@ -331,26 +331,42 @@ class PVRCNN_SSL(Detector3DTemplate):
         labels_pair = batch_dict_pair['gt_boxes'][:,:,7][lbl_inds].view(-1)
         instance_idx = batch_dict['instance_idx'][lbl_inds].view(-1)
         instance_idx_pair = batch_dict_pair['instance_idx'][lbl_inds].view(-1)
+
         shared_ft = shared_ft.view(-1,256)
         shared_ft_pair = shared_ft_pair.view(-1,256)
-
+        
+        # strip off the extra GTs
         prefinal_mask = labels!=0
         prefinal_mask_pair = labels_pair!=0
 
-        labels = labels[prefinal_mask]
-        labels_pair =labels_pair[prefinal_mask_pair]
+        instance_idx = instance_idx[prefinal_mask]
+        instance_idx_pair = instance_idx_pair[prefinal_mask_pair]
 
-        shared_ft = shared_ft[prefinal_mask]
-        shared_ft_pair = shared_ft_pair[prefinal_mask_pair]
-        
         meta_data = {'to_mask':''}
+        valid_instances = np.intersect1d(instance_idx.cpu().numpy(),instance_idx_pair.cpu().numpy()) #
+        valid_instances = torch.tensor(valid_instances,device=device)
+       
+        # intersect_mask, to remove instances which are present A but B and VICE VERSA
+        intersect_mask = torch.isin(instance_idx,valid_instances) #small
+        intersect_mask_pair = torch.isin(instance_idx_pair,valid_instances)
+        
+        instance_idx = instance_idx[intersect_mask]
+        instance_idx_pair = instance_idx_pair[intersect_mask_pair]
+
+        labels = (labels[prefinal_mask])[intersect_mask]
+        labels_pair =(labels_pair[prefinal_mask_pair])[intersect_mask_pair]
+
+        shared_ft = (shared_ft[prefinal_mask])[intersect_mask]
+        shared_ft_pair = (shared_ft_pair[prefinal_mask_pair])[intersect_mask_pair]
+
+        # remove duplicates
         if len(labels) <= len(labels_pair):
-            tmp = instance_idx[prefinal_mask] #small
-            tmp_big = instance_idx_pair[prefinal_mask_pair] #big
+            tmp = copy.deepcopy(instance_idx) #small
+            tmp_big = instance_idx_pair #big
             meta_data['to_mask'] = 'ft_pair'
         else:
-            tmp = instance_idx_pair[prefinal_mask_pair]
-            tmp_big = instance_idx[prefinal_mask]
+            tmp = instance_idx_pair
+            tmp_big = instance_idx
             meta_data['to_mask'] = 'ft'
 
 
@@ -367,11 +383,6 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         final_mask = torch.tensor(final_mask, device=device)
 
-        # for idx, item in enumerate(instance_idx_pair,0):
-        #     if item in instance_idx:
-        #         args2.append(idx)
-        # args2 = torch.tensor(args2, device=device)
-
         final_mask = final_mask.long()
         if meta_data['to_mask'] == 'ft':
             instance_idx = tmp_big[final_mask]   
@@ -383,13 +394,23 @@ class PVRCNN_SSL(Detector3DTemplate):
             labels_pair = labels_pair[final_mask]
             shared_ft_pair = shared_ft_pair[final_mask]
         
+        ## sort the GTs
+        sorted = instance_idx.sort()[-1].long()
+        sorted_pair = instance_idx_pair.sort()[-1].long()
 
-        # labels= labels[args]
-        # shared_ft = shared_ft[args]
+        instance_idx = instance_idx[sorted]
+        instance_idx_pair = instance_idx_pair[sorted_pair]
 
-        # labels_pair= labels_pair
-        # shared_ft_pair = shared_ft_pair
+        labels = labels[sorted]
+        labels_pair =labels_pair[sorted_pair]
+
+        shared_ft = shared_ft[sorted]
+        shared_ft_pair = shared_ft_pair[sorted_pair]
+        
+        
+        assert torch.equal(instance_idx, instance_idx_pair)
         assert torch.equal(labels, labels_pair)
+
         '''Mask out self-contrast cases'''
         labels = labels.contiguous().view(-1, 1)
         mask = torch.eq(labels, labels.T).float().to(device) # (B*N, B*N)  # 48,48
