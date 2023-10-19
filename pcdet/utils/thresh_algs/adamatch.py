@@ -48,7 +48,7 @@ class AdaMatch(Metric):
         self.momentum = configs.get('MOMENTUM', 0.9)
         self.temperature = configs.get('TEMPERATURE', 1.0)
         self.ulb_ratio = configs.get('ULB_RATIO', 0.5)
-        self.states_name = ['sem_scores_wa', 'sem_scores_sa', 'conf_scores_sa']
+        self.states_name = ['sem_scores_wa', 'sem_scores_sa', 'conf_scores_wa', 'conf_scores_sa']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
         self.iteration_count = 0
 
@@ -133,15 +133,18 @@ class AdaMatch(Metric):
 
         self.iteration_count += 1
         accumulated_metrics = self._accumulate_metrics()
-        for sname in self.states_name:
-            sem_scores_wa = accumulated_metrics[sname]
+        for sname in ['sem_scores_wa', 'sem_scores_sa']:
+            sem_scores = accumulated_metrics[sname]
+            conf_scores = accumulated_metrics[sname.replace('sem', 'conf')]
 
-            max_scores, labels = torch.max(sem_scores_wa, dim=-1)
-            fg_mask = max_scores > self.prior_sem_fg_thresh  # TODO: Make it dynamic. Also not the same for both labeled and unlabeled data
-            hist_minlength = sem_scores_wa.shape[-1]
+            max_scores, labels = torch.max(sem_scores, dim=-1)
+            fg_thresh = torch.tensor(self.prior_sem_fg_thresh, dtype=torch.float, device=sem_scores.device).unsqueeze(0)
+            fg_thresh = fg_thresh.expand_as(sem_scores).gather(dim=-1, index=labels.unsqueeze(-1)).squeeze()
+            fg_mask =  conf_scores.squeeze() > fg_thresh   # TODO: Make it dynamic. Also not the same for both labeled and unlabeled data
+            hist_minlength = sem_scores.shape[-1]
             mean_p_max_model, labels_hist = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask, hist_minlength)
-            mean_p_model_lbl = _lbl(sem_scores_wa, fg_mask).mean(dim=0)
-            mean_p_model_ulb = _ulb(sem_scores_wa, fg_mask).mean(dim=0)
+            mean_p_model_lbl = _lbl(sem_scores, fg_mask).mean(dim=0)
+            mean_p_model_ulb = _ulb(sem_scores, fg_mask).mean(dim=0)
             mean_p_model = torch.vstack([mean_p_model_lbl, mean_p_model_ulb])
 
             self._update_ema('mean_p_max_model', mean_p_max_model, sname)

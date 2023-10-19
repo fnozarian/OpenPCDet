@@ -188,12 +188,12 @@ class PVRCNN_SSL(Detector3DTemplate):
         if self.adapt_thresholding:
             batch_dict_pre_gt_sample = self._split_batch(batch_dict, tag='pre_gt_sample')
             self._gen_pseudo_labels(batch_dict_pre_gt_sample)
-            conf_scores_sa = batch_dict['batch_cls_preds'].detach().clone().sigmoid().repeat(1, 1, 2)  # (B, 128, 1)
-            conf_scores_sa[..., 0] = 1 - conf_scores_sa[..., 1]
+            conf_scores_sa = batch_dict['batch_cls_preds'].detach().clone().sigmoid()  # (B, 128, 1)
             metrics_input = {'sem_scores_wa': batch_dict_ema['roi_scores_multiclass'].detach().clone(),  # (B, 100, 3)
                              # 'sem_scores_pre_gt_wa': batch_dict_pre_gt_sample['roi_scores_multiclass'].detach().clone(),  # (B, 100, 3)
                              'sem_scores_sa': batch_dict['roi_scores_multiclass'].detach().clone(),  # (B, 128, 3)
-                             'conf_scores_sa': conf_scores_sa,  # (B, 128, 2)
+                             'conf_scores_wa': batch_dict_ema['batch_cls_preds'].detach().clone().sigmoid(),  # (B, 100, 1)
+                             'conf_scores_sa': conf_scores_sa,  # (B, 128, 1)
                              # 'roi_iou_sa': batch_dict['gt_iou_of_rois'].unsqueeze(-1).detach().clone()  # (B, 128, 1)
                              }
             self.thresh_alg.update(**metrics_input)
