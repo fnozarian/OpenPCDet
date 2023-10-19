@@ -346,10 +346,12 @@ class PVRCNN_SSL(Detector3DTemplate):
         valid_instances = np.intersect1d(instance_idx.cpu().numpy(),instance_idx_pair.cpu().numpy()) #
         valid_instances = torch.tensor(valid_instances,device=device)
        
-        # intersect_mask, to remove instances which are present A but B and VICE VERSA
-        intersect_mask = torch.isin(instance_idx,valid_instances) #small
-        intersect_mask_pair = torch.isin(instance_idx_pair,valid_instances)
-        
+        '''intersect_mask, to remove instances from A which are not in B and VICE VERSA '''
+        # intersect_mask = torch.isin(instance_idx,valid_instances) #small
+        # intersect_mask_pair = torch.isin(instance_idx_pair,valid_instances)
+        intersect_mask = torch.tensor([idx in valid_instances for idx in instance_idx], device=device, dtype=torch.bool)
+        intersect_mask_pair = torch.tensor([idx in valid_instances for idx in instance_idx_pair], device=device, dtype=torch.bool)
+
         instance_idx = instance_idx[intersect_mask]
         instance_idx_pair = instance_idx_pair[intersect_mask_pair]
 
@@ -443,6 +445,13 @@ class PVRCNN_SSL(Detector3DTemplate):
             return
         instance_loss = instance_loss.mean()
         return instance_loss 
+
+    # @staticmethod
+    # def in1d(ar1, ar2):
+    #     mask = ar2.new_zeros((max(len(ar1), len(ar2))), dtype=torch.bool)
+    #     mask[ar2.unique()] = True
+    #     return mask[ar1]
+
 
     @staticmethod
     def _prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn):
