@@ -138,7 +138,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                 continue
             if k.endswith(f'_{tag}'):
                 batch_dict_out[k[:-(len(tag)+1)]] = batch_dict[k]
-            else:
+                batch_dict.pop(k)
+            if k in ['batch_size']:
                 batch_dict_out[k] = batch_dict[k]
         return batch_dict_out
 
@@ -158,19 +159,11 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         self._gen_pseudo_labels(batch_dict_ema)
 
-        if self.adapt_thresholding:
-            batch_dict_pre_gt_sample = self._split_batch(batch_dict, tag='pre_gt_sample')
-            self._gen_pseudo_labels(batch_dict_pre_gt_sample)
-
-            metrics_input = {'sem_scores_wa': batch_dict_ema['roi_scores_multiclass'].detach().clone(),
-                             'sem_scores_pre_gt_wa': batch_dict_pre_gt_sample['roi_scores_multiclass'].detach().clone()}
-            self.thresh_alg.update(**metrics_input)
-
-            if self.thresh_alg.iteration_count > 0:
-                thresh_masks = torch.ones_like(batch_dict_ema['roi_scores'], dtype=torch.bool)
-                ulb_thresh_masks = self.thresh_alg.get_mask(batch_dict_ema['roi_scores_multiclass'][ulb_inds], thresh_alg='FreeMatch')
-                thresh_masks[ulb_inds] = ulb_thresh_masks
-                batch_dict_ema['pre_nms_thresh_masks'] = thresh_masks
+        if self.adapt_thresholding and self.thresh_alg.iteration_count > 0:
+            thresh_masks = torch.ones_like(batch_dict_ema['roi_scores'], dtype=torch.bool)
+            ulb_thresh_masks = self.thresh_alg.get_mask(batch_dict_ema['roi_scores_multiclass'][ulb_inds], thresh_alg='FreeMatch')
+            thresh_masks[ulb_inds] = ulb_thresh_masks
+            batch_dict_ema['pre_nms_thresh_masks'] = thresh_masks
 
         pseudo_labels_dict, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
 
@@ -191,6 +184,19 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         for cur_module in self.pv_rcnn.module_list:
             batch_dict = cur_module(batch_dict)
+
+        if self.adapt_thresholding:
+            batch_dict_pre_gt_sample = self._split_batch(batch_dict, tag='pre_gt_sample')
+            self._gen_pseudo_labels(batch_dict_pre_gt_sample)
+            conf_scores_sa = batch_dict['batch_cls_preds'].detach().clone().sigmoid().repeat(1, 1, 2)  # (B, 128, 1)
+            conf_scores_sa[..., 0] = 1 - conf_scores_sa[..., 1]
+            metrics_input = {'sem_scores_wa': batch_dict_ema['roi_scores_multiclass'].detach().clone(),  # (B, 100, 3)
+                             # 'sem_scores_pre_gt_wa': batch_dict_pre_gt_sample['roi_scores_multiclass'].detach().clone(),  # (B, 100, 3)
+                             'sem_scores_sa': batch_dict['roi_scores_multiclass'].detach().clone(),  # (B, 128, 3)
+                             'conf_scores_sa': conf_scores_sa,  # (B, 128, 2)
+                             # 'roi_iou_sa': batch_dict['gt_iou_of_rois'].unsqueeze(-1).detach().clone()  # (B, 128, 1)
+                             }
+            self.thresh_alg.update(**metrics_input)
 
         if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTOTYPING', False):
             # Update the bank with student's features from augmented labeled data

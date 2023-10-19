@@ -48,7 +48,7 @@ class AdaMatch(Metric):
         self.momentum = configs.get('MOMENTUM', 0.9)
         self.temperature = configs.get('TEMPERATURE', 1.0)
         self.ulb_ratio = configs.get('ULB_RATIO', 0.5)
-        self.states_name = ['sem_scores_wa', 'sem_scores_pre_gt_wa']
+        self.states_name = ['sem_scores_wa', 'sem_scores_sa', 'conf_scores_sa']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
         self.iteration_count = 0
 
@@ -102,7 +102,7 @@ class AdaMatch(Metric):
 
         return accumulated_metrics
 
-    def _get_mean_p_max_model_and_label_hist(self, max_scores, labels, fg_mask, split=None, type='micro'):
+    def _get_mean_p_max_model_and_label_hist(self, max_scores, labels, fg_mask, hist_minlength=3, split=None, type='micro'):
         if split is None:
             split = ['lbl', 'ulb']
         if isinstance(split, str) and split in ['lbl', 'ulb']:
@@ -110,7 +110,7 @@ class AdaMatch(Metric):
             fg_max_scores = _split(max_scores, fg_mask)
             fg_labels = _split(labels, fg_mask)
             p_max_model = fg_labels.new_zeros(3, dtype=fg_max_scores.dtype).scatter_add_(0, fg_labels, fg_max_scores)
-            fg_labels_hist = torch.bincount(fg_labels, minlength=len(self.class_names))
+            fg_labels_hist = torch.bincount(fg_labels, minlength=hist_minlength)
 
             if type == 'micro':
                 p_max_model = p_max_model.sum() / fg_labels_hist.sum()
@@ -119,8 +119,8 @@ class AdaMatch(Metric):
                 p_max_model = p_max_model.mean()
             return p_max_model, fg_labels_hist
         elif isinstance(split, list) and len(split) == 2:
-            p_s0, h_s0 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask, split=split[0], type=type)
-            p_s1, h_s1 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask, split=split[1], type=type)
+            p_s0, h_s0 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask, hist_minlength=hist_minlength, split=split[0], type=type)
+            p_s1, h_s1 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask, hist_minlength=hist_minlength, split=split[1], type=type)
             return torch.vstack([p_s0, p_s1]).squeeze(), torch.vstack([h_s0, h_s1])
         else:
             raise ValueError(f"Invalid split type: {split}")
@@ -128,7 +128,7 @@ class AdaMatch(Metric):
     def compute(self):
         results = {}
 
-        if len(self.sem_scores_pre_gt_wa) < self.reset_state_interval:
+        if len(self.sem_scores_wa) < self.reset_state_interval:
             return
 
         self.iteration_count += 1
@@ -138,8 +138,8 @@ class AdaMatch(Metric):
 
             max_scores, labels = torch.max(sem_scores_wa, dim=-1)
             fg_mask = max_scores > self.prior_sem_fg_thresh  # TODO: Make it dynamic. Also not the same for both labeled and unlabeled data
-
-            mean_p_max_model, labels_hist = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask)
+            hist_minlength = sem_scores_wa.shape[-1]
+            mean_p_max_model, labels_hist = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask, hist_minlength)
             mean_p_model_lbl = _lbl(sem_scores_wa, fg_mask).mean(dim=0)
             mean_p_model_ulb = _ulb(sem_scores_wa, fg_mask).mean(dim=0)
             mean_p_model = torch.vstack([mean_p_model_lbl, mean_p_model_ulb])
@@ -154,7 +154,7 @@ class AdaMatch(Metric):
                 results[f'dist_plots_{sname}'] = fig
                 plt.close()
 
-        ratio =  _lbl(self.mean_p_model['sem_scores_pre_gt_wa']) / (_ulb(self.mean_p_model['sem_scores_wa']) + 1e-6)
+        ratio =  _lbl(self.mean_p_model['sem_scores_wa']) / (_ulb(self.mean_p_model['sem_scores_wa']) + 1e-6)
         self._update_ema('ratio', ratio, 'AdaMatch')
         results['ratio/pre_gt_wa_over_wa'] = self._arr2dict(self.ratio['AdaMatch'])
 
@@ -169,6 +169,10 @@ class AdaMatch(Metric):
         # Bincount/histogram approach (labels_probs_lbl) is the sharpened
         # or one-hot version of the mean approach (mean_p_model_lbl)
         labels_probs = self.labels_hist[sname] / self.labels_hist[sname].sum(dim=-1, keepdim=True)
+        unbiased_p_model = self.mean_p_model[sname] / self.labels_hist[sname]
+        unbiased_p_model = unbiased_p_model / unbiased_p_model.sum(dim=-1, keepdim=True)
+        results[f'unbiased_p_model_lbl/{sname}'] = self._arr2dict(_lbl(unbiased_p_model))
+        results[f'unbiased_p_model_ulb/{sname}'] = self._arr2dict(_ulb(unbiased_p_model))
         results[f'labels_probs_lbl_or_sharpened_mean_p_model_lbl)/{sname}'] = self._arr2dict(_lbl(labels_probs))
         results[f'labels_probs_ulb_or_sharpened_mean_p_model_ulb)/{sname}'] = self._arr2dict(_ulb(labels_probs))
         results[f'mean_p_model_lbl/{sname}'] = self._arr2dict(_lbl(self.mean_p_model[sname]))
@@ -256,4 +260,9 @@ class AdaMatch(Metric):
             return normalized_p_model * _ulb(self.mean_p_max_model[tag])
 
     def _arr2dict(self, array):
-        return {cls: array[cind] for cind, cls in enumerate(self.class_names)}
+        if array.shape[-1] == 2:
+            return {cls: array[cind] for cind, cls in enumerate(['Bg', 'Fg'])}
+        elif array.shape[-1] == len(self.class_names):
+            return {cls: array[cind] for cind, cls in enumerate(self.class_names)}
+        else:
+            raise ValueError(f"Invalid array shape: {array.shape}")
