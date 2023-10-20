@@ -159,7 +159,7 @@ class AdaMatch(Metric):
 
         ratio =  _lbl(self.mean_p_model['sem_scores_wa']) / (_ulb(self.mean_p_model['sem_scores_wa']) + 1e-6)
         self._update_ema('ratio', ratio, 'AdaMatch')
-        results['ratio/pre_gt_wa_over_wa'] = self._arr2dict(self.ratio['AdaMatch'])
+        results['ratio/lbl_over_ulb_of_sem_scores_wa'] = self._arr2dict(self.ratio['AdaMatch'])
 
         self.reset()
         return results
