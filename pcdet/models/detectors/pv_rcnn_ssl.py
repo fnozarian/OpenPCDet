@@ -267,7 +267,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 loss += proto_cont_loss * self.model_cfg['ROI_HEAD']['PROTO_CONTRASTIVE_LOSS_WEIGHT']
                 tb_dict['proto_cont_loss'] = proto_cont_loss.item()
         if self.model_cfg['ROI_HEAD'].get('ENABLE_INSTANCE_SUP_LOSS', False):
-            lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict,batch_dict_pair,lbl_inds, stop_epoch=60)
+            lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict,batch_dict_pair,lbl_inds)
             if lbl_inst_cont_loss is not None:
                 loss += lbl_inst_cont_loss * self.model_cfg['ROI_HEAD']['INSTANCE_CONTRASTIVE_LOSS_WEIGHT']
                 tb_dict['proto_cont_loss'] = lbl_inst_cont_loss.item()
@@ -312,7 +312,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             return
         return proto_cont_loss.view(B, N)[ulb_inds][ulb_nonzero_mask].mean()
 
-    def _get_instance_contrastive_loss(self, batch_dict,batch_dict_pair,lbl_inds,temperature=1.0,base_temperature=1.0, stop_epoch=60):
+    def _get_instance_contrastive_loss(self, batch_dict,batch_dict_pair,lbl_inds,temperature=1.0,base_temperature=1.0):
         '''
         Args:
             features: hidden vector of shape [bsz, n_views, ...].
@@ -320,9 +320,11 @@ class PVRCNN_SSL(Detector3DTemplate):
             mask: contrastive mask of shape [bsz, bsz], mask_{i,j}=1 if sample j
                 has the same class as sample i. Can be asymmetric.
         '''
-        if batch_dict['cur_epoch'] > stop_epoch:  # To ablate effects of stopping supervised contrastive loss earlier than regular supervised loss
-            return 
-
+        stop_epoch = self.model_cfg['ROI_HEAD'].get(
+            'INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH', 60)
+        # To examine effects of stopping supervised contrastive loss earlier than regular supervised loss
+        if (batch_dict['cur_epoch'] + 1) > stop_epoch:
+            return
         batch_size_labeled = len(lbl_inds)
         shared_ft = batch_dict['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
         shared_ft_pair = batch_dict_pair['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
@@ -431,8 +433,6 @@ class PVRCNN_SSL(Detector3DTemplate):
         # Doubling label_mask dimensions to accomodate paired_fts too
         mask = mask.repeat(num_pairs, num_pairs)
         # mask-out self-contrast cases
-        # self_contrastive_mask = 1 - torch.eye(labels.shape[0])
-        # self_contrastive_mask = self_contrastive_mask.repeat(num_pairs,num_pairs).to(device)
         self_contrastive_mask = torch.scatter(torch.ones_like(mask),1,torch.arange(batch_size_labeled * num_pairs).view(-1, 1).to(device),0)
         mask = mask * self_contrastive_mask #mask * logits_mask
 
@@ -445,13 +445,6 @@ class PVRCNN_SSL(Detector3DTemplate):
             return
         instance_loss = instance_loss.mean()
         return instance_loss 
-
-    # @staticmethod
-    # def in1d(ar1, ar2):
-    #     mask = ar2.new_zeros((max(len(ar1), len(ar2))), dtype=torch.bool)
-    #     mask[ar2.unique()] = True
-    #     return mask[ar1]
-
 
     @staticmethod
     def _prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn):

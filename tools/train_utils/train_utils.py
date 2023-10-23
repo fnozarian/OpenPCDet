@@ -78,9 +78,9 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
 
         model.train()
         optimizer.zero_grad()
-        for name, param in model.named_parameters():
-            if param.grad is None:
-                print(f'{name} has no grad')
+        # for name, param in model.named_parameters():
+        #     if param.grad is None:
+        #         print(f'{name} has no grad')
 
         loss, tb_dict, disp_dict = model_func(model, batch)
 
