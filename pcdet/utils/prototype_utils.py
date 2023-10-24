@@ -60,7 +60,7 @@ class FeatureBank(Metric):
         try:
             unique_smpl_ids = torch.unique(torch.cat(self.smpl_ids))
         except:
-            unique_smpl_ids = torch.unique(torch.cat((self.smpl_ids), dim=0))
+            unique_smpl_ids = torch.unique(torch.cat((self.smpl_ids,), dim=0))
         if len(unique_smpl_ids) < self.reset_state_interval:
             return None
         try:

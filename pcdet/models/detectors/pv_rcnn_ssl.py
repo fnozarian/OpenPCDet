@@ -13,7 +13,7 @@ from .pv_rcnn import PVRCNN
 from pcdet.utils import common_utils
 from pcdet.utils.stats_utils import metrics_registry
 from pcdet.utils.prototype_utils import feature_bank_registry
-from tools.visual_utils import open3d_vis_utils as V
+# from tools.visual_utils import open3d_vis_utils as V
 from collections import defaultdict
 from pcdet.utils.weighting_methods import build_thresholding_method
 
