@@ -69,6 +69,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores',
                          'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels', 'iteration']
         self.val_dict = {val: [] for val in vals_to_store}
+        self.inst_dict = {val: [] for val in vals_to_store}
+
 
     @staticmethod
     def _clone_gt_boxes_and_feats(batch_dict):
@@ -270,12 +272,12 @@ class PVRCNN_SSL(Detector3DTemplate):
             lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict,batch_dict_pair,lbl_inds)
             if lbl_inst_cont_loss is not None:
                 loss += lbl_inst_cont_loss * self.model_cfg['ROI_HEAD']['INSTANCE_CONTRASTIVE_LOSS_WEIGHT']
-                tb_dict['proto_cont_loss'] = lbl_inst_cont_loss.item()
+                tb_dict['inst_cont_loss'] = lbl_inst_cont_loss.item()
 
         tb_dict_ = self._prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn)
 
         if self.model_cfg.get('STORE_SCORES_IN_PKL', False):
-            self.dump_statistics(batch_dict, ulb_inds)
+            self.dump_statistics(batch_dict, ulb_inds,lbl_inds)
 
         for tag in feature_bank_registry.tags():
             feature_bank_registry.get(tag).compute()
@@ -312,7 +314,19 @@ class PVRCNN_SSL(Detector3DTemplate):
             return
         return proto_cont_loss.view(B, N)[ulb_inds][ulb_nonzero_mask].mean()
 
-    def _get_instance_contrastive_loss(self, batch_dict,batch_dict_pair,lbl_inds,temperature=1.0,base_temperature=1.0):
+    def count_class_instances(tensor):
+        class_labels = {1: "car", 2: "pedestrian", 3: "cyclist"}
+        class_counts = {}
+
+        for label, class_name in class_labels.items():
+            count = torch.sum(tensor.eq(label)).item()
+            print(f"Number of {class_name}s: {count}")
+            class_counts[class_name] = count
+
+        return class_counts
+
+
+    def _get_instance_contrastive_loss(self, batch_dict,batch_dict_pair,lbl_inds,temperature=0.07,base_temperature=0.07):
         '''
         Args:
             features: hidden vector of shape [bsz, n_views, ...].
@@ -320,10 +334,12 @@ class PVRCNN_SSL(Detector3DTemplate):
             mask: contrastive mask of shape [bsz, bsz], mask_{i,j}=1 if sample j
                 has the same class as sample i. Can be asymmetric.
         '''
+        start_epoch = self.model_cfg['ROI_HEAD'].get(
+            'INSTANCE_CONTRASTIVE_LOSS_START_EPOCH', 60)
         stop_epoch = self.model_cfg['ROI_HEAD'].get(
             'INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH', 60)
-        # To examine effects of stopping supervised contrastive loss earlier than regular supervised loss
-        if (batch_dict['cur_epoch'] + 1) > stop_epoch:
+        # To examine effects of stopping supervised contrastive loss
+        if not start_epoch<=batch_dict['cur_epoch']<stop_epoch:
             return
         batch_size_labeled = len(lbl_inds)
         shared_ft = batch_dict['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
@@ -413,18 +429,18 @@ class PVRCNN_SSL(Detector3DTemplate):
         
         
         assert torch.equal(instance_idx, instance_idx_pair)
-        assert torch.equal(labels, labels_pair)
+        # assert self.count_class_instances(labels) == self.count_class_instances(labels_pair)
 
         '''Mask out self-contrast cases'''
         labels = labels.contiguous().view(-1, 1)
-        mask = torch.eq(labels, labels.T).float().to(device) # (B*N, B*N)  # 48,48
+        mask = torch.eq(labels, labels.T).float().to(device) # (B*N, B*N)
 
         combined_shared_features = torch.cat([shared_ft.unsqueeze(1), shared_ft_pair.unsqueeze(1)], dim=1) # B*N,num_pairs,channel_dim
 
         num_pairs = combined_shared_features.shape[1]
         assert num_pairs == 2 # Since contrasting a pair of Gts, contrast_count = 2
         contrast_feature = torch.cat(torch.unbind(combined_shared_features, dim=1), dim=0) 
-        contrast_feature = F.normalize(contrast_feature.view(-1,combined_shared_features.shape[-1]))
+        # contrast_feature = F.normalize(contrast_feature.view(-1,combined_shared_features.shape[-1]))
         # compute logits
         anchor_dot_contrast = torch.div(torch.matmul(contrast_feature, contrast_feature.T),temperature)
         # for numerical stability
@@ -433,10 +449,10 @@ class PVRCNN_SSL(Detector3DTemplate):
         # Doubling label_mask dimensions to accomodate paired_fts too
         mask = mask.repeat(num_pairs, num_pairs)
         # mask-out self-contrast cases
-        self_contrastive_mask = torch.scatter(torch.ones_like(mask),1,torch.arange(batch_size_labeled * num_pairs).view(-1, 1).to(device),0)
-        mask = mask * self_contrastive_mask #mask * logits_mask
+        logits_mask = torch.scatter(torch.ones_like(mask),1,torch.arange(batch_size_labeled * num_pairs).view(-1, 1).to(device),0)
+        mask = mask * logits_mask
 
-        exp_logits = torch.exp(logits) * self_contrastive_mask # compute log_prob
+        exp_logits = torch.exp(logits) * logits_mask # compute log_prob
         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)         # compute mean of log-likelihood over positive
 
@@ -444,13 +460,23 @@ class PVRCNN_SSL(Detector3DTemplate):
         if instance_loss is None:
             return
         instance_loss = instance_loss.mean()
-        return instance_loss 
+        return instance_loss
+
+
+        # # Save the dictionary to a pickle file
+        # with open("inst_counts.pkl", "wb") as file:
+        #     pickle.dump(self.count_class_instances(labels), file)
+
+        #         # replace old pickle data (if exists) with updated one
+        #    output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
+        #    file_path = os.path.join(output_dir, 'inst_labels.pkl')
+        #    pickle.dump(self.inst_dict, open(file_path, 'wb'))
 
     @staticmethod
     def _prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn):
         tb_dict_ = {}
         for key in tb_dict.keys():
-            if key == 'proto_cont_loss':
+            if key == 'proto_cont_loss' or 'inst_cont_loss':
                 tb_dict_[key] = tb_dict[key]
             elif 'loss' in key or 'acc' in key or 'point_pos_num' in key:
                 tb_dict_[f"{key}_labeled"] = reduce_loss_fn(tb_dict[key][lbl_inds, ...])
@@ -505,7 +531,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         box_labels = box_labels.cpu().numpy()
         V.draw_scenes(points=points, gt_boxes=boxes, gt_labels=box_labels)
 
-    def dump_statistics(self, batch_dict, unlabeled_inds):
+    def dump_statistics(self, batch_dict, unlabeled_inds,labeled_inds):
         # Store different types of scores over all itrs and epochs and dump them in a pickle for offline modeling
         # TODO (shashank) : Can be optimized later to save computational time, currently takes about 0.002sec
         batch_roi_labels = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'][unlabeled_inds]
