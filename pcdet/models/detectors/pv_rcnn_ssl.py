@@ -440,7 +440,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         num_pairs = combined_shared_features.shape[1]
         assert num_pairs == 2 # Since contrasting a pair of Gts, contrast_count = 2
         contrast_feature = torch.cat(torch.unbind(combined_shared_features, dim=1), dim=0) 
-        # contrast_feature = F.normalize(contrast_feature.view(-1,combined_shared_features.shape[-1]))
+        contrast_feature = F.normalize(contrast_feature.view(-1,combined_shared_features.shape[-1]))
         # compute logits
         anchor_dot_contrast = torch.div(torch.matmul(contrast_feature, contrast_feature.T),temperature)
         # for numerical stability
@@ -476,7 +476,9 @@ class PVRCNN_SSL(Detector3DTemplate):
     def _prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn):
         tb_dict_ = {}
         for key in tb_dict.keys():
-            if key == 'proto_cont_loss' or 'inst_cont_loss':
+            if key == 'proto_cont_loss':
+                tb_dict_[key] = tb_dict[key]
+            elif key=="inst_cont_loss":
                 tb_dict_[key] = tb_dict[key]
             elif 'loss' in key or 'acc' in key or 'point_pos_num' in key:
                 tb_dict_[f"{key}_labeled"] = reduce_loss_fn(tb_dict[key][lbl_inds, ...])
