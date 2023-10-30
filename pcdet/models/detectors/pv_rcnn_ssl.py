@@ -9,7 +9,7 @@ from pcdet.ops.iou3d_nms import iou3d_nms_utils
 from pcdet.ops.roiaware_pool3d import roiaware_pool3d_utils
 from .detector3d_template import Detector3DTemplate
 from .pv_rcnn import PVRCNN
-
+import matplotlib.pyplot as plt
 from pcdet.utils import common_utils
 from pcdet.utils.stats_utils import metrics_registry
 from pcdet.utils.prototype_utils import feature_bank_registry
@@ -282,11 +282,11 @@ class PVRCNN_SSL(Detector3DTemplate):
         for tag in feature_bank_registry.tags():
             feature_bank_registry.get(tag).compute()
 
-        # update dynamic thresh results
-        for tag in self.thresh_registry.tags():
-            if results := self.thresh_registry.get(tag).compute():
-                tag = f"{tag}/" if tag else ''
-                tb_dict_.update({tag + key: val for key, val in results.items()})
+        # # update dynamic thresh results
+        # for tag in self.thresh_registry.tags():
+        #     if results := self.thresh_registry.get(tag).compute():
+        #         tag = f"{tag}/" if tag else ''
+        #         tb_dict_.update({tag + key: val for key, val in results.items()})
 
         for tag in metrics_registry.tags():
             results = metrics_registry.get(tag).compute()
@@ -341,7 +341,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         # To examine effects of stopping supervised contrastive loss
         if not start_epoch<=batch_dict['cur_epoch']<stop_epoch:
             return
-        batch_size_labeled = len(lbl_inds)
+        
         shared_ft = batch_dict['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
         shared_ft_pair = batch_dict_pair['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
         device = shared_ft.device
@@ -423,7 +423,7 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         labels = labels[sorted]
         labels_pair =labels_pair[sorted_pair]
-
+        batch_size_labeled = labels.shape[0]
         shared_ft = shared_ft[sorted]
         shared_ft_pair = shared_ft_pair[sorted_pair]
         
@@ -434,13 +434,18 @@ class PVRCNN_SSL(Detector3DTemplate):
         '''Mask out self-contrast cases'''
         labels = labels.contiguous().view(-1, 1)
         mask = torch.eq(labels, labels.T).float().to(device) # (B*N, B*N)
-
+        '''
+        plt.imshow(mask.cpu().numpy(), cmap='viridis')
+        plt.colorbar()
+        plt.savefig("mask.png")
+        plt.clf()
+        '''
         combined_shared_features = torch.cat([shared_ft.unsqueeze(1), shared_ft_pair.unsqueeze(1)], dim=1) # B*N,num_pairs,channel_dim
 
         num_pairs = combined_shared_features.shape[1]
         assert num_pairs == 2 # Since contrasting a pair of Gts, contrast_count = 2
         contrast_feature = torch.cat(torch.unbind(combined_shared_features, dim=1), dim=0) 
-        contrast_feature = F.normalize(contrast_feature.view(-1,combined_shared_features.shape[-1]))
+        contrast_feature = F.normalize(contrast_feature.view(-1,combined_shared_features.shape[-1])) # normalized features before masking. original code does it earlier : https://github.com/HobbitLong/SupContrast/blob/ae5da977b0abd4bdc1a6fd4ec4ba2c3655a1879f/networks/resnet_big.py#L185C51-L185C51
         # compute logits
         anchor_dot_contrast = torch.div(torch.matmul(contrast_feature, contrast_feature.T),temperature)
         # for numerical stability
