@@ -149,6 +149,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         batch_dict_ema['cls_preds_normalized'] = True
 
     def _gen_pseudo_labels(self, batch_dict_ema, ulb_inds):
+        # batch_dict_sa = copy.deepcopy(batch_dict_ema)
         with torch.no_grad():
             # self.pv_rcnn_ema.eval()  # https://github.com/yezhen17/3DIoUMatch-PVRCNN/issues/6
             for cur_module in self.pv_rcnn_ema.module_list:
@@ -190,7 +191,7 @@ class PVRCNN_SSL(Detector3DTemplate):
     def _forward_training(self, batch_dict):
         lbl_inds, ulb_inds = self._prep_batch_dict(batch_dict)
         batch_dict_ema = self._split_ema_batch(batch_dict)
-        batch_dict_pair = copy.deepcopy(batch_dict_ema)
+        batch_dict_wa = copy.deepcopy(batch_dict_ema)
 
         pseudo_labels = self._gen_pseudo_labels(batch_dict_ema, ulb_inds)
         pseudo_boxes, pseudo_scores, pseudo_sem_scores = self._filter_pseudo_labels(pseudo_labels, ulb_inds)
@@ -202,18 +203,18 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         for cur_module in self.pv_rcnn.module_list:
             batch_dict = cur_module(batch_dict)
-
-        #1. @Student - Get shared_features over GTs
+        
+        #1. @Student - Get shared_features over strongly aug GTs
         batch_dict = self.pv_rcnn.roi_head.forward(batch_dict, test_only=True,use_gtboxes=True)
 
 
-        #2. @Student - Get shared_features over flipped_gts (BATCH_DICT_PAIR)
+        #2. @Student - Get shared_features over Weakly aug GTs
         with torch.no_grad():
             for cur_module in self.pv_rcnn.module_list:
                 try:
-                    batch_dict_pair = cur_module(batch_dict_pair, test_only=True,use_gtboxes=True)
+                    batch_dict_wa = cur_module(batch_dict_wa, test_only=True,use_gtboxes=True)
                 except TypeError as e:
-                    batch_dict_pair = cur_module(batch_dict_pair)        
+                    batch_dict_wa = cur_module(batch_dict_wa)        
 
         if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
             pred_strong_aug_before_nms_org = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
@@ -269,7 +270,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 loss += proto_cont_loss * self.model_cfg['ROI_HEAD']['PROTO_CONTRASTIVE_LOSS_WEIGHT']
                 tb_dict['proto_cont_loss'] = proto_cont_loss.item()
         if self.model_cfg['ROI_HEAD'].get('ENABLE_INSTANCE_SUP_LOSS', False):
-            lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict,batch_dict_pair,lbl_inds)
+            lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict,batch_dict_wa,lbl_inds)
             if lbl_inst_cont_loss is not None:
                 loss += lbl_inst_cont_loss * self.model_cfg['ROI_HEAD']['INSTANCE_CONTRASTIVE_LOSS_WEIGHT']
                 tb_dict['inst_cont_loss'] = lbl_inst_cont_loss.item()
@@ -342,51 +343,51 @@ class PVRCNN_SSL(Detector3DTemplate):
         if not start_epoch<=batch_dict['cur_epoch']<stop_epoch:
             return
         
-        shared_ft = batch_dict['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
-        shared_ft_pair = batch_dict_pair['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
-        device = shared_ft.device
-        labels = batch_dict['gt_boxes'][:,:,7][lbl_inds].view(-1)
-        labels_pair = batch_dict_pair['gt_boxes'][:,:,7][lbl_inds].view(-1)
-        instance_idx = batch_dict['instance_idx'][lbl_inds].view(-1)
-        instance_idx_pair = batch_dict_pair['instance_idx'][lbl_inds].view(-1)
+        shared_ft_sa = batch_dict['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
+        shared_ft_wa = batch_dict_pair['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
+        device = shared_ft_sa.device
+        labels_sa = batch_dict['gt_boxes'][:,:,7][lbl_inds].view(-1)
+        labels_wa = batch_dict_pair['gt_boxes'][:,:,7][lbl_inds].view(-1)
+        instance_idx_sa = batch_dict['instance_idx'][lbl_inds].view(-1)
+        instance_idx_wa = batch_dict_pair['instance_idx'][lbl_inds].view(-1)
 
-        shared_ft = shared_ft.view(-1,256)
-        shared_ft_pair = shared_ft_pair.view(-1,256)
+        shared_ft_sa = shared_ft_sa.view(-1,256)
+        shared_ft_wa = shared_ft_wa.view(-1,256)
         
         # strip off the extra GTs
-        prefinal_mask = labels!=0
-        prefinal_mask_pair = labels_pair!=0
+        prefinal_mask_sa = labels_sa!=0
+        prefinal_mask_wa = labels_wa!=0
 
-        instance_idx = instance_idx[prefinal_mask]
-        instance_idx_pair = instance_idx_pair[prefinal_mask_pair]
+        instance_idx_sa = instance_idx_sa[prefinal_mask_sa]
+        instance_idx_wa = instance_idx_wa[prefinal_mask_wa]
 
         meta_data = {'to_mask':''}
-        valid_instances = np.intersect1d(instance_idx.cpu().numpy(),instance_idx_pair.cpu().numpy()) #
+        valid_instances = np.intersect1d(instance_idx_sa.cpu().numpy(),instance_idx_wa.cpu().numpy()) #
         valid_instances = torch.tensor(valid_instances,device=device)
        
         '''intersect_mask, to remove instances from A which are not in B and VICE VERSA '''
         # intersect_mask = torch.isin(instance_idx,valid_instances) #small
         # intersect_mask_pair = torch.isin(instance_idx_pair,valid_instances)
-        intersect_mask = torch.tensor([idx in valid_instances for idx in instance_idx], device=device, dtype=torch.bool)
-        intersect_mask_pair = torch.tensor([idx in valid_instances for idx in instance_idx_pair], device=device, dtype=torch.bool)
+        intersect_mask_sa = torch.tensor([idx in valid_instances for idx in instance_idx_sa], device=device, dtype=torch.bool)
+        intersect_mask_wa = torch.tensor([idx in valid_instances for idx in instance_idx_wa], device=device, dtype=torch.bool)
 
-        instance_idx = instance_idx[intersect_mask]
-        instance_idx_pair = instance_idx_pair[intersect_mask_pair]
+        instance_idx_sa = instance_idx_sa[intersect_mask_sa]
+        instance_idx_wa = instance_idx_wa[intersect_mask_wa]
 
-        labels = (labels[prefinal_mask])[intersect_mask]
-        labels_pair =(labels_pair[prefinal_mask_pair])[intersect_mask_pair]
+        labels_sa = (labels_sa[prefinal_mask_sa])[intersect_mask_sa]
+        labels_wa =(labels_wa[prefinal_mask_wa])[intersect_mask_wa]
 
-        shared_ft = (shared_ft[prefinal_mask])[intersect_mask]
-        shared_ft_pair = (shared_ft_pair[prefinal_mask_pair])[intersect_mask_pair]
+        shared_ft_sa = (shared_ft_sa[prefinal_mask_sa])[intersect_mask_sa]
+        shared_ft_wa = (shared_ft_wa[prefinal_mask_wa])[intersect_mask_wa]
 
         # remove duplicates
-        if len(labels) <= len(labels_pair):
-            tmp = copy.deepcopy(instance_idx) #small
-            tmp_big = instance_idx_pair #big
+        if len(labels_sa) <= len(labels_wa):
+            tmp = copy.deepcopy(instance_idx_sa) #small
+            tmp_big = instance_idx_wa #big
             meta_data['to_mask'] = 'ft_pair'
         else:
-            tmp = instance_idx_pair
-            tmp_big = instance_idx
+            tmp = instance_idx_wa
+            tmp_big = instance_idx_sa
             meta_data['to_mask'] = 'ft'
 
 
@@ -405,42 +406,42 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         final_mask = final_mask.long()
         if meta_data['to_mask'] == 'ft':
-            instance_idx = tmp_big[final_mask]   
-            labels = labels[final_mask]
-            shared_ft = shared_ft[final_mask]
+            instance_idx_sa = tmp_big[final_mask]   
+            labels_sa = labels_sa[final_mask]
+            shared_ft_sa = shared_ft_sa[final_mask]
         
         elif meta_data['to_mask'] == 'ft_pair':
-            instance_idx_pair = tmp_big[final_mask]   
-            labels_pair = labels_pair[final_mask]
-            shared_ft_pair = shared_ft_pair[final_mask]
+            instance_idx_wa = tmp_big[final_mask]   
+            labels_wa = labels_wa[final_mask]
+            shared_ft_wa = shared_ft_wa[final_mask]
         
         ## sort the GTs
-        sorted = instance_idx.sort()[-1].long()
-        sorted_pair = instance_idx_pair.sort()[-1].long()
+        sorted_sa = instance_idx_sa.sort()[-1].long()
+        sorted_wa = instance_idx_wa.sort()[-1].long()
 
-        instance_idx = instance_idx[sorted]
-        instance_idx_pair = instance_idx_pair[sorted_pair]
+        instance_idx_sa = instance_idx_sa[sorted_sa]
+        instance_idx_wa = instance_idx_wa[sorted_wa]
 
-        labels = labels[sorted]
-        labels_pair =labels_pair[sorted_pair]
-        batch_size_labeled = labels.shape[0]
-        shared_ft = shared_ft[sorted]
-        shared_ft_pair = shared_ft_pair[sorted_pair]
+        labels_sa = labels_sa[sorted_sa]
+        labels_wa =labels_wa[sorted_wa]
+        batch_size_labeled = labels_sa.shape[0]
+        shared_ft_sa = shared_ft_sa[sorted_sa]
+        shared_ft_wa = shared_ft_wa[sorted_wa]
         
         
-        assert torch.equal(instance_idx, instance_idx_pair)
+        assert torch.equal(instance_idx_sa, instance_idx_wa)
         # assert self.count_class_instances(labels) == self.count_class_instances(labels_pair)
 
         '''Mask out self-contrast cases'''
-        labels = labels.contiguous().view(-1, 1)
-        mask = torch.eq(labels, labels.T).float().to(device) # (B*N, B*N)
+        labels_sa = labels_sa.contiguous().view(-1, 1)
+        mask = torch.eq(labels_sa, labels_sa.T).float().to(device) # (B*N, B*N)
         '''
         plt.imshow(mask.cpu().numpy(), cmap='viridis')
         plt.colorbar()
         plt.savefig("mask.png")
         plt.clf()
         '''
-        combined_shared_features = torch.cat([shared_ft.unsqueeze(1), shared_ft_pair.unsqueeze(1)], dim=1) # B*N,num_pairs,channel_dim
+        combined_shared_features = torch.cat([shared_ft_sa.unsqueeze(1), shared_ft_wa.unsqueeze(1)], dim=1) # B*N,num_pairs,channel_dim
 
         num_pairs = combined_shared_features.shape[1]
         assert num_pairs == 2 # Since contrasting a pair of Gts, contrast_count = 2
@@ -451,7 +452,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         # for numerical stability
         logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
         logits = anchor_dot_contrast - logits_max.detach()
-        # Doubling label_mask dimensions to accomodate paired_fts too
+        # Tiling mask from N,N -> 2N, 2N)
         mask = mask.repeat(num_pairs, num_pairs)
         # mask-out self-contrast cases
         logits_mask = torch.scatter(torch.ones_like(mask),1,torch.arange(batch_size_labeled * num_pairs).view(-1, 1).to(device),0)
