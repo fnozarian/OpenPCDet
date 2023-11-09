@@ -67,9 +67,12 @@ class PVRCNN_SSL(Detector3DTemplate):
             metrics_registry.register(tag=metrics_configs["NAME"], dataset=self.dataset, **metrics_configs)
 
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores',
-                         'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels', 'iteration']
+                         'weights', 'roi_scores', 'num_points_in_roi', 'class_labels', 'iteration','lbl_inst_freq', 'positive_pairs', 'negative_pairs']
+        
         self.val_dict = {val: [] for val in vals_to_store}
-        self.inst_dict = {val: [] for val in vals_to_store}
+        self.val_dict['lbl_inst_freq'] = [0,0,0]
+        self.val_dict['positive_pairs'] = [0,0,0]
+        self.val_dict['negative_pairs'] = [1,1,1]
 
 
     @staticmethod
@@ -157,7 +160,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                     batch_dict_ema = cur_module(batch_dict_ema, test_only=True)
                 except TypeError as e:
                     batch_dict_ema = cur_module(batch_dict_ema)
-        
+        '''        
         # Implementing supervised contrastive loss at Teacher
         if self.model_cfg['ROI_HEAD'].get('ENABLE_INSTANCE_SUP_LOSS', False) and  self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_MODEL', False) =='Teacher':
 
@@ -173,7 +176,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                     batch_dict_sa = cur_module(batch_dict_sa, test_only=True,use_gtboxes=True)
                 except TypeError as e:
                     batch_dict_sa = cur_module(batch_dict_sa)        
-
+        '''
         if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
             self._rectify_pl_scores(batch_dict_ema, ulb_inds)
 
@@ -287,11 +290,11 @@ class PVRCNN_SSL(Detector3DTemplate):
                 loss += proto_cont_loss * self.model_cfg['ROI_HEAD']['PROTO_CONTRASTIVE_LOSS_WEIGHT']
                 tb_dict['proto_cont_loss'] = proto_cont_loss.item()
         if self.model_cfg['ROI_HEAD'].get('ENABLE_INSTANCE_SUP_LOSS', False):
-            #lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict,batch_dict_wa,lbl_inds)
+            #lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict,batch_dict_wa,lbl_inds,ulb_inds)
             if self.model_cfg.ROI_HEAD.INSTANCE_CONTRASTIVE_LOSS_MODEL=='Teacher':
-                lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict_sa,batch_dict_ema,lbl_inds)
+                lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict_sa,batch_dict_ema,lbl_inds,ulb_inds)
             elif self.model_cfg.ROI_HEAD.INSTANCE_CONTRASTIVE_LOSS_MODEL =='Student' :
-                lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict,batch_dict_wa,lbl_inds)
+                lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict,batch_dict_wa,lbl_inds,ulb_inds)
             if lbl_inst_cont_loss is not None:
                 loss += lbl_inst_cont_loss * self.model_cfg['ROI_HEAD']['INSTANCE_CONTRASTIVE_LOSS_WEIGHT']
                 tb_dict['inst_cont_loss'] = lbl_inst_cont_loss.item()
@@ -336,42 +339,15 @@ class PVRCNN_SSL(Detector3DTemplate):
             return
         return proto_cont_loss.view(B, N)[ulb_inds][ulb_nonzero_mask].mean()
 
-    def count_class_instances(tensor):
-        class_labels = {1: "car", 2: "pedestrian", 3: "cyclist"}
-        class_counts = {}
 
-        for label, class_name in class_labels.items():
-            count = torch.sum(tensor.eq(label)).item()
-            print(f"Number of {class_name}s: {count}")
-            class_counts[class_name] = count
-
-        return class_counts
-
-
-    def _get_instance_contrastive_loss(self, batch_dict,batch_dict_pair,lbl_inds,temperature=0.07,base_temperature=0.07):
-        '''
-        Args:
-            features: hidden vector of shape [bsz, n_views, ...].
-            labels: roi_labels[B,N].
-            mask: contrastive mask of shape [bsz, bsz], mask_{i,j}=1 if sample j
-                has the same class as sample i. Can be asymmetric.
-        '''
-        start_epoch = self.model_cfg['ROI_HEAD'].get(
-            'INSTANCE_CONTRASTIVE_LOSS_START_EPOCH', 60)
-        stop_epoch = self.model_cfg['ROI_HEAD'].get(
-            'INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH', 60)
-        # To examine effects of stopping supervised contrastive loss
-        if not start_epoch<=batch_dict['cur_epoch']<stop_epoch:
-            return
-        
-        shared_ft_sa = batch_dict['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
-        shared_ft_wa = batch_dict_pair['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[lbl_inds]
+    def _align_instance_pairs(self, batch_dict,batch_dict_pair,indices):
+        shared_ft_sa = batch_dict['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[indices]
+        shared_ft_wa = batch_dict_pair['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[indices]
         device = shared_ft_sa.device
-        labels_sa = batch_dict['gt_boxes'][:,:,7][lbl_inds].view(-1)
-        labels_wa = batch_dict_pair['gt_boxes'][:,:,7][lbl_inds].view(-1)
-        instance_idx_sa = batch_dict['instance_idx'][lbl_inds].view(-1)
-        instance_idx_wa = batch_dict_pair['instance_idx'][lbl_inds].view(-1)
-
+        labels_sa = batch_dict['gt_boxes'][:,:,7][indices].view(-1)
+        labels_wa = batch_dict_pair['gt_boxes'][:,:,7][indices].view(-1)
+        instance_idx_sa = batch_dict['instance_idx'][indices].view(-1)
+        instance_idx_wa = batch_dict_pair['instance_idx'][indices].view(-1)
         shared_ft_sa = shared_ft_sa.view(-1,256)
         shared_ft_wa = shared_ft_wa.view(-1,256)
         
@@ -411,8 +387,6 @@ class PVRCNN_SSL(Detector3DTemplate):
             tmp_big = instance_idx_sa
             meta_data['to_mask'] = 'ft'
 
-
-
         '''Edge case - Handle more labeled indices in batch_dict_pair's dataloader batch than batch_dict's dataloader(or vice-versa)'''        
         # final_mask = torch.zeros_like(tmp_big)
         final_mask = []
@@ -445,27 +419,58 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         labels_sa = labels_sa[sorted_sa]
         labels_wa =labels_wa[sorted_wa]
-        batch_size_labeled = labels_sa.shape[0]
         shared_ft_sa = shared_ft_sa[sorted_sa]
         shared_ft_wa = shared_ft_wa[sorted_wa]
-        
-        
-        assert torch.equal(instance_idx_sa, instance_idx_wa)
-        # assert self.count_class_instances(labels) == self.count_class_instances(labels_pair)
+        return labels_sa,labels_wa,instance_idx_sa,instance_idx_wa,shared_ft_sa, shared_ft_wa
 
-        '''Mask out self-contrast cases'''
+
+    def _get_instance_contrastive_loss(self, batch_dict,batch_dict_pair,lbl_inds,ulb_inds,temperature=1.0,base_temperature=1.0):
+        '''
+        Args:
+            features: hidden vector of shape [bsz, n_views, ...].
+            labels: roi_labels[B,N].
+            mask: contrastive mask of shape [bsz, bsz], mask_{i,j}=1 if sample j
+                has the same class as sample i. Can be asymmetric.
+        '''
+        start_epoch = self.model_cfg['ROI_HEAD'].get(
+            'INSTANCE_CONTRASTIVE_LOSS_START_EPOCH', 0)
+        stop_epoch = self.model_cfg['ROI_HEAD'].get(
+            'INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH', 60)
+        # To examine effects of stopping supervised contrastive loss
+        if not start_epoch<=batch_dict['cur_epoch']<stop_epoch:
+            return
+                
+        indices = lbl_inds
+        labels_sa,labels_wa,instance_idx_sa,instance_idx_wa,shared_ft_sa, shared_ft_wa = self._align_instance_pairs(batch_dict, batch_dict_pair,indices)
+        batch_size_labeled = labels_sa.shape[0]
+        device = shared_ft_sa.device
+
+        assert torch.equal(instance_idx_sa, instance_idx_wa)
+        assert torch.equal(labels_sa, labels_wa)   # Problem : Fails for Ulb! Same instance id , diff label for strong and weak aug ulb 
+        # Record stats
+        batch_dict['lbl_inst_freq'] =  torch.bincount(labels_sa.view(-1).int().detach(),minlength = 4).tolist()[1:]       #Record freq of each class in batch
+        batch_dict['positive_pairs_duped'] = [(2*n-1) * 2*n for n in batch_dict['lbl_inst_freq']]
+        batch_dict['negative_pairs_duped'] = [sum(batch_dict['lbl_inst_freq']) - k  for k in batch_dict['lbl_inst_freq']]
+        batch_dict['negative_pairs_duped'] = [4*k*i for k,i in zip(batch_dict['negative_pairs_duped'],batch_dict['lbl_inst_freq'])]
+
+
+        combined_shared_features = torch.cat([shared_ft_sa.unsqueeze(1), shared_ft_wa.unsqueeze(1)], dim=1) # B*N,num_pairs,channel_dim
+        num_pairs = combined_shared_features.shape[1]
+        assert num_pairs == 2  # contrast_count = 2
+
+        '''Create Contrastive Mask'''
         labels_sa = labels_sa.contiguous().view(-1, 1)
         mask = torch.eq(labels_sa, labels_sa.T).float().to(device) # (B*N, B*N)
+        mask = mask.repeat(num_pairs, num_pairs)        # Tiling mask from N,N -> 2N, 2N)
+        logits_mask = torch.scatter(torch.ones_like(mask),1,torch.arange(batch_size_labeled * num_pairs).view(-1, 1).to(device),0)    # mask-out self-contrast cases
+        mask = mask * logits_mask
+
         '''
         plt.imshow(mask.cpu().numpy(), cmap='viridis')
         plt.colorbar()
         plt.savefig("mask.png")
         plt.clf()
         '''
-        combined_shared_features = torch.cat([shared_ft_sa.unsqueeze(1), shared_ft_wa.unsqueeze(1)], dim=1) # B*N,num_pairs,channel_dim
-
-        num_pairs = combined_shared_features.shape[1]
-        assert num_pairs == 2 # Since contrasting a pair of Gts, contrast_count = 2
         contrast_feature = torch.cat(torch.unbind(combined_shared_features, dim=1), dim=0) 
         contrast_feature = F.normalize(contrast_feature.view(-1,combined_shared_features.shape[-1])) # normalized features before masking. original code does it earlier : https://github.com/HobbitLong/SupContrast/blob/ae5da977b0abd4bdc1a6fd4ec4ba2c3655a1879f/networks/resnet_big.py#L185C51-L185C51
         # compute logits
@@ -473,11 +478,6 @@ class PVRCNN_SSL(Detector3DTemplate):
         # for numerical stability
         logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
         logits = anchor_dot_contrast - logits_max.detach()
-        # Tiling mask from N,N -> 2N, 2N)
-        mask = mask.repeat(num_pairs, num_pairs)
-        # mask-out self-contrast cases
-        logits_mask = torch.scatter(torch.ones_like(mask),1,torch.arange(batch_size_labeled * num_pairs).view(-1, 1).to(device),0)
-        mask = mask * logits_mask
 
         exp_logits = torch.exp(logits) * logits_mask # compute log_prob
         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
@@ -489,15 +489,6 @@ class PVRCNN_SSL(Detector3DTemplate):
         instance_loss = instance_loss.mean()
         return instance_loss
 
-
-        # # Save the dictionary to a pickle file
-        # with open("inst_counts.pkl", "wb") as file:
-        #     pickle.dump(self.count_class_instances(labels), file)
-
-        #         # replace old pickle data (if exists) with updated one
-        #    output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
-        #    file_path = os.path.join(output_dir, 'inst_labels.pkl')
-        #    pickle.dump(self.inst_dict, open(file_path, 'wb'))
 
     @staticmethod
     def _prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn):
@@ -609,17 +600,23 @@ class PVRCNN_SSL(Detector3DTemplate):
                 cur_roi_score = torch.sigmoid(self.pv_rcnn.roi_head.forward_ret_dict['roi_scores'][cur_unlabeled_ind])
                 self.val_dict['roi_scores'].extend(cur_roi_score.tolist())
 
-                cur_pcv_score = self.pv_rcnn.roi_head.forward_ret_dict['pcv_scores'][cur_unlabeled_ind]
-                self.val_dict['pcv_scores'].extend(cur_pcv_score.tolist())
+                # cur_pcv_score = self.pv_rcnn.roi_head.forward_ret_dict['pcv_scores'][cur_unlabeled_ind]
+                # self.val_dict['pcv_scores'].extend(cur_pcv_score.tolist())
 
-                cur_num_points_roi = self.pv_rcnn.roi_head.forward_ret_dict['num_points_in_roi'][cur_unlabeled_ind]
-                self.val_dict['num_points_in_roi'].extend(cur_num_points_roi.tolist())
+                # cur_num_points_roi = self.pv_rcnn.roi_head.forward_ret_dict['num_points_in_roi'][cur_unlabeled_ind]
+                # self.val_dict['num_points_in_roi'].extend(cur_num_points_roi.tolist())
 
                 cur_roi_label = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'][cur_unlabeled_ind].squeeze()
                 self.val_dict['class_labels'].extend(cur_roi_label.tolist())
 
                 cur_iteration = torch.ones_like(preds_iou_max) * (batch_dict['cur_iteration'])
                 self.val_dict['iteration'].extend(cur_iteration.tolist())
+                
+                bincount_values = batch_dict['lbl_inst_freq']
+                # cumu_values = [a + b for a, b in zip(self.val_dict['lbl_inst_freq'][-3:], bincount_values)]
+                self.val_dict['lbl_inst_freq'].extend(bincount_values)
+                self.val_dict['positive_pairs_duped'].extend(batch_dict['positive_pairs_duped'])
+                self.val_dict['negative_pairs_duped'].extend(batch_dict['negative_pairs_duped'])
 
         # replace old pickle data (if exists) with updated one
         output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
@@ -861,3 +858,22 @@ class PVRCNN_SSL(Detector3DTemplate):
                 metrics_input['pseudo_score'].append(pseudo_score)
                 metrics_input['pseudo_sem_score'].append(pseudo_sem_score)
         self.thresh_registry.get(tag).update(**metrics_input)
+
+
+
+#gt_cls_count = torch.bincount(batch_dict['ori_unlabeled_boxes'][...,-1].view(-1).int().detach()).tolist()[1:]
+#labels
+#
+
+
+        # pl_count_dict = {
+        #     f'pl_iter_count_{cls}': {
+        #         'gt': gt_cls_count[cind],
+        #         'pl_pre_filter': pl_cls_count_pre_filter[cind],
+        #         'pl_post_filter': pl_cls_count_post_filter[cind],
+        #     }
+        #     for cind, cls in enumerate(self.class_names)
+        # }
+
+        # tb_dict_ = self._prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn)
+        # tb_dict_.update(**pl_count_dict)
