@@ -67,12 +67,12 @@ class PVRCNN_SSL(Detector3DTemplate):
             metrics_registry.register(tag=metrics_configs["NAME"], dataset=self.dataset, **metrics_configs)
 
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores',
-                         'weights', 'roi_scores', 'num_points_in_roi', 'class_labels', 'iteration','lbl_inst_freq', 'positive_pairs', 'negative_pairs']
+                         'weights', 'roi_scores', 'num_points_in_roi', 'class_labels', 'iteration','lbl_inst_freq', 'positive_pairs_duped', 'negative_pairs_duped']
         
         self.val_dict = {val: [] for val in vals_to_store}
         self.val_dict['lbl_inst_freq'] = [0,0,0]
-        self.val_dict['positive_pairs'] = [0,0,0]
-        self.val_dict['negative_pairs'] = [1,1,1]
+        self.val_dict['positive_pairs_duped'] = [0,0,0]
+        self.val_dict['negative_pairs_duped'] = [1,1,1]
 
 
     @staticmethod
@@ -439,7 +439,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         # To examine effects of stopping supervised contrastive loss
         if not start_epoch<=batch_dict['cur_epoch']<stop_epoch:
             return
-                
+        temperature = self.model_cfg['ROI_HEAD'].get('TEMPERATURE', 1.0)
+
         indices = lbl_inds
         labels_sa,labels_wa,instance_idx_sa,instance_idx_wa,shared_ft_sa, shared_ft_wa = self._align_instance_pairs(batch_dict, batch_dict_pair,indices)
         batch_size_labeled = labels_sa.shape[0]
@@ -483,7 +484,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)         # compute mean of log-likelihood over positive
 
-        instance_loss = - ( temperature/ base_temperature) * mean_log_prob_pos
+        instance_loss = - ( temperature/ base_temperature) * mean_log_prob_pos # base_temperature only scales the loss, temperature sharpens / smoothes the loss
         if instance_loss is None:
             return
         instance_loss = instance_loss.mean()
@@ -611,12 +612,15 @@ class PVRCNN_SSL(Detector3DTemplate):
 
                 cur_iteration = torch.ones_like(preds_iou_max) * (batch_dict['cur_iteration'])
                 self.val_dict['iteration'].extend(cur_iteration.tolist())
-                
-                bincount_values = batch_dict['lbl_inst_freq']
-                # cumu_values = [a + b for a, b in zip(self.val_dict['lbl_inst_freq'][-3:], bincount_values)]
-                self.val_dict['lbl_inst_freq'].extend(bincount_values)
-                self.val_dict['positive_pairs_duped'].extend(batch_dict['positive_pairs_duped'])
-                self.val_dict['negative_pairs_duped'].extend(batch_dict['negative_pairs_duped'])
+                start_epoch = self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_START_EPOCH', 0)
+                stop_epoch = self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH', 60)
+                if start_epoch<=batch_dict['cur_epoch']<stop_epoch:
+                    bincount_values = batch_dict['lbl_inst_freq']
+                    # cumu_values = [a + b for a, b in zip(self.val_dict['lbl_inst_freq'][-3:], bincount_values)]
+                    self.val_dict['lbl_inst_freq'].extend(bincount_values)
+                    self.val_dict['positive_pairs_duped'].extend(batch_dict['positive_pairs_duped'])
+                    self.val_dict['negative_pairs_duped'].extend(batch_dict['negative_pairs_duped'])
+
 
         # replace old pickle data (if exists) with updated one
         output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
