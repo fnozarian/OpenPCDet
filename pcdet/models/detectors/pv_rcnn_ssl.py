@@ -421,6 +421,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         labels_wa =labels_wa[sorted_wa]
         shared_ft_sa = shared_ft_sa[sorted_sa]
         shared_ft_wa = shared_ft_wa[sorted_wa]
+
         return labels_sa,labels_wa,instance_idx_sa,instance_idx_wa,shared_ft_sa, shared_ft_wa
 
 
@@ -563,6 +564,9 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         batch_ori_gt_boxes = self.pv_rcnn.roi_head.forward_ret_dict['ori_unlabeled_boxes']
         batch_ori_gt_boxes = [ori_gt_boxes.clone().detach() for ori_gt_boxes in batch_ori_gt_boxes]
+
+        gt_labels = batch_dict['gt_boxes'][:,:,7][labeled_inds].view(-1)
+        
 
         for i in range(len(batch_rois)):
             valid_rois_mask = torch.logical_not(torch.all(batch_rois[i] == 0, dim=-1))

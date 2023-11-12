@@ -4,6 +4,7 @@ from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stac
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
 from pcdet.utils.prototype_utils import feature_bank_registry
+import torch.nn.functional as F     # TODO - refactor imports
 
 
 class PVRCNNHead(RoIHeadTemplate):
@@ -32,7 +33,19 @@ class PVRCNNHead(RoIHeadTemplate):
             if k != self.model_cfg.SHARED_FC.__len__() - 1 and self.model_cfg.DP_RATIO > 0:
                 shared_fc_list.append(nn.Dropout(self.model_cfg.DP_RATIO))
 
-        self.shared_fc_layer = nn.Sequential(*shared_fc_list)
+        self.shared_fc_layer = nn.Sequential(*shared_fc_list) 
+
+        projected_fc_list = []
+        for k in range(0, self.model_cfg.PROJECTED_FC.__len__()):
+            projected_fc_list.extend([
+                nn.Conv1d(pre_channel, self.model_cfg.PROJECTED_FC[k], kernel_size=1, bias=False),
+                nn.BatchNorm1d(self.model_cfg.PROJECTED_FC[k]),
+                nn.ReLU()
+            ])
+            pre_channel = self.model_cfg.PROJECTED_FC[k]
+
+
+        self.projector_fc_layer = nn.Sequential(*projected_fc_list) # Using this layer's projections to calculate instance wise contrastive loss on
 
         self.cls_layers = self.make_fc_layers(
             input_channels=pre_channel, output_channels=self.num_class, fc_list=self.model_cfg.CLS_FC
@@ -173,8 +186,19 @@ class PVRCNNHead(RoIHeadTemplate):
         if use_gtboxes == True:
             # batch_dict['pooled_features_gt'] = pooled_features
             batch_size_rcnn = pooled_features.shape[0]
-            shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
-            batch_dict['shared_features_gt'] = shared_features
+            pooled_features_copy = pooled_features.clone()
+            start_epoch = self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_START_EPOCH', 0)
+            stop_epoch = self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH', 60)
+            
+            if self.model_cfg.ENABLE_INSTANCE_SUP_LOSS==True and start_epoch<=batch_dict['cur_epoch']<stop_epoch: # normalize embedding and produce projected representation only when instance_sup_loss true.
+
+                if self.model_cfg['NORMALIZATION']:
+                    pooled_features_copy = F.normalize(pooled_features, dim = -1)
+                    if self.model_cfg['PROJECTOR']:
+                        shared_features_gt = self.projector_fc_layer(pooled_features_copy.view(batch_size_rcnn, -1, 1))
+                else:
+                    shared_features_gt = self.projector_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
+                batch_dict['shared_features_gt'] = shared_features_gt
             return batch_dict
         batch_size_rcnn = pooled_features.shape[0]
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))

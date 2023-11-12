@@ -169,8 +169,8 @@ MODEL:
         INSTANCE_CONTRASTIVE_LOSS_MODEL: "Teacher" #"Student"/"Teacher"
         TEMPERATURE : 1.0
         INSTANCE_IDX: "Labeled"
-        NORMALIZATION: False
-        PROJECTOR : False
+        NORMALIZATION: True
+        PROJECTOR : True
         ENABLE_SOFT_TEACHER: False
         ENABLE_ULB_CLS_DIST_LOSS: False
         ENABLE_EVAL: True
@@ -188,6 +188,7 @@ MODEL:
             MU1: 0.1
             MU2: 0.9
         SHARED_FC: [256, 256]
+        PROJECTED_FC: [256,128]
         CLS_FC: [256, 256]
         REG_FC: [256, 256]
         DP_RATIO: 0.3
