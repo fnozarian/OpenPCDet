@@ -67,8 +67,9 @@ class PVRCNN_SSL(Detector3DTemplate):
             metrics_registry.register(tag=metrics_configs["NAME"], dataset=self.dataset, **metrics_configs)
 
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores',
-                         'weights', 'roi_scores', 'num_points_in_roi', 'class_labels', 'iteration','lbl_inst_freq', 'positive_pairs_duped', 'negative_pairs_duped']
-        
+                         'weights', 'roi_scores', 'num_points_in_roi', 'class_labels', 'iteration','lbl_inst_freq', 'positive_pairs_duped', 'negative_pairs_duped',
+                         'unscaled_instloss_car','unscaled_instloss_ped','unscaled_instloss_cyc','instloss_car','instloss_ped','instloss_cyc']
+
         self.val_dict = {val: [] for val in vals_to_store}
         self.val_dict['lbl_inst_freq'] = [0,0,0]
         self.val_dict['positive_pairs_duped'] = [0,0,0]
@@ -441,11 +442,15 @@ class PVRCNN_SSL(Detector3DTemplate):
         if not start_epoch<=batch_dict['cur_epoch']<stop_epoch:
             return
         temperature = self.model_cfg['ROI_HEAD'].get('TEMPERATURE', 1.0)
-
-        indices = lbl_inds
+        
+        if  self.model_cfg['ROI_HEAD'].get('INSTANCE_IDX',None)=="Labeled": # Apply SupConLoss over labeled indices
+            indices = lbl_inds
+        else:
+            indices = ulb_inds
         labels_sa,labels_wa,instance_idx_sa,instance_idx_wa,shared_ft_sa, shared_ft_wa = self._align_instance_pairs(batch_dict, batch_dict_pair,indices)
         batch_size_labeled = labels_sa.shape[0]
         device = shared_ft_sa.device
+        labels = torch.cat((labels_sa,labels_sa), dim=0)
 
         assert torch.equal(instance_idx_sa, instance_idx_wa)
         assert torch.equal(labels_sa, labels_wa)   # Problem : Fails for Ulb! Same instance id , diff label for strong and weak aug ulb 
@@ -484,6 +489,25 @@ class PVRCNN_SSL(Detector3DTemplate):
         exp_logits = torch.exp(logits) * logits_mask # compute log_prob
         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)         # compute mean of log-likelihood over positive
+
+        #unscaled_loss
+        unscaled_instloss_car = mean_log_prob_pos[[labels==1]].mean()
+        unscaled_instloss_ped = mean_log_prob_pos[[labels==2]].mean()
+        unscaled_instloss_cyc = mean_log_prob_pos[[labels==3]].mean()
+
+        batch_dict['unscaled_instloss_car'] = unscaled_instloss_car.unsqueeze(-1).tolist()
+        batch_dict['unscaled_instloss_ped'] = unscaled_instloss_ped.unsqueeze(-1).tolist()
+        batch_dict['unscaled_instloss_cyc'] = unscaled_instloss_cyc.unsqueeze(-1).tolist()
+
+        instance_loss = - ( temperature/ base_temperature) * mean_log_prob_pos # base_temperature only scales the loss, temperature sharpens / smoothes the loss
+        #scaled_loss
+        instloss_car = instance_loss[labels==1].mean()
+        instloss_ped = instance_loss[labels==2].mean()
+        instloss_cyc = instance_loss[labels==3].mean()
+
+        batch_dict['instloss_car'] = instloss_car.unsqueeze(-1).tolist()
+        batch_dict['instloss_ped'] = instloss_ped.unsqueeze(-1).tolist()
+        batch_dict['instloss_cyc'] = instloss_cyc.unsqueeze(-1).tolist()
 
         instance_loss = - ( temperature/ base_temperature) * mean_log_prob_pos # base_temperature only scales the loss, temperature sharpens / smoothes the loss
         if instance_loss is None:
@@ -625,6 +649,13 @@ class PVRCNN_SSL(Detector3DTemplate):
                     self.val_dict['positive_pairs_duped'].extend(batch_dict['positive_pairs_duped'])
                     self.val_dict['negative_pairs_duped'].extend(batch_dict['negative_pairs_duped'])
 
+                    self.val_dict['unscaled_instloss_car'].extend(batch_dict['unscaled_instloss_car'])
+                    self.val_dict['unscaled_instloss_ped'].extend(batch_dict['unscaled_instloss_ped'])
+                    self.val_dict['unscaled_instloss_cyc'].extend(batch_dict['unscaled_instloss_cyc'])
+
+                    self.val_dict['instloss_car'].extend(batch_dict['instloss_car'])
+                    self.val_dict['instloss_ped'].extend(batch_dict['instloss_ped'])
+                    self.val_dict['instloss_cyc'].extend(batch_dict['instloss_cyc'])
 
         # replace old pickle data (if exists) with updated one
         output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
