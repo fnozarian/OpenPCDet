@@ -273,7 +273,7 @@ MODEL:
         - NAME: gt_aug_lbl_prototypes
           BANK_SIZE: null # Determined the total number of labeled instances in all classes for each split during runtime
           FEATURE_SIZE: 27648  # 128 * 6 * 6 * 6: 128 channels of 6x6x6 grid points
-          TEMPERATURE: 0.001
+          TEMPERATURE: 0.1
           DIRECT_UPDATE: False
           RESET_STATE_INTERVAL: 37  # 1% setting for ~3700 KITTI samples
           MOMENTUM: 0.9
@@ -286,6 +286,8 @@ MODEL:
       AdaMatch:
         ENABLE: True
         ENABLE_PL_ALIGNMENT: False
+        TEMPERATURE: 0.1
+        TEMPERATURE_SA: 4.0
         FIXED_THRESH: 0.9
         MOMENTUM: 0.9
         SEM_FG_THRESH: 0.5  # [0.65, 0.40, 0.45]
