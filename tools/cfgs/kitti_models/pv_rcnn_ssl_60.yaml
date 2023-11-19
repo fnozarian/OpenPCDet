@@ -256,12 +256,12 @@ MODEL:
             NMS_PRE_MAXSIZE: 4096
             NMS_POST_MAXSIZE: 500
 
-    THRESH: [0.95, 0.85, 0.85]
+    THRESH: [0.5, 0.25, 0.25]  # reliable-student: [0.95, 0.85, 0.85]
     UNLABELED_SUPERVISE_CLS: True
     UNLABELED_SUPERVISE_OBJ: False
     UNLABELED_SUPERVISE_REFINE: True
     UNLABELED_WEIGHT: 1.0
-    SEM_THRESH: [0.0, 0.0, 0.0]
+    SEM_THRESH: [0.4, 0.4, 0.4]  # reliable-student: [0.0, 0.0, 0.0]
     SUPERVISE_MODE: 0
     NO_NMS: False
     EMA_ALPHA: 0.999
@@ -286,10 +286,12 @@ MODEL:
       AdaMatch:
         ENABLE: True
         ENABLE_PL_ALIGNMENT: False
-        RELATIVE_VAL: 0.9
+        TEMPERATURE: 0.1
+        TEMPERATURE_SA: 4.0
+        FIXED_THRESH: 0.9
         MOMENTUM: 0.9
-        SEM_FG_THRESH: 0.33
-        RESET_STATE_INTERVAL: 32
+        SEM_FG_THRESH: 0.5  # [0.65, 0.40, 0.45]
+        RESET_STATE_INTERVAL: 8
         ENABLE_PLOTS: True
         GMM_POLICY: high
         MU1: 0.1

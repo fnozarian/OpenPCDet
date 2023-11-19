@@ -531,39 +531,18 @@ class KittiDatasetSSL(DatasetTemplate):
                                                          scale_=1/data_dict['scale'])
             gt_boxes_ema, points_ema, _ = global_rotation(gt_boxes_ema, points_ema, [-1, 1],
                                                           rot_angle_=-data_dict['rot_angle'])
-            
-            # # Weakly augment the data for teacher ensemble
-            # points_ema_wa = points_ema.copy()
-            # gt_boxes_ema_wa = gt_boxes_ema.copy()
-            # # Apply random-flip-along-x on samples where it was not applied previously
-            # rem_samples = ~data_dict['flip_x']
-            # gt_boxes_ema_wa, points_ema_wa, _ = random_flip_along_x(gt_boxes_ema_wa, points_ema_wa, enable_=rem_samples)
-            # data_dict['points_ema_wa'] = points_ema_wa
-            # data_dict['gt_boxes_ema_wa'] = gt_boxes_ema_wa
-            
             gt_boxes_ema, points_ema, _ = random_flip_along_x(gt_boxes_ema, points_ema, enable_=data_dict['flip_x'])
             gt_boxes_ema, points_ema, _ = random_flip_along_y(gt_boxes_ema, points_ema, enable_=data_dict['flip_y'])
             # Store this for original dataset for teacher ensemble
             data_dict['points_ema'] = points_ema
             data_dict['gt_boxes_ema'] = gt_boxes_ema
 
-            # apply student augmentation
-            # points_pre_gt_sample = data_dict['points_pre_gt_sample'].copy()
-            # gt_boxes_pre_gt_sample = data_dict['gt_boxes_pre_gt_sample'].copy()
-            # # Reverses the student's augmentations applied on points/gt_boxes. Thus, teacher's input has no augs.
-            # gt_boxes_pre_gt_sample, points_pre_gt_sample, _ = global_scaling(gt_boxes_pre_gt_sample, points_pre_gt_sample, [0, 2],
-            #                                              scale_=data_dict['scale'])
-            # gt_boxes_pre_gt_sample, points_pre_gt_sample, _ = global_rotation(gt_boxes_pre_gt_sample, points_pre_gt_sample, [-1, 1],
-            #                                               rot_angle_=data_dict['rot_angle'])
-            # gt_boxes_pre_gt_sample, points_pre_gt_sample, _ = random_flip_along_x(gt_boxes_pre_gt_sample, points_pre_gt_sample, enable_=data_dict['flip_x'])
-            # gt_boxes_pre_gt_sample, points_pre_gt_sample, _ = random_flip_along_y(gt_boxes_pre_gt_sample, points_pre_gt_sample, enable_=data_dict['flip_y'])
         if data_dict.get('gt_boxes', None) is not None:
             selected = common_utils.keep_arrays_by_name(data_dict['gt_names'], self.class_names)
             data_dict['gt_boxes'] = data_dict['gt_boxes'][selected]
             data_dict['instance_idx'] = data_dict['instance_idx'][selected]
             data_dict['gt_names'] = data_dict['gt_names'][selected]
             if self.training:
-                # data_dict['gt_boxes_ema_wa'] = data_dict['gt_boxes_ema_wa'][selected]
                 data_dict['gt_boxes_ema'] = data_dict['gt_boxes_ema'][selected]
                 if data_dict.get('gt_boxes_pre_gt_sample', None) is not None:
                     selected = common_utils.keep_arrays_by_name(data_dict['gt_names_pre_gt_sample'], self.class_names)
@@ -577,8 +556,6 @@ class KittiDatasetSSL(DatasetTemplate):
                 gt_boxes_ema = np.concatenate((data_dict['gt_boxes_ema'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
                 data_dict['gt_boxes_ema'] = gt_boxes_ema
 
-                # gt_boxes_ema_wa = np.concatenate((data_dict['gt_boxes_ema_wa'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
-                # data_dict['gt_boxes_ema_wa'] = gt_boxes_ema_wa
                 if data_dict.get('gt_boxes_pre_gt_sample', None) is not None:
                     gt_classes_pre_gt_sample = np.array([self.class_names.index(n) + 1 for n in data_dict['gt_names_pre_gt_sample']], dtype=np.int32)
                     gt_boxes_pre_gt_sample = np.concatenate((data_dict['gt_boxes_pre_gt_sample'], gt_classes_pre_gt_sample.reshape(-1, 1).astype(np.float32)), axis=1)
@@ -617,6 +594,7 @@ class KittiDatasetSSL(DatasetTemplate):
 
                 data_dict['points_pre_gt_sample'] = data_dict['points']
                 data_dict['gt_boxes_pre_gt_sample'] = data_dict['gt_boxes']
+                data_dict['instance_idx_pre_gt_sample'] = data_dict['instance_idx']
                 data_dict['voxels_pre_gt_sample'] = data_dict['voxels']
                 data_dict['voxel_coords_pre_gt_sample'] = data_dict['voxel_coords']
                 data_dict['voxel_num_points_pre_gt_sample'] = data_dict['voxel_num_points']

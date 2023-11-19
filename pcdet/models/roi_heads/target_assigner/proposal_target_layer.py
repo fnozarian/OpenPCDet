@@ -86,6 +86,7 @@ class ProposalTargetLayer(nn.Module):
 
         return {'rois': batch_rois, 'gt_of_rois': batch_gt_of_rois, 'gt_iou_of_rois': batch_roi_ious,
                 'roi_scores': batch_roi_scores, 'roi_scores_multiclass': batch_roi_scores_multiclass,
+                'roi_scores_multiclass_rpn': batch_dict['batch_cls_preds'].clone().detach(),
                 'roi_labels': batch_roi_labels, 'reg_valid_mask': batch_reg_valid_mask,
                 'rcnn_cls_labels': batch_cls_labels, 'interval_mask': interval_mask}
 
