@@ -295,12 +295,10 @@ class PVRCNN_SSL(Detector3DTemplate):
             if self.model_cfg.ROI_HEAD.INSTANCE_CONTRASTIVE_LOSS_MODEL=='Teacher':
                 lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict_sa,batch_dict_ema,lbl_inds,ulb_inds)
             elif self.model_cfg.ROI_HEAD.INSTANCE_CONTRASTIVE_LOSS_MODEL =='Student' :
-                lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict,batch_dict_wa,lbl_inds,ulb_inds)
+                lbl_inst_cont_loss, tb_dict = self._get_instance_contrastive_loss(tb_dict,batch_dict,batch_dict_wa,lbl_inds,ulb_inds)
             if lbl_inst_cont_loss is not None:
-                loss += lbl_inst_cont_loss * self.model_cfg['ROI_HEAD']['INSTANCE_CONTRASTIVE_LOSS_WEIGHT']
-                tb_dict['inst_cont_loss'] = lbl_inst_cont_loss.item()
-
-        tb_dict_ = self._prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn)
+                loss +=  lbl_inst_cont_loss * self.model_cfg['ROI_HEAD']['INSTANCE_CONTRASTIVE_LOSS_WEIGHT']
+        tb_dict_ = self._prep_tb_dict(tb_dict, lbl_inds, lbl_inds, reduce_loss_fn)
 
         if self.model_cfg.get('STORE_SCORES_IN_PKL', False):
             self.dump_statistics(batch_dict, ulb_inds,lbl_inds)
@@ -342,15 +340,17 @@ class PVRCNN_SSL(Detector3DTemplate):
 
 
     def _align_instance_pairs(self, batch_dict,batch_dict_pair,indices):
-        shared_ft_sa = batch_dict['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[indices]
-        shared_ft_wa = batch_dict_pair['shared_features_gt'].view(batch_dict['batch_size'],-1,256)[indices]
+        
+        embed_size = 256 if not self.model_cfg['ROI_HEAD']['PROJECTOR'] else 256 # if possible, 128
+        shared_ft_sa = batch_dict['shared_features_gt'].view(batch_dict['batch_size'],-1,embed_size)[indices]
+        shared_ft_wa = batch_dict_pair['shared_features_gt'].view(batch_dict['batch_size'],-1,embed_size)[indices]
         device = shared_ft_sa.device
         labels_sa = batch_dict['gt_boxes'][:,:,7][indices].view(-1)
         labels_wa = batch_dict_pair['gt_boxes'][:,:,7][indices].view(-1)
         instance_idx_sa = batch_dict['instance_idx'][indices].view(-1)
         instance_idx_wa = batch_dict_pair['instance_idx'][indices].view(-1)
-        shared_ft_sa = shared_ft_sa.view(-1,256)
-        shared_ft_wa = shared_ft_wa.view(-1,256)
+        shared_ft_sa = shared_ft_sa.view(-1,embed_size)
+        shared_ft_wa = shared_ft_wa.view(-1,embed_size)
         
         # strip off the extra GTs
         prefinal_mask_sa = labels_sa!=0
@@ -426,7 +426,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         return labels_sa,labels_wa,instance_idx_sa,instance_idx_wa,shared_ft_sa, shared_ft_wa
 
 
-    def _get_instance_contrastive_loss(self, batch_dict,batch_dict_pair,lbl_inds,ulb_inds,temperature=1.0,base_temperature=1.0):
+    def _get_instance_contrastive_loss(self, tb_dict,batch_dict,batch_dict_pair,lbl_inds,ulb_inds,temperature=1.0,base_temperature=1.0):
         '''
         Args:
             features: hidden vector of shape [bsz, n_views, ...].
@@ -438,6 +438,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             'INSTANCE_CONTRASTIVE_LOSS_START_EPOCH', 0)
         stop_epoch = self.model_cfg['ROI_HEAD'].get(
             'INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH', 60)
+        tb_dict = {} if tb_dict is None else tb_dict
         # To examine effects of stopping supervised contrastive loss
         if not start_epoch<=batch_dict['cur_epoch']<stop_epoch:
             return
@@ -447,9 +448,10 @@ class PVRCNN_SSL(Detector3DTemplate):
             indices = lbl_inds
         else:
             indices = ulb_inds
-        labels_sa,labels_wa,instance_idx_sa,instance_idx_wa,shared_ft_sa, shared_ft_wa = self._align_instance_pairs(batch_dict, batch_dict_pair,indices)
+        labels_sa, labels_wa, instance_idx_sa, instance_idx_wa, embed_ft_sa, embed_ft_wa = \
+            self._align_instance_pairs(batch_dict, batch_dict_pair,indices)
         batch_size_labeled = labels_sa.shape[0]
-        device = shared_ft_sa.device
+        device = embed_ft_sa.device
         labels = torch.cat((labels_sa,labels_sa), dim=0)
 
         assert torch.equal(instance_idx_sa, instance_idx_wa)
@@ -461,8 +463,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         batch_dict['negative_pairs_duped'] = [4*k*i for k,i in zip(batch_dict['negative_pairs_duped'],batch_dict['lbl_inst_freq'])]
 
 
-        combined_shared_features = torch.cat([shared_ft_sa.unsqueeze(1), shared_ft_wa.unsqueeze(1)], dim=1) # B*N,num_pairs,channel_dim
-        num_pairs = combined_shared_features.shape[1]
+        combined_embed_features = torch.cat([embed_ft_sa.unsqueeze(1), embed_ft_wa.unsqueeze(1)], dim=1) # B*N,num_pairs,channel_dim
+        num_pairs = combined_embed_features.shape[1]
         assert num_pairs == 2  # contrast_count = 2
 
         '''Create Contrastive Mask'''
@@ -478,8 +480,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         plt.savefig("mask.png")
         plt.clf()
         '''
-        contrast_feature = torch.cat(torch.unbind(combined_shared_features, dim=1), dim=0) 
-        contrast_feature = F.normalize(contrast_feature.view(-1,combined_shared_features.shape[-1])) # normalized features before masking. original code does it earlier : https://github.com/HobbitLong/SupContrast/blob/ae5da977b0abd4bdc1a6fd4ec4ba2c3655a1879f/networks/resnet_big.py#L185C51-L185C51
+        contrast_feature = torch.cat(torch.unbind(combined_embed_features, dim=1), dim=0) 
+        contrast_feature = F.normalize(contrast_feature.view(-1,combined_embed_features.shape[-1])) # normalized features before masking. original code does it earlier : https://github.com/HobbitLong/SupContrast/blob/ae5da977b0abd4bdc1a6fd4ec4ba2c3655a1879f/networks/resnet_big.py#L185C51-L185C51
         # compute logits
         anchor_dot_contrast = torch.div(torch.matmul(contrast_feature, contrast_feature.T),temperature)
         # for numerical stability
@@ -495,25 +497,36 @@ class PVRCNN_SSL(Detector3DTemplate):
         unscaled_instloss_ped = mean_log_prob_pos[[labels==2]].mean()
         unscaled_instloss_cyc = mean_log_prob_pos[[labels==3]].mean()
 
-        batch_dict['unscaled_instloss_car'] = unscaled_instloss_car.unsqueeze(-1).tolist()
-        batch_dict['unscaled_instloss_ped'] = unscaled_instloss_ped.unsqueeze(-1).tolist()
-        batch_dict['unscaled_instloss_cyc'] = unscaled_instloss_cyc.unsqueeze(-1).tolist()
+        # batch_dict['unscaled_instloss_car'] = unscaled_instloss_car.unsqueeze(-1)
+        # batch_dict['unscaled_instloss_ped'] = unscaled_instloss_ped.unsqueeze(-1)
+        # batch_dict['unscaled_instloss_cyc'] = unscaled_instloss_cyc.unsqueeze(-1)
 
         instance_loss = - ( temperature/ base_temperature) * mean_log_prob_pos # base_temperature only scales the loss, temperature sharpens / smoothes the loss
         #scaled_loss
         instloss_car = instance_loss[labels==1].mean()
         instloss_ped = instance_loss[labels==2].mean()
         instloss_cyc = instance_loss[labels==3].mean()
+        instloss_all = instance_loss.mean()
 
-        batch_dict['instloss_car'] = instloss_car.unsqueeze(-1).tolist()
-        batch_dict['instloss_ped'] = instloss_ped.unsqueeze(-1).tolist()
-        batch_dict['instloss_cyc'] = instloss_cyc.unsqueeze(-1).tolist()
+        # batch_dict['instloss_car'] = instloss_car.unsqueeze(-1).tolist()
+        # batch_dict['instloss_ped'] = instloss_ped.unsqueeze(-1).tolist()
+        # batch_dict['instloss_cyc'] = instloss_cyc.unsqueeze(-1).tolist()
 
-        instance_loss = - ( temperature/ base_temperature) * mean_log_prob_pos # base_temperature only scales the loss, temperature sharpens / smoothes the loss
+        inst_tb_dict = {
+            'unscaled_instloss_car': unscaled_instloss_car.unsqueeze(-1),
+            'unscaled_instloss_ped': unscaled_instloss_ped.unsqueeze(-1),
+            'unscaled_instloss_cyc': unscaled_instloss_cyc.unsqueeze(-1),
+            'instloss_car': instloss_car.unsqueeze(-1),
+            'instloss_cyc': instloss_cyc.unsqueeze(-1),
+            'instloss_ped': instloss_ped.unsqueeze(-1),
+            'instloss_all' : instloss_all.unsqueeze(-1),
+        }
+        tb_dict.update(inst_tb_dict)
+
         if instance_loss is None:
             return
         instance_loss = instance_loss.mean()
-        return instance_loss
+        return instance_loss, tb_dict
 
 
     @staticmethod
@@ -522,7 +535,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         for key in tb_dict.keys():
             if key == 'proto_cont_loss':
                 tb_dict_[key] = tb_dict[key]
-            elif key=="inst_cont_loss":
+            elif "instloss" in key:
                 tb_dict_[key] = tb_dict[key]
             elif 'loss' in key or 'acc' in key or 'point_pos_num' in key:
                 tb_dict_[f"{key}_labeled"] = reduce_loss_fn(tb_dict[key][lbl_inds, ...])
@@ -642,20 +655,20 @@ class PVRCNN_SSL(Detector3DTemplate):
                 self.val_dict['iteration'].extend(cur_iteration.tolist())
                 start_epoch = self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_START_EPOCH', 0)
                 stop_epoch = self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH', 60)
-                if start_epoch<=batch_dict['cur_epoch']<stop_epoch:
+                if self.model_cfg['ROI_HEAD']['ENABLE_INSTANCE_SUP_LOSS'] and start_epoch<=batch_dict['cur_epoch']<stop_epoch:
                     bincount_values = batch_dict['lbl_inst_freq']
                     # cumu_values = [a + b for a, b in zip(self.val_dict['lbl_inst_freq'][-3:], bincount_values)]
                     self.val_dict['lbl_inst_freq'].extend(bincount_values)
                     self.val_dict['positive_pairs_duped'].extend(batch_dict['positive_pairs_duped'])
                     self.val_dict['negative_pairs_duped'].extend(batch_dict['negative_pairs_duped'])
 
-                    self.val_dict['unscaled_instloss_car'].extend(batch_dict['unscaled_instloss_car'])
-                    self.val_dict['unscaled_instloss_ped'].extend(batch_dict['unscaled_instloss_ped'])
-                    self.val_dict['unscaled_instloss_cyc'].extend(batch_dict['unscaled_instloss_cyc'])
+                    # self.val_dict['unscaled_instloss_car'].extend(batch_dict['unscaled_instloss_car'])
+                    # self.val_dict['unscaled_instloss_ped'].extend(batch_dict['unscaled_instloss_ped'])
+                    # self.val_dict['unscaled_instloss_cyc'].extend(batch_dict['unscaled_instloss_cyc'])
 
-                    self.val_dict['instloss_car'].extend(batch_dict['instloss_car'])
-                    self.val_dict['instloss_ped'].extend(batch_dict['instloss_ped'])
-                    self.val_dict['instloss_cyc'].extend(batch_dict['instloss_cyc'])
+                    # self.val_dict['instloss_car'].extend(batch_dict['instloss_car'])
+                    # self.val_dict['instloss_ped'].extend(batch_dict['instloss_ped'])
+                    # self.val_dict['instloss_cyc'].extend(batch_dict['instloss_cyc'])
 
         # replace old pickle data (if exists) with updated one
         output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]

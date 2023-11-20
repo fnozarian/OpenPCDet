@@ -195,8 +195,7 @@ class PVRCNNHead(RoIHeadTemplate):
                 if self.model_cfg['NORMALIZATION']:
                     # pooled_features dim : [GT_boxes,27648]
                     pooled_features = F.normalize(pooled_features, dim = -1)
-                if self.model_cfg['PROJECTOR']:
-                    projected_features_gt = self.projector_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
+                projected_features_gt = self.projector_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
                 batch_dict['shared_features_gt'] = projected_features_gt
             return batch_dict
         batch_size_rcnn = pooled_features.shape[0]
