@@ -188,7 +188,7 @@ MODEL:
             MU1: 0.1
             MU2: 0.9
         SHARED_FC: [256, 256]
-        PROJECTED_FC: [256,256]
+        PROJECTED_FC: [256,256] #[256,128]
         CLS_FC: [256, 256]
         REG_FC: [256, 256]
         DP_RATIO: 0.3
