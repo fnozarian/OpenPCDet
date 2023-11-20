@@ -192,10 +192,12 @@ class PVRCNNHead(RoIHeadTemplate):
             start_epoch = self.model_cfg['INSTANCE_CONTRASTIVE_LOSS_START_EPOCH']
             stop_epoch = self.model_cfg['INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH']
             if self.model_cfg.ENABLE_INSTANCE_SUP_LOSS==True and start_epoch<=batch_dict['cur_epoch']<stop_epoch: # normalize embedding and produce projected representation only when instance_sup_loss true.
+                
                 if self.model_cfg['NORMALIZATION']:
                     # pooled_features dim : [GT_boxes,27648]
                     pooled_features = F.normalize(pooled_features, dim = -1)
-                projected_features_gt = self.projector_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
+                proj_features = pooled_features.clone().detach()
+                projected_features_gt = self.projector_fc_layer(proj_features.view(batch_size_rcnn, -1, 1))
                 batch_dict['shared_features_gt'] = projected_features_gt
             return batch_dict
         batch_size_rcnn = pooled_features.shape[0]
