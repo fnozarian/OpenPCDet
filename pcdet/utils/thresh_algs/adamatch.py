@@ -49,8 +49,8 @@ class AdaMatch(Metric):
         self.enable_plots = configs.get('ENABLE_PLOTS', False)
         self.fixed_thresh = configs.get('FIXED_THRESH', 0.9)
         self.momentum = configs.get('MOMENTUM', 0.9)
-        self.temperature = configs.get('TEMPERATURE', 0.001)  # TODO: Both temperatures should be tuned
-        self.temperature_sa = configs.get('TEMPERATURE_SA', 4)
+        self.temperature = configs.get('TEMPERATURE', 1)  # TODO: Both temperatures should be tuned
+        self.temperature_sa = configs.get('TEMPERATURE_SA', 1)
         self.ulb_ratio = configs.get('ULB_RATIO', 0.5)
         self.states_name = ['sem_scores_wa', 'conf_scores_wa', 'roi_ious_wa', 'gt_labels_wa',
                             'sem_scores_sa', 'conf_scores_sa', 'box_cls_labels_sa', 'gt_labels_sa',
@@ -156,8 +156,11 @@ class AdaMatch(Metric):
             # fg_mask =  conf_scores.squeeze() > fg_thresh   # TODO: Make it dynamic. Also not the same for both labeled and unlabeled data
             if sname == 'sem_scores_sa':
                 fg_mask = (acc_metrics['box_cls_labels_sa'] > 0).squeeze()
-                sem_scores = torch.softmax(sem_scores / self.temperature_sa, dim=-1)  # avg ent of 0.85 with temp 2
+                sem_scores = torch.softmax(sem_scores / self.temperature_sa, dim=-1)
             elif sname in ['sem_scores_wa']:
+                # TODO: Currently, we are using rois immediately produced by RPN.
+                #  Thus, the min of RPN's matched_threshold (0.5) is used as the FG threshold.
+                #  Note that the classwise RPN's thresholds are 0.6, 0.5, 0.5 for Car, Ped, Cyc respectively.
                 fg_mask = (acc_metrics['roi_ious_wa'] > self.prior_sem_fg_thresh).squeeze()
                 sem_scores = torch.softmax(sem_scores / self.temperature, dim=-1)
             elif sname in ['sem_scores_pre_gt_wa']:
