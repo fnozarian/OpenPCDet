@@ -28,7 +28,7 @@ def update_metrics(targets_dict, mask_type='cls'):
         roi_labels = targets_dict['roi_labels'][uind][mask].unsqueeze(-1).detach().clone()
         # TODO(farzad): temporarily using softmax scores for metrics to match with the softmax sem scores used in adamatch.py
         # TODO(farzad): adjust the temperature for the softmax scores according to the adamatch.py temperature
-        temperature = 1.0
+        temperature = 4.0
         roi_scores_multiclass = torch.softmax(targets_dict['roi_scores_multiclass'][uind][mask].detach().clone() / temperature, dim=-1)
         roi_sim_scores_multiclass = targets_dict['roi_sim_scores'][uind][mask].detach().clone()
         roi_labeled_boxes = torch.cat([rois, roi_labels], dim=-1)
