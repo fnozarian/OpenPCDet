@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
 from ...utils import common_utils
@@ -144,12 +145,56 @@ class PVRCNNHead(RoIHeadTemplate):
             contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
 
         return pooled_features
+    
+    def calc_roi_iou_wrt_gt(self, batch_dict):
+        batch_size = batch_dict['batch_size']
+        batch_cls_preds = batch_dict['batch_cls_preds']
+        batch_box_preds = batch_dict['batch_box_preds']
+        roi_ious = batch_cls_preds.new_zeros(batch_cls_preds.shape[:-1])
+        for index in range(batch_size):
+            if batch_dict.get('batch_index', None) is not None:
+                assert batch_cls_preds.shape.__len__() == 2
+                batch_mask = (batch_dict['batch_index'] == index)
+            else:
+                assert batch_cls_preds.shape.__len__() == 3
+                batch_mask = index
+            box_preds = batch_box_preds[batch_mask]
+            cls_preds = batch_cls_preds[batch_mask]
+            cur_roi_scores, cur_roi_labels = torch.max(cls_preds, dim=1)
+            cur_gt_boxes = batch_dict['gt_boxes'][index]
+            max_overlaps, gt_assignment = self.get_max_iou_with_same_class(
+                rois=box_preds, roi_labels=cur_roi_labels + 1,
+                gt_boxes=cur_gt_boxes[:, 0:7], gt_labels=cur_gt_boxes[:, -1].long()
+            )
+            roi_ious[index] = max_overlaps
+        batch_dict['roi_ious'] = roi_ious
+
+    @torch.no_grad()
+    def filter_rpn_rois(self, batch_dict):
+        if 'thresh_registry' not in batch_dict and 'unlabeled_inds' not in batch_dict:
+            return
+        roi_ious = batch_dict['roi_ious']
+        batch_cls_preds = batch_dict['batch_cls_preds']
+        thresh_registry = batch_dict['thresh_registry']
+        ulb_inds = batch_dict['unlabeled_inds']
+        thresh_masks = batch_cls_preds.new_ones(batch_cls_preds.shape[:-1], dtype=torch.bool)
+        if thresh_registry.iteration_count > 0 and thresh_registry.enable_adaptive_thr:
+            ulb_thresh_mask= \
+                thresh_registry.get_mask(batch_cls_preds[ulb_inds], roi_ious[ulb_inds], thresh_alg='AdaMatch')
+            thresh_masks[ulb_inds] = ulb_thresh_mask
+        batch_dict['pre_nms_thresh_masks'] = thresh_masks
 
     def forward(self, batch_dict, test_only=False):
         """
         :param input_data: input dict
         :return:
         """
+        batch_dict['roi_scores_multiclass_rpn'] = batch_dict['batch_cls_preds'].clone().detach()
+        # we only want to filter rois only for teacher (test_only=True)
+        if self.training and test_only:
+            self.calc_roi_iou_wrt_gt(batch_dict)
+            self.filter_rpn_rois(batch_dict)
+
         nms_config = self.model_cfg.NMS_CONFIG['TRAIN' if self.training and not test_only else 'TEST']
         # proposal_layer doesn't continue if the rois are already in the batch_dict.
         # However, for labeled data proposal layer should continue!
@@ -161,7 +206,7 @@ class PVRCNNHead(RoIHeadTemplate):
             batch_dict['roi_scores'] = targets_dict['roi_scores']
             batch_dict['roi_labels'] = targets_dict['roi_labels']
             batch_dict['roi_scores_multiclass'] = targets_dict['roi_scores_multiclass']
-            batch_dict['roi_scores_multiclass_rpn'] = targets_dict['roi_scores_multiclass_rpn']
+            # batch_dict['roi_scores_multiclass_rpn'] = targets_dict['roi_scores_multiclass_rpn']
             batch_dict['rcnn_cls_labels'] = targets_dict['rcnn_cls_labels']
             (batch_dict['rcnn_cls_labels'] == -1).any().item() and print('rcnn_cls_labels has -1')
             batch_dict['gt_iou_of_rois'] = targets_dict['gt_iou_of_rois']

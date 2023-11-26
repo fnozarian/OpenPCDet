@@ -44,6 +44,8 @@ class AdaMatch(Metric):
     def __init__(self, **configs):
         super().__init__(**configs)
 
+        self.enable_adaptive_thr = configs.get('ENABLE_ADAPTIVE_THR', False)
+        self.enable_dist_alignment = configs.get('ENABLE_DIST_ALIGNMENT', False)
         self.reset_state_interval = configs.get('RESET_STATE_INTERVAL', 32)
         self.prior_sem_fg_thresh = configs.get('SEM_FG_THRESH', 0.5)
         self.enable_plots = configs.get('ENABLE_PLOTS', False)
@@ -245,15 +247,11 @@ class AdaMatch(Metric):
 
         return fig.get_figure()
 
-    def rectify_sem_scores(self, sem_scores_ulb):
+    def rectify_sem_scores(self, sem_scores_ulb, fg_mask):
 
         if self.iteration_count == 0:
             print("Skipping rectification as iteration count is 0")
             return
-
-        max_scores, labels = torch.max(sem_scores_ulb, dim=-1)
-        fg_mask = max_scores > self.prior_sem_fg_thresh
-
         rect_scores = sem_scores_ulb * self.ratio['AdaMatch']
         rect_scores /= rect_scores.sum(dim=-1, keepdims=True)
         sem_scores_ulb[fg_mask] = rect_scores[fg_mask]  # Only rectify FG rois
@@ -264,13 +262,15 @@ class AdaMatch(Metric):
         prob = getattr(self, p_name)
         prob[tag] = probs if prob[tag] is None else self.momentum * prob[tag] + (1 - self.momentum) * probs
 
-    def get_mask(self, scores, thresh_alg='AdaMatch'):
+    def get_mask(self, logits, iou_scores, thresh_alg='AdaMatch'):
+        scores = torch.softmax(logits / self.temperature, dim=-1)
+        fg_mask = iou_scores > self.prior_sem_fg_thresh
         if thresh_alg == 'AdaMatch':
-            rect_scores = self.rectify_sem_scores(scores)
-            max_rect_scores, labels = torch.max(rect_scores, dim=-1)
-            fg_mask = max_rect_scores > self.prior_sem_fg_thresh
-            thresh_mask = max_rect_scores > self._get_threshold(tag='sem_scores_pre_gt_wa', thresh_alg=thresh_alg)
-            return thresh_mask & fg_mask
+            if self.enable_dist_alignment:
+                scores = self.rectify_sem_scores(scores, fg_mask)
+            max_scores, labels = torch.max(scores, dim=-1)
+            thresh_mask = max_scores > self._get_threshold(tag='sem_scores_pre_gt_wa', thresh_alg=thresh_alg)
+            return (thresh_mask & fg_mask) | ~fg_mask
 
         elif thresh_alg == 'FreeMatch':
             max_scores, labels = torch.max(scores, dim=-1)
@@ -278,7 +278,7 @@ class AdaMatch(Metric):
             multi_thresh = torch.zeros_like(scores)
             multi_thresh[:, :] = thresh
             multi_thresh = multi_thresh.gather(dim=2, index=labels.unsqueeze(-1)).squeeze()
-            return max_scores > multi_thresh
+            return (max_scores > multi_thresh) | ~fg_mask
 
     def _get_threshold(self, sem_scores_wa_lbl=None, tag='sem_scores_wa', thresh_alg='AdaMatch'):
         if thresh_alg == 'AdaMatch':

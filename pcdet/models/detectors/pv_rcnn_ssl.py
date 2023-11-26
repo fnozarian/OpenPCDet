@@ -14,7 +14,7 @@ from pcdet.utils.stats_utils import metrics_registry
 from pcdet.utils.prototype_utils import feature_bank_registry
 from collections import defaultdict
 from pcdet.utils.thresh_algs import thresh_registry
-from visual_utils import open3d_vis_utils as V
+#from visual_utils import open3d_vis_utils as V
 
 
 class PVRCNN_SSL(Detector3DTemplate):
@@ -42,6 +42,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.thresh_config = self.model_cfg.ADAPTIVE_THRESH_CONFIG
 
         self.thresh_alg = None
+        self.adapt_thresholding = False
         for key, confs in self.thresh_config.items():
             thresh_registry.register(key, **confs)
             if confs['ENABLE']:
@@ -119,7 +120,11 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         return pred_dicts, recall_dicts, {}
     @torch.no_grad()
-    def _gen_pseudo_labels(self, batch_dict_ema):
+    def _gen_pseudo_labels(self, batch_dict_ema, lbl_inds, ulb_inds):
+        if self.adapt_thresholding:
+            batch_dict_ema['thresh_registry'] = self.thresh_alg
+            batch_dict_ema['unlabeled_inds'] = ulb_inds
+            batch_dict_ema['labeled_inds'] = lbl_inds
         # self.pv_rcnn_ema.eval()  # https://github.com/yezhen17/3DIoUMatch-PVRCNN/issues/6
         for cur_module in self.pv_rcnn_ema.module_list:
             try:
@@ -153,17 +158,19 @@ class PVRCNN_SSL(Detector3DTemplate):
         batch_dict['ori_unlabeled_boxes'] = batch_dict['gt_boxes'][unlabeled_inds, ...].clone().detach()
         return labeled_inds, unlabeled_inds
 
+    @staticmethod
+    def pad_tensor(tensor_in, max_len=50):
+        diff_ = max_len - tensor_in.shape[1]
+        if diff_>0:
+            tensor_in = torch.cat([tensor_in, torch.zeros((tensor_in.shape[0], diff_, tensor_in.shape[-1]), device=tensor_in.device)], dim=1)
+        return tensor_in
+
     def _forward_training(self, batch_dict):
         lbl_inds, ulb_inds = self._prep_batch_dict(batch_dict)
         batch_dict_ema = self._split_batch(batch_dict, tag='ema')
 
-        self._gen_pseudo_labels(batch_dict_ema)
+        self._gen_pseudo_labels(batch_dict_ema, lbl_inds, ulb_inds)
 
-        if self.adapt_thresholding and self.thresh_alg.iteration_count > 0:
-            thresh_masks = batch_dict_ema['roi_scores_multiclass_rpn'].new_ones(batch_dict_ema['roi_scores_multiclass_rpn'].shape[:-1], dtype=torch.bool)
-            # ulb_thresh_masks = self.thresh_alg.get_mask(batch_dict_ema['roi_scores_multiclass_rpn'][ulb_inds], thresh_alg='FreeMatch')
-            # thresh_masks[ulb_inds] = ulb_thresh_masks
-            batch_dict_ema['pre_nms_thresh_masks'] = thresh_masks
 
         pseudo_labels_dict, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
 
@@ -187,20 +194,20 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         if self.adapt_thresholding:
             batch_dict_pre_gt_sample = self._split_batch(batch_dict, tag='pre_gt_sample')
-            self._gen_pseudo_labels(batch_dict_pre_gt_sample)
+            self._gen_pseudo_labels(batch_dict_pre_gt_sample, lbl_inds, ulb_inds)
 
-            metrics_input = {'gt_labels_wa': batch_dict_ema['gt_boxes'][..., 7:8].detach().clone(),  # (B, N, 1)
-                             'sem_scores_wa': batch_dict_ema['roi_scores_multiclass_rpn'].detach().clone(),  # (B, 211200, 3)
+            metrics_input = {'gt_labels_wa': self.pad_tensor(batch_dict_ema['gt_boxes'][..., 7:8].detach().clone()),  # (B, N, 1)
+                             'sem_scores_wa': batch_dict_ema['roi_scores_multiclass_rpn'].detach().clone(),  # (B, 100, 3)
                              'roi_ious_wa': batch_dict_ema['roi_ious'].unsqueeze(-1).detach().clone(),  # (B, 211200, 1)
                              'conf_scores_wa': batch_dict_ema['batch_cls_preds'].detach().clone().sigmoid(), # (B, 100, 1)
 
-                             'gt_labels_pre_gt_wa': batch_dict_pre_gt_sample['gt_boxes'][..., 7:8].detach().clone(),  # (B, N, 1)
+                             'gt_labels_pre_gt_wa': self.pad_tensor(batch_dict_pre_gt_sample['gt_boxes'][..., 7:8].detach().clone()),  # (B, N, 1)
                              'sem_scores_pre_gt_wa': batch_dict_pre_gt_sample['roi_scores_multiclass_rpn'].detach().clone(),  # (B, 211200, 3)
                              'roi_ious_pre_gt_wa': batch_dict_pre_gt_sample['roi_ious'].unsqueeze(-1).detach().clone(),  # (B, 211200, 1)
-                             'conf_scores_pre_gt_wa': batch_dict_pre_gt_sample['batch_cls_preds'].detach().clone().sigmoid(),  # (B, 100, 1)
+                             'conf_scores_pre_gt_wa': batch_dict_pre_gt_sample['batch_cls_preds'].detach().clone().sigmoid(),  # (B, 211200, 1)
 
-                             'gt_labels_sa': batch_dict['gt_boxes'][..., 7:8].detach().clone(),  # (B, N, 1)
-                             'sem_scores_sa': batch_dict['roi_scores_multiclass_rpn'].detach().clone(),  # (B, 211200, 3)
+                             'gt_labels_sa': self.pad_tensor(batch_dict['gt_boxes'][..., 7:8].detach().clone()),  # (B, N, 1)
+                             'sem_scores_sa': batch_dict['roi_scores_multiclass_rpn'].detach().clone(),  # (B, 128, 3)
                              'box_cls_labels_sa': batch_dict['box_cls_labels'].unsqueeze(-1).detach().clone(),  # (B, 211200, 1)
                              'conf_scores_sa': batch_dict['batch_cls_preds'].detach().clone().sigmoid()  # (B, 128, 1)
                              }
@@ -258,7 +265,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 feature_bank_registry.get(tag).compute()
 
         # update dynamic thresh alg
-        if results := self.thresh_alg.compute():
+        if self.adapt_thresholding and (results := self.thresh_alg.compute()):
             tb_dict_.update(results)
 
         for tag in metrics_registry.tags():
@@ -493,13 +500,11 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             reliable_mask = scores > conf_thresh.squeeze()
 
-            # if self.adapt_thresholding and self.thresh_alg.iteration_count > 0:
-            #     reliable_mask = torch.logical_and(reliable_mask, pseudo_pre_nms_thresh_masks)
-            # else:
-            sem_conf_thresh = torch.tensor(self.sem_thresh, device=labels.device).unsqueeze(
-                0).repeat(len(labels), 1).gather(dim=1, index=(labels - 1).unsqueeze(-1))
-            sem_score_mask = sem_scores > sem_conf_thresh.squeeze()
-            reliable_mask = torch.logical_and(reliable_mask, sem_score_mask)
+            if not self.adapt_thresholding:
+                sem_conf_thresh = torch.tensor(self.sem_thresh, device=labels.device).unsqueeze(
+                    0).repeat(len(labels), 1).gather(dim=1, index=(labels - 1).unsqueeze(-1))
+                sem_score_mask = sem_scores > sem_conf_thresh.squeeze()
+                reliable_mask = torch.logical_and(reliable_mask, sem_score_mask)
 
             boxs = boxs[reliable_mask]
             labels = labels[reliable_mask]

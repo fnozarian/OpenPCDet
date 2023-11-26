@@ -285,7 +285,8 @@ MODEL:
     ADAPTIVE_THRESH_CONFIG:
       AdaMatch:
         ENABLE: True
-        ENABLE_PL_ALIGNMENT: False
+        ENABLE_ADAPTIVE_THR: True
+        ENABLE_DIST_ALIGNMENT: True
         TEMPERATURE: 4.0
         TEMPERATURE_SA: 4.0
         FIXED_THRESH: 0.9
