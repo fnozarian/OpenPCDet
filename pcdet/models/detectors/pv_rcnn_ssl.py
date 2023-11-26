@@ -190,17 +190,17 @@ class PVRCNN_SSL(Detector3DTemplate):
             self._gen_pseudo_labels(batch_dict_pre_gt_sample)
 
             metrics_input = {'gt_labels_wa': batch_dict_ema['gt_boxes'][..., 7:8].detach().clone(),  # (B, N, 1)
-                             'sem_scores_wa': batch_dict_ema['roi_scores_multiclass_rpn'].detach().clone(),  # (B, 100, 3)
+                             'sem_scores_wa': batch_dict_ema['roi_scores_multiclass_rpn'].detach().clone(),  # (B, 211200, 3)
                              'roi_ious_wa': batch_dict_ema['roi_ious'].unsqueeze(-1).detach().clone(),  # (B, 211200, 1)
                              'conf_scores_wa': batch_dict_ema['batch_cls_preds'].detach().clone().sigmoid(), # (B, 100, 1)
 
                              'gt_labels_pre_gt_wa': batch_dict_pre_gt_sample['gt_boxes'][..., 7:8].detach().clone(),  # (B, N, 1)
                              'sem_scores_pre_gt_wa': batch_dict_pre_gt_sample['roi_scores_multiclass_rpn'].detach().clone(),  # (B, 211200, 3)
                              'roi_ious_pre_gt_wa': batch_dict_pre_gt_sample['roi_ious'].unsqueeze(-1).detach().clone(),  # (B, 211200, 1)
-                             'conf_scores_pre_gt_wa': batch_dict_pre_gt_sample['batch_cls_preds'].detach().clone().sigmoid(),  # (B, 211200, 1)
+                             'conf_scores_pre_gt_wa': batch_dict_pre_gt_sample['batch_cls_preds'].detach().clone().sigmoid(),  # (B, 100, 1)
 
                              'gt_labels_sa': batch_dict['gt_boxes'][..., 7:8].detach().clone(),  # (B, N, 1)
-                             'sem_scores_sa': batch_dict['roi_scores_multiclass_rpn'].detach().clone(),  # (B, 128, 3)
+                             'sem_scores_sa': batch_dict['roi_scores_multiclass_rpn'].detach().clone(),  # (B, 211200, 3)
                              'box_cls_labels_sa': batch_dict['box_cls_labels'].unsqueeze(-1).detach().clone(),  # (B, 211200, 1)
                              'conf_scores_sa': batch_dict['batch_cls_preds'].detach().clone().sigmoid()  # (B, 128, 1)
                              }

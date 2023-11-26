@@ -286,7 +286,7 @@ MODEL:
       AdaMatch:
         ENABLE: True
         ENABLE_PL_ALIGNMENT: False
-        TEMPERATURE: 0.1
+        TEMPERATURE: 4.0
         TEMPERATURE_SA: 4.0
         FIXED_THRESH: 0.9
         MOMENTUM: 0.9

@@ -26,7 +26,10 @@ def update_metrics(targets_dict, mask_type='cls'):
         # (Proposals) ROI info
         rois = targets_dict['rois'][uind][mask].detach().clone()
         roi_labels = targets_dict['roi_labels'][uind][mask].unsqueeze(-1).detach().clone()
-        roi_scores_multiclass = targets_dict['roi_scores_multiclass'][uind][mask].detach().clone()
+        # TODO(farzad): temporarily using softmax scores for metrics to match with the softmax sem scores used in adamatch.py
+        # TODO(farzad): adjust the temperature for the softmax scores according to the adamatch.py temperature
+        temperature = 4.0
+        roi_scores_multiclass = torch.softmax(targets_dict['roi_scores_multiclass'][uind][mask].detach().clone() / temperature, dim=-1)
         roi_sim_scores_multiclass = targets_dict['roi_sim_scores'][uind][mask].detach().clone()
         roi_labeled_boxes = torch.cat([rois, roi_labels], dim=-1)
         gt_iou_of_rois = targets_dict['gt_iou_of_rois'][uind][mask].unsqueeze(-1).detach().clone()
@@ -155,8 +158,8 @@ class RoIHeadTemplate(nn.Module):
             roi_ious[index] = max_overlaps
         batch_dict['rois'] = rois
         batch_dict['roi_scores'] = roi_scores
-        batch_dict['roi_scores_multiclass'] = torch.sigmoid(roi_scores_multiclass)
-        batch_dict['roi_scores_multiclass_rpn'] = torch.sigmoid(batch_cls_preds)
+        batch_dict['roi_scores_multiclass'] = roi_scores_multiclass
+        batch_dict['roi_scores_multiclass_rpn'] = batch_cls_preds
         batch_dict['roi_ious'] = roi_ious
         batch_dict['roi_labels'] = roi_labels + 1
         batch_dict['has_class_labels'] = batch_cls_preds.shape[-1] > 1
