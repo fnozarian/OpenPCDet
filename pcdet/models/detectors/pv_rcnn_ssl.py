@@ -500,7 +500,7 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             reliable_mask = scores > conf_thresh.squeeze()
 
-            if not self.adapt_thresholding:
+            if not (self.thresh_alg.iteration_count > 0 and self.thresh_alg.enable_adaptive_thr):
                 sem_conf_thresh = torch.tensor(self.sem_thresh, device=labels.device).unsqueeze(
                     0).repeat(len(labels), 1).gather(dim=1, index=(labels - 1).unsqueeze(-1))
                 sem_score_mask = sem_scores > sem_conf_thresh.squeeze()
