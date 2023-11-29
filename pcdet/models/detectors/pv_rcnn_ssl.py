@@ -172,12 +172,12 @@ class PVRCNN_SSL(Detector3DTemplate):
         self._gen_pseudo_labels(batch_dict_ema, lbl_inds, ulb_inds)
 
 
-        pseudo_labels_dict, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
+        pseudo_labels_teacher_wa, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
 
-        ulb_pred_labels = torch.cat([pseudo_labels_dict[ind]['pred_labels'] for ind in ulb_inds]).int().detach()
+        ulb_pred_labels = torch.cat([pseudo_labels_teacher_wa[ind]['pred_labels'] for ind in ulb_inds]).int().detach()
         pl_cls_count_pre_filter = torch.bincount(ulb_pred_labels, minlength=4)[1:]
 
-        pseudo_boxes, pseudo_scores, pseudo_sem_scores, pseudo_sem_scores_multi = self._filter_pls(pseudo_labels_dict, ulb_inds)
+        pseudo_boxes, pseudo_scores, pseudo_sem_scores, pseudo_sem_scores_multi = self._filter_pls(pseudo_labels_teacher_wa, ulb_inds)
         self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, ulb_inds, lbl_inds)
 
         pl_cls_count_post_filter = torch.bincount(batch_dict['gt_boxes'][ulb_inds][...,-1].view(-1).int().detach(), minlength=4)[1:]
@@ -196,20 +196,28 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict_pre_gt_sample = self._split_batch(batch_dict, tag='pre_gt_sample')
             self._gen_pseudo_labels(batch_dict_pre_gt_sample, lbl_inds, ulb_inds)
 
+            pseudo_labels_student, _ = self.pv_rcnn_ema.post_processing(batch_dict, no_recall_dict=True)
+            pseudo_labels_teacher_pre_gt_sample, _ = self.pv_rcnn_ema.post_processing(batch_dict_pre_gt_sample, no_recall_dict=True)
+            metrics_input_ = defaultdict(list)
+            for ind in range(len(pseudo_labels_teacher_wa)):
+                metrics_input_['conf_scores_wa'].append(self.pad_tensor(pseudo_labels_teacher_wa[ind]['pred_scores'].unsqueeze(0).unsqueeze(2), max_len=100))
+                metrics_input_['sem_scores_wa'].append(self.pad_tensor(pseudo_labels_teacher_wa[ind]['pred_sem_scores_multiclass'].unsqueeze(0), max_len=100))
+                metrics_input_['conf_scores_pre_gt_wa'].append(self.pad_tensor(pseudo_labels_teacher_pre_gt_sample[ind]['pred_scores'].unsqueeze(0).unsqueeze(2), max_len=100))
+                metrics_input_['sem_scores_pre_gt_wa'].append(self.pad_tensor(pseudo_labels_teacher_pre_gt_sample[ind]['pred_sem_scores_multiclass'].unsqueeze(0), max_len=100))
+                metrics_input_['conf_scores_sa'].append(self.pad_tensor(pseudo_labels_student[ind]['pred_scores'].unsqueeze(0).unsqueeze(2), max_len=128))
+                metrics_input_['sem_scores_sa'].append(self.pad_tensor(pseudo_labels_student[ind]['pred_sem_scores_multiclass'].unsqueeze(0), max_len=128))
+
             metrics_input = {'gt_labels_wa': self.pad_tensor(batch_dict_ema['gt_boxes'][..., 7:8].detach().clone(), max_len=100),  # (B, 100, 1)
-                             'sem_scores_wa': batch_dict_ema['roi_scores_multiclass'].detach().clone(),  # (B, 100, 3)
-                             'roi_ious_wa': batch_dict_ema['roi_ious'].unsqueeze(-1).detach().clone(),  # (B, 100, 1)
-                             'conf_scores_wa': batch_dict_ema['batch_cls_preds'].detach().clone().sigmoid(), # (B, 100, 1)
+                             'sem_scores_wa': torch.cat(metrics_input_['sem_scores_wa']).detach().clone(),  # (B, 100, 3)
+                             'conf_scores_wa': torch.cat(metrics_input_['conf_scores_wa']).detach().clone(), # (B, 100, 1)
 
                              'gt_labels_pre_gt_wa': self.pad_tensor(batch_dict_pre_gt_sample['gt_boxes'][..., 7:8].detach().clone(), max_len=100),  # (B, 100, 1)
-                             'sem_scores_pre_gt_wa': batch_dict_pre_gt_sample['roi_scores_multiclass'].detach().clone(),  # (B, 100, 3)
-                             'roi_ious_pre_gt_wa': batch_dict_pre_gt_sample['roi_ious'].unsqueeze(-1).detach().clone(),  # (B, 100, 1)
-                             'conf_scores_pre_gt_wa': batch_dict_pre_gt_sample['batch_cls_preds'].detach().clone().sigmoid(),  # (B, 100, 1)
+                             'sem_scores_pre_gt_wa': torch.cat(metrics_input_['sem_scores_pre_gt_wa']).detach().clone(),  # (B, 100, 3)
+                             'conf_scores_pre_gt_wa': torch.cat(metrics_input_['conf_scores_pre_gt_wa']).detach().clone(), # (B, 100, 1)
 
                              'gt_labels_sa': self.pad_tensor(batch_dict['gt_boxes'][..., 7:8].detach().clone(), max_len=128),  # (B, 128, 1)
-                             'sem_scores_sa': batch_dict['roi_scores_multiclass'].detach().clone(),  # (B, 128, 3)
-                             'box_cls_labels_sa': batch_dict['box_cls_labels_sa'].unsqueeze(-1).detach().clone(),  # (B, 128, 1)
-                             'conf_scores_sa': batch_dict['batch_cls_preds'].detach().clone().sigmoid()  # (B, 128, 1)
+                             'sem_scores_sa': torch.cat(metrics_input_['sem_scores_sa']).detach().clone(),  # (B, 128, 3)
+                             'conf_scores_sa': torch.cat(metrics_input_['conf_scores_sa']).detach().clone().sigmoid(), # (B, 128, 1)
                              }
             self.thresh_alg.update(**metrics_input)
 

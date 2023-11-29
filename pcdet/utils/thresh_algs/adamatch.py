@@ -99,6 +99,7 @@ class AdaMatch(Metric):
         accumulated_metrics = {}
         for mname in self.states_name:
             mstate = getattr(self, mname)
+            if not len(mstate): continue
             if isinstance(mstate, list):
                 try:
                     mstate = torch.cat(mstate, dim=0)
@@ -152,23 +153,23 @@ class AdaMatch(Metric):
         acc_metrics = self._accumulate_metrics()
         for sname in ['sem_scores_wa', 'sem_scores_sa', 'sem_scores_pre_gt_wa']:
             sem_scores = acc_metrics[sname]
-            # conf_scores = acc_metrics[sname.replace('sem', 'conf')]
+            conf_scores = acc_metrics[sname.replace('sem', 'conf')]
 
-            # fg_thresh = torch.tensor(self.prior_sem_fg_thresh, dtype=torch.float, device=sem_scores.device).unsqueeze(0)
-            # fg_thresh = fg_thresh.expand_as(sem_scores).gather(dim=-1, index=labels.unsqueeze(-1)).squeeze()
-            # fg_mask =  conf_scores.squeeze() > fg_thresh   # TODO: Make it dynamic. Also not the same for both labeled and unlabeled data
-            if sname == 'sem_scores_sa':
-                fg_mask = (acc_metrics['box_cls_labels_sa'] > 0).squeeze()
-                sem_scores = torch.softmax(sem_scores / self.temperature_sa, dim=-1)
-            elif sname in ['sem_scores_wa']:
-                # TODO: Currently, we are using rois immediately produced by RPN.
-                #  Thus, the min of RPN's matched_threshold (0.5) is used as the FG threshold.
-                #  Note that the classwise RPN's thresholds are 0.6, 0.5, 0.5 for Car, Ped, Cyc respectively.
-                fg_mask = (acc_metrics['roi_ious_wa'] > self.prior_sem_fg_thresh).squeeze()
-                sem_scores = torch.softmax(sem_scores / self.temperature, dim=-1)
-            elif sname in ['sem_scores_pre_gt_wa']:
-                fg_mask = (acc_metrics['roi_ious_pre_gt_wa'] > self.prior_sem_fg_thresh).squeeze()
-                sem_scores = torch.softmax(sem_scores / self.temperature, dim=-1)
+            # if sname == 'sem_scores_sa':
+            #     fg_mask = (acc_metrics['box_cls_labels_sa'] > 0).squeeze()
+            #     sem_scores = torch.softmax(sem_scores / self.temperature_sa, dim=-1)
+            # elif sname in ['sem_scores_wa']:
+            #     # TODO: Currently, we are using rois immediately produced by RPN.
+            #     #  Thus, the min of RPN's matched_threshold (0.5) is used as the FG threshold.
+            #     #  Note that the classwise RPN's thresholds are 0.6, 0.5, 0.5 for Car, Ped, Cyc respectively.
+            #     fg_mask = (acc_metrics['roi_ious_wa'] > self.prior_sem_fg_thresh).squeeze()
+            #     sem_scores = torch.softmax(sem_scores / self.temperature, dim=-1)
+            # elif sname in ['sem_scores_pre_gt_wa']:
+            #     fg_mask = (acc_metrics['roi_ious_pre_gt_wa'] > self.prior_sem_fg_thresh).squeeze()
+            #     sem_scores = torch.softmax(sem_scores / self.temperature, dim=-1)
+            
+            fg_mask = (conf_scores > 0).squeeze() # remove padded 0 with fg_mask
+            sem_scores = torch.softmax(sem_scores / (self.temperature_sa if '_sa' in sname else self.temperature), dim=-1)
 
             max_scores, labels = torch.max(sem_scores, dim=-1)
 
@@ -248,30 +249,26 @@ class AdaMatch(Metric):
 
         return fig.get_figure()
 
-    def rectify_sem_scores(self, sem_scores_ulb, fg_mask):
+    def rectify_sem_scores(self, sem_scores_ulb):
 
         if self.iteration_count == 0:
             print("Skipping rectification as iteration count is 0")
             return
-        rect_scores = sem_scores_ulb * self.ratio['AdaMatch']
-        rect_scores /= rect_scores.sum(dim=-1, keepdims=True)
-        sem_scores_ulb[fg_mask] = rect_scores[fg_mask]  # Only rectify FG rois
-
+        sem_scores_ulb = sem_scores_ulb * self.ratio['AdaMatch']
+        sem_scores_ulb /= sem_scores_ulb.sum(dim=-1, keepdims=True)
         return sem_scores_ulb
 
     def _update_ema(self, p_name, probs, tag):
         prob = getattr(self, p_name)
         prob[tag] = probs if prob[tag] is None else self.momentum * prob[tag] + (1 - self.momentum) * probs
 
-    def get_mask(self, logits, iou_scores, thresh_alg='AdaMatch'):
+    def get_mask(self, logits, thresh_alg='AdaMatch'):
         scores = torch.softmax(logits / self.temperature, dim=-1)
-        fg_mask = iou_scores > self.prior_sem_fg_thresh
         if thresh_alg == 'AdaMatch':
             if self.enable_dist_alignment:
-                scores = self.rectify_sem_scores(scores, fg_mask)
+                scores = self.rectify_sem_scores(scores)
             max_scores, labels = torch.max(scores, dim=-1)
-            thresh_mask = max_scores > self._get_threshold(tag='sem_scores_pre_gt_wa', thresh_alg=thresh_alg)
-            return (thresh_mask & fg_mask) | ~fg_mask
+            return max_scores > self._get_threshold(tag='sem_scores_pre_gt_wa', thresh_alg=thresh_alg)
 
         elif thresh_alg == 'FreeMatch':
             max_scores, labels = torch.max(scores, dim=-1)
@@ -279,7 +276,7 @@ class AdaMatch(Metric):
             multi_thresh = torch.zeros_like(scores)
             multi_thresh[:, :] = thresh
             multi_thresh = multi_thresh.gather(dim=2, index=labels.unsqueeze(-1)).squeeze()
-            return (max_scores > multi_thresh) | ~fg_mask
+            return max_scores > multi_thresh
 
     def _get_threshold(self, sem_scores_wa_lbl=None, tag='sem_scores_wa', thresh_alg='AdaMatch'):
         if thresh_alg == 'AdaMatch':
