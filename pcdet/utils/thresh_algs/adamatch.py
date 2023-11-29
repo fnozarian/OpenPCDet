@@ -215,7 +215,7 @@ class AdaMatch(Metric):
         results[f'unbiased_p_model_ulb/{sname}'] = self._arr2dict(_ulb(unbiased_p_model))
         results[f'mean_p_model_lbl/{sname}'] = self._arr2dict(_lbl(self.mean_p_model[sname]))
         results[f'mean_p_model_ulb/{sname}'] = self._arr2dict(_ulb(self.mean_p_model[sname]))
-        results['threshold/AdaMatch'] = self._get_threshold(thresh_alg='AdaMatch')
+        results['threshold/AdaMatch'] = self._get_threshold(tag='sem_scores_pre_gt_wa', thresh_alg='AdaMatch') # NOTE also keep tag='sem_scores_pre_gt_wa' in all branches
         results['threshold/FreeMatch'] = self._arr2dict(self._get_threshold(thresh_alg='FreeMatch'))
 
     def draw_dist_plots(self, max_scores, labels, fg_mask, tag, meta_info=''):

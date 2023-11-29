@@ -217,7 +217,7 @@ class PVRCNN_SSL(Detector3DTemplate):
 
                              'gt_labels_sa': self.pad_tensor(batch_dict['gt_boxes'][..., 7:8].detach().clone(), max_len=128),  # (B, 128, 1)
                              'sem_scores_sa': torch.cat(metrics_input_['sem_scores_sa']).detach().clone(),  # (B, 128, 3)
-                             'conf_scores_sa': torch.cat(metrics_input_['conf_scores_sa']).detach().clone().sigmoid(), # (B, 128, 1)
+                             'conf_scores_sa': torch.cat(metrics_input_['conf_scores_sa']).detach().clone(), # (B, 128, 1)
                              }
             self.thresh_alg.update(**metrics_input)
 

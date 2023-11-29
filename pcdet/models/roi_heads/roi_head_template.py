@@ -11,7 +11,7 @@ from ...ops.iou3d_nms import iou3d_nms_utils
 
 
 from collections import defaultdict
-
+from pcdet.config import cfg # temporarily adding cfg for temprature scaling
 
 def update_metrics(targets_dict, mask_type='cls'):
     metrics_input = defaultdict(list)
@@ -28,7 +28,7 @@ def update_metrics(targets_dict, mask_type='cls'):
         roi_labels = targets_dict['roi_labels'][uind][mask].unsqueeze(-1).detach().clone()
         # TODO(farzad): temporarily using softmax scores for metrics to match with the softmax sem scores used in adamatch.py
         # TODO(farzad): adjust the temperature for the softmax scores according to the adamatch.py temperature
-        temperature = 4.0
+        temperature = cfg.MODEL.ADAPTIVE_THRESH_CONFIG.AdaMatch.TEMPERATURE_SA
         roi_scores_multiclass = torch.softmax(targets_dict['roi_scores_multiclass'][uind][mask].detach().clone() / temperature, dim=-1)
         roi_sim_scores_multiclass = targets_dict['roi_sim_scores'][uind][mask].detach().clone()
         roi_labeled_boxes = torch.cat([rois, roi_labels], dim=-1)
