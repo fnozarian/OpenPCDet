@@ -125,6 +125,8 @@ class RoIHeadTemplate(nn.Module):
         roi_scores = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
         roi_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
         roi_scores_multiclass = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_cls_preds.shape[-1]))
+        roi_ious = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
+        box_cls_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
         for index in range(batch_size):
             if batch_dict.get('batch_index', None) is not None:
                 assert batch_cls_preds.shape.__len__() == 2
@@ -136,14 +138,7 @@ class RoIHeadTemplate(nn.Module):
             cls_preds = batch_cls_preds[batch_mask]
 
             cur_roi_scores, cur_roi_labels = torch.max(cls_preds, dim=1)
-            if 'pre_nms_thresh_masks' in batch_dict:
-                # apply adaptive filtering on rpn_rois for teacher only
-                valid_mask = batch_dict['pre_nms_thresh_masks'][batch_mask]
-                assert valid_mask.sum() > nms_config.NMS_POST_MAXSIZE, \
-                    f"insufficient filtered rpn rois got {valid_mask.sum()} expected >= {nms_config.NMS_POST_MAXSIZE}"
-                cur_roi_scores, cur_roi_labels = cur_roi_scores[valid_mask], cur_roi_labels[valid_mask]
-                box_preds = box_preds[valid_mask]
-            
+
             if nms_config.MULTI_CLASSES_NMS:
                 raise NotImplementedError
             else:
@@ -151,13 +146,29 @@ class RoIHeadTemplate(nn.Module):
                     box_scores=cur_roi_scores, box_preds=box_preds, nms_config=nms_config
                 )
 
+            # get_max_iou on selected boxes
+            cur_gt_boxes = batch_dict['gt_boxes'][index]
+            max_overlaps, gt_assignment = self.get_max_iou_with_same_class(
+                rois=box_preds[selected], roi_labels=cur_roi_labels[selected] + 1,
+                gt_boxes=cur_gt_boxes[:, 0:7], gt_labels=cur_gt_boxes[:, -1].long()
+            )
+
             rois[index, :len(selected), :] = box_preds[selected]
             roi_scores[index, :len(selected)] = cur_roi_scores[selected]
             roi_labels[index, :len(selected)] = cur_roi_labels[selected]
             roi_scores_multiclass[index, :len(selected), :] = cls_preds[selected]
+            roi_ious[index] = max_overlaps
+            # this was previously used to get fg_mask for student stats in adamatch
+            # do we need to maintain this or can we use roi_ious similar to teacher
+            if 'box_cls_labels' in batch_dict:
+                box_cls_labels[index] = batch_dict['box_cls_labels'][batch_mask][selected]
+
         batch_dict['rois'] = rois
         batch_dict['roi_scores'] = roi_scores
         batch_dict['roi_scores_multiclass'] = roi_scores_multiclass
+        batch_dict['roi_scores_multiclass_rpn'] = batch_cls_preds
+        batch_dict['roi_ious'] = roi_ious
+        batch_dict['box_cls_labels_sa'] = box_cls_labels
         batch_dict['roi_labels'] = roi_labels + 1
         batch_dict['has_class_labels'] = batch_cls_preds.shape[-1] > 1
         batch_dict.pop('batch_index', None)
