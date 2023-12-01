@@ -201,7 +201,7 @@ class AdaMatch(Metric):
         results['labels_hist_ulb/gts_wa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_wa'].view(-1))))
         results['labels_hist_ulb/gts_sa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_sa'].view(-1))))
         results['labels_hist_ulb/gts_pre_gt_wa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_pre_gt_wa'].view(-1))))
-        results['threshold/AdaMatch'] = self._get_threshold(tag='sem_scores_pre_gt_wa', thresh_alg='AdaMatch') # NOTE also keep tag='sem_scores_pre_gt_wa' in all branches
+        results['threshold/AdaMatch'] = self._get_threshold(tag='sem_scores_wa', thresh_alg='AdaMatch') # NOTE also keep tag='sem_scores_pre_gt_wa' in all branches
         results['threshold/FreeMatch'] = self._arr2dict(self._get_threshold(thresh_alg='FreeMatch'))
         self.reset()
         return results
