@@ -44,8 +44,6 @@ class AdaMatch(Metric):
     def __init__(self, **configs):
         super().__init__(**configs)
 
-        self.enable_adaptive_thr = configs.get('ENABLE_ADAPTIVE_THR', False)
-        self.enable_dist_alignment = configs.get('ENABLE_DIST_ALIGNMENT', False)
         self.reset_state_interval = configs.get('RESET_STATE_INTERVAL', 32)
         self.prior_sem_fg_thresh = configs.get('SEM_FG_THRESH', 0.5)
         self.enable_plots = configs.get('ENABLE_PLOTS', False)
@@ -169,6 +167,9 @@ class AdaMatch(Metric):
             #     sem_scores = torch.softmax(sem_scores / self.temperature, dim=-1)
             
             fg_mask = (conf_scores > 0).squeeze() # remove padded 0 with fg_mask
+            padding_mask = torch.logical_not(torch.all(sem_scores == 0, dim=-1))
+            assert torch.equal(padding_mask, fg_mask), f"Padding mask and fg_mask are not equal for {sname}"
+
             sem_scores = torch.softmax(sem_scores / (self.temperature_sa if '_sa' in sname else self.temperature), dim=-1)
 
             max_scores, labels = torch.max(sem_scores, dim=-1)
@@ -189,7 +190,8 @@ class AdaMatch(Metric):
                 results[f'dist_plots_{sname}'] = fig
                 plt.close()
 
-        ratio =  _lbl(self.mean_p_model['sem_scores_pre_gt_wa']) / (_ulb(self.mean_p_model['sem_scores_wa']) + 1e-6)
+        # ratio =  _lbl(self.mean_p_model['sem_scores_pre_gt_wa']) / (_ulb(self.mean_p_model['sem_scores_wa']) + 1e-6)
+        ratio =  _get_cls_dist(_lbl(acc_metrics['gt_labels_pre_gt_wa'].view(-1))) / (_ulb(self.mean_p_model['sem_scores_wa']) + 1e-6)
         self._update_ema('ratio', ratio, 'AdaMatch')
         results['ratio/lbl_pre_gt_over_ulb_wa'] = self._arr2dict(self.ratio['AdaMatch'])
 
@@ -262,13 +264,14 @@ class AdaMatch(Metric):
         prob = getattr(self, p_name)
         prob[tag] = probs if prob[tag] is None else self.momentum * prob[tag] + (1 - self.momentum) * probs
 
-    def get_mask(self, logits, thresh_alg='AdaMatch'):
+    def get_mask(self, logits, ret_rectified=False, thresh_alg='AdaMatch'):
         scores = torch.softmax(logits / self.temperature, dim=-1)
         if thresh_alg == 'AdaMatch':
-            if self.enable_dist_alignment:
-                scores = self.rectify_sem_scores(scores)
+            scores = self.rectify_sem_scores(scores)
             max_scores, labels = torch.max(scores, dim=-1)
-            return max_scores > self._get_threshold(tag='sem_scores_pre_gt_wa', thresh_alg=thresh_alg)
+            if ret_rectified:
+                return max_scores > self._get_threshold(tag='sem_scores_wa', thresh_alg=thresh_alg), scores
+            return max_scores > self._get_threshold(tag='sem_scores_wa', thresh_alg=thresh_alg)
 
         elif thresh_alg == 'FreeMatch':
             max_scores, labels = torch.max(scores, dim=-1)
