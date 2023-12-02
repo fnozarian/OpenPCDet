@@ -276,10 +276,8 @@ class AdaMatch(Metric):
         elif thresh_alg == 'FreeMatch':
             max_scores, labels = torch.max(scores, dim=-1)
             thresh = self._get_threshold(tag='sem_scores_wa', thresh_alg=thresh_alg)
-            multi_thresh = torch.zeros_like(scores)
-            multi_thresh[:, :] = thresh
-            multi_thresh = multi_thresh.gather(dim=2, index=labels.unsqueeze(-1)).squeeze()
-            return max_scores > multi_thresh
+            thresh = thresh.repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
+            return max_scores > thresh
 
     def _get_threshold(self, sem_scores_wa_lbl=None, tag='sem_scores_wa', thresh_alg='AdaMatch'):
         if thresh_alg == 'AdaMatch':
