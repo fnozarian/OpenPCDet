@@ -45,6 +45,9 @@ class AdaMatch(Metric):
         super().__init__(**configs)
 
         self.reset_state_interval = configs.get('RESET_STATE_INTERVAL', 32)
+        self.thresh_method = configs.get('THRESH_METHOD', 'AdaMatch')
+        self.target_to_align = configs.get('TARGET_TO_ALIGN', 'gt_labels_pre_gt_wa')
+        self.lab_thresh_tag = configs.get('LBL_THRESH_TAG','sem_scores_wa')
         self.prior_sem_fg_thresh = configs.get('SEM_FG_THRESH', 0.5)
         self.enable_plots = configs.get('ENABLE_PLOTS', False)
         self.fixed_thresh = configs.get('FIXED_THRESH', 0.9)
@@ -191,9 +194,9 @@ class AdaMatch(Metric):
                 plt.close()
 
         # ratio =  _lbl(self.mean_p_model['sem_scores_pre_gt_wa']) / (_ulb(self.mean_p_model['sem_scores_wa']) + 1e-6)
-        ratio =  _get_cls_dist(_lbl(acc_metrics['gt_labels_pre_gt_wa'].view(-1))) / (_ulb(self.mean_p_model['sem_scores_wa']) + 1e-6)
+        ratio =  _get_cls_dist(_lbl(acc_metrics[self.target_to_align].view(-1))) / (_ulb(self.mean_p_model['sem_scores_wa']) + 1e-6)
         self._update_ema('ratio', ratio, 'AdaMatch')
-        results['ratio/lbl_pre_gt_over_ulb_wa'] = self._arr2dict(self.ratio['AdaMatch'])
+        results[f'ratio/lbl_{self.target_to_align}_over_ulb_wa'] = self._arr2dict(self.ratio['AdaMatch'])
 
         results['labels_hist_lbl/gts_wa'] = self._arr2dict(_get_cls_dist(_lbl(acc_metrics['gt_labels_wa'].view(-1))))
         results['labels_hist_lbl/gts_sa'] = self._arr2dict(_get_cls_dist(_lbl(acc_metrics['gt_labels_sa'].view(-1))))
@@ -201,7 +204,7 @@ class AdaMatch(Metric):
         results['labels_hist_ulb/gts_wa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_wa'].view(-1))))
         results['labels_hist_ulb/gts_sa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_sa'].view(-1))))
         results['labels_hist_ulb/gts_pre_gt_wa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_pre_gt_wa'].view(-1))))
-        results['threshold/AdaMatch'] = self._get_threshold(tag='sem_scores_wa', thresh_alg='AdaMatch') # NOTE also keep tag='sem_scores_pre_gt_wa' in all branches
+        results[f'threshold/AdaMatch_{self.lab_thresh_tag}'] = self._get_threshold(tag=self.lab_thresh_tag, thresh_alg='AdaMatch') # NOTE also keep tag='sem_scores_pre_gt_wa' in all branches
         results['threshold/FreeMatch'] = self._arr2dict(self._get_threshold(thresh_alg='FreeMatch'))
         self.reset()
         return results
@@ -264,18 +267,20 @@ class AdaMatch(Metric):
         prob = getattr(self, p_name)
         prob[tag] = probs if prob[tag] is None else self.momentum * prob[tag] + (1 - self.momentum) * probs
 
-    def get_mask(self, logits, ret_rectified=False, thresh_alg='AdaMatch'):
+    def get_mask(self, logits, ret_rectified=False):
+        assert self.thresh_method in ['AdaMatch', 'FreeMatch'], f'{self.thresh_method} not in list [AdaMatch, FreeMatch, SoftMatch]'
+
         scores = torch.softmax(logits / self.temperature, dim=-1)
-        if thresh_alg == 'AdaMatch':
+        if self.thresh_method == 'AdaMatch':
             scores = self.rectify_sem_scores(scores)
             max_scores, labels = torch.max(scores, dim=-1)
             if ret_rectified:
-                return max_scores > self._get_threshold(tag='sem_scores_wa', thresh_alg=thresh_alg), scores
-            return max_scores > self._get_threshold(tag='sem_scores_wa', thresh_alg=thresh_alg)
+                return max_scores > self._get_threshold(tag=self.lab_thresh_tag, thresh_alg=self.thresh_method), scores
+            return max_scores > self._get_threshold(tag=self.lab_thresh_tag, thresh_alg=self.thresh_method)
 
-        elif thresh_alg == 'FreeMatch':
+        elif self.thresh_method == 'FreeMatch':
             max_scores, labels = torch.max(scores, dim=-1)
-            thresh = self._get_threshold(tag='sem_scores_wa', thresh_alg=thresh_alg)
+            thresh = self._get_threshold(tag='sem_scores_wa', thresh_alg=self.thresh_method)
             thresh = thresh.repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
             return max_scores > thresh
 

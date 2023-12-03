@@ -285,6 +285,9 @@ MODEL:
     ADAPTIVE_THRESH_CONFIG:
       AdaMatch:
         ENABLE: True
+        THRESH_METHOD: AdaMatch # AdaMatch, FreeMatch
+        TARGET_TO_ALIGN: 'gt_labels_pre_gt_wa'
+        LBL_THRESH_TAG: 'sem_scores_wa' # for AdaMatch only: sem_scores_wa or sem_scores_pre_gt_wa
         TEMPERATURE: 4.0
         TEMPERATURE_SA: 4.0
         FIXED_THRESH: 0.7
