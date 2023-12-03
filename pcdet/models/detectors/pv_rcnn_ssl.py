@@ -510,8 +510,11 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             if self.adapt_thresholding and self.thresh_alg.iteration_count > 0:
                 # apply dynamic thresholding
-                sem_score_mask, rect_scores = self.thresh_alg.get_mask(sem_scores_multi, ret_rectified = self.thresh_alg.thresh_method=='AdaMatch')
-                sem_scores_multi_rect.append(rect_scores)
+                if self.thresh_alg.thresh_method=='AdaMatch':
+                    sem_score_mask, rect_scores = self.thresh_alg.get_mask(sem_scores_multi, ret_rectified = True)
+                    sem_scores_multi_rect.append(rect_scores)
+                else:
+                    sem_score_mask = self.thresh_alg.get_mask(sem_scores_multi) # freematch
             else:
                 sem_conf_thresh = torch.tensor(self.sem_thresh, device=labels.device).unsqueeze(
                     0).repeat(len(labels), 1).gather(dim=1, index=(labels - 1).unsqueeze(-1))
