@@ -153,19 +153,6 @@ class AdaMatch(Metric):
             sem_scores = acc_metrics[sname]
             conf_scores = acc_metrics[sname.replace('sem', 'conf')]
 
-            # if sname == 'sem_scores_sa':
-            #     fg_mask = (acc_metrics['box_cls_labels_sa'] > 0).squeeze()
-            #     sem_scores = torch.softmax(sem_scores / self.temperature_sa, dim=-1)
-            # elif sname in ['sem_scores_wa']:
-            #     # TODO: Currently, we are using rois immediately produced by RPN.
-            #     #  Thus, the min of RPN's matched_threshold (0.5) is used as the FG threshold.
-            #     #  Note that the classwise RPN's thresholds are 0.6, 0.5, 0.5 for Car, Ped, Cyc respectively.
-            #     fg_mask = (acc_metrics['roi_ious_wa'] > self.prior_sem_fg_thresh).squeeze()
-            #     sem_scores = torch.softmax(sem_scores / self.temperature, dim=-1)
-            # elif sname in ['sem_scores_pre_gt_wa']:
-            #     fg_mask = (acc_metrics['roi_ious_pre_gt_wa'] > self.prior_sem_fg_thresh).squeeze()
-            #     sem_scores = torch.softmax(sem_scores / self.temperature, dim=-1)
-            
             fg_mask = (conf_scores > 0).squeeze() # remove padded 0 with fg_mask
             padding_mask = torch.logical_not(torch.all(sem_scores == 0, dim=-1))
             assert torch.equal(padding_mask, fg_mask), f"Padding mask and fg_mask are not equal for {sname}"
@@ -242,10 +229,10 @@ class AdaMatch(Metric):
             fg_scores_labels_ulb_df = pd.DataFrame(
                 torch.cat([max_scores_ulb.view(-1, 1), labels_ulb.view(-1, 1)], dim=-1).cpu().numpy(),
                 columns=['scores', 'labels'])
-            sns.histplot(data=fg_scores_labels_lbl_df, ax=axes[0], x='scores', hue='labels', kde=True).set(
-                title=f"Dist of FG max-scores on WA LBL input {tag} ")
-            sns.histplot(data=fg_scores_labels_ulb_df, ax=axes[1], x='scores', hue='labels', kde=True).set(
-                title=f"Dist of FG max-scores on WA ULB input {tag}")
+            sns.histplot(data=fg_scores_labels_lbl_df, ax=axes[0], x='scores', binrange=(0.5, 1.0), bins=20, kde_kws={'bw_adjust': 1.5, 'cut':1}, hue='labels', kde=True).set(
+                title=f"max-scores dist of WA LBL input {tag} ({len(labels_lbl)})")
+            sns.histplot(data=fg_scores_labels_ulb_df, ax=axes[1], x='scores', binrange=(0.5, 1.0), bins=20, kde_kws={'bw_adjust': 1.5, 'cut':1}, hue='labels', kde=True).set(
+                title=f"max-scores dist of WA ULB input {tag} ({len(labels_ulb)})")
             plt.tight_layout()
         # plt.show()
 
