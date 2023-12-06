@@ -107,9 +107,8 @@ class AdaMatch(Metric):
                     mstate = [torch.cat([m, m.new_zeros((m.shape[0], max_len - m.shape[1], *m.shape[2:]))], dim=1) for m in mstate]
                     mstate = torch.cat(mstate, dim=0)
             splits = torch.split(mstate, int(self.ulb_ratio * bs), dim=0)
-            #  lbl and ulb might be empty lists
-            lbl = torch.cat(splits[::2], dim=0) if splits[::2] else torch.tensor([], dtype=mstate.dtype, device=mstate.device)
-            ulb = torch.cat(splits[1::2], dim=0) if splits[1::2] else torch.tensor([], dtype=mstate.dtype, device=mstate.device)
+            lbl = torch.cat(splits[::2], dim=0)
+            ulb = torch.cat(splits[1::2], dim=0)
             mstate = torch.cat([lbl, ulb], dim=0)
             mstate = mstate.view(-1, mstate.shape[-1])
             accumulated_metrics[mname] = mstate
