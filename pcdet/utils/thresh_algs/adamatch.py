@@ -101,14 +101,16 @@ class AdaMatch(Metric):
         for mname in self.states_name:
             mstate = getattr(self, mname)
             if not len(mstate): continue
-            if isinstance(mstate, list):
-                try:
-                    mstate = torch.cat(mstate, dim=0)
-                except RuntimeError:
-                    # pad the second dim of each element of the list with zeros to make them of the same size
-                    max_len = max(m.shape[1] for m in mstate)
-                    mstate = [torch.cat([m, m.new_zeros((m.shape[0], max_len - m.shape[1], *m.shape[2:]))], dim=1) for m in mstate]
-                    mstate = torch.cat(mstate, dim=0)
+            assert all(m.shape[0] == mstate[0].shape[0] for m in mstate), "Shapes along axis 0 do not match."
+            mstate = torch.cat(mstate, dim=0)
+            # if isinstance(mstate, list):
+            #     try:
+            #         mstate = torch.cat(mstate, dim=0)
+            #     except RuntimeError:
+            #         # pad the second dim of each element of the list with zeros to make them of the same size
+            #         max_len = max(m.shape[1] for m in mstate)
+            #         mstate = [torch.cat([m, m.new_zeros((m.shape[0], max_len - m.shape[1], *m.shape[2:]))], dim=1) for m in mstate]
+            #         mstate = torch.cat(mstate, dim=0)
             splits = torch.split(mstate, int(self.ulb_ratio * bs), dim=0)
             lbl = torch.cat(splits[::2], dim=0)
             ulb = torch.cat(splits[1::2], dim=0)
