@@ -102,15 +102,14 @@ class AdaMatch(Metric):
             mstate = getattr(self, mname)
             if not len(mstate): continue
             assert all(m.shape[0] == mstate[0].shape[0] for m in mstate), "Shapes along axis 0 do not match."
-            mstate = torch.cat(mstate, dim=0)
-            # if isinstance(mstate, list):
-            #     try:
-            #         mstate = torch.cat(mstate, dim=0)
-            #     except RuntimeError:
-            #         # pad the second dim of each element of the list with zeros to make them of the same size
-            #         max_len = max(m.shape[1] for m in mstate)
-            #         mstate = [torch.cat([m, m.new_zeros((m.shape[0], max_len - m.shape[1], *m.shape[2:]))], dim=1) for m in mstate]
-            #         mstate = torch.cat(mstate, dim=0)
+            if isinstance(mstate, list):
+                try:
+                    mstate = torch.cat(mstate, dim=0)
+                except RuntimeError:
+                    # pad the second dim of each element of the list with zeros to make them of the same size
+                    max_len = max(m.shape[1] for m in mstate)
+                    mstate = [torch.cat([m, m.new_zeros((m.shape[0], max_len - m.shape[1], *m.shape[2:]))], dim=1) for m in mstate]
+                    mstate = torch.cat(mstate, dim=0)
             splits = torch.split(mstate, int(self.ulb_ratio * bs), dim=0)
             lbl = torch.cat(splits[::2], dim=0)
             ulb = torch.cat(splits[1::2], dim=0)
@@ -255,22 +254,20 @@ class AdaMatch(Metric):
         prob = getattr(self, p_name)
         prob[tag] = probs if prob[tag] is None else self.momentum * prob[tag] + (1 - self.momentum) * probs
 
-    def get_mask(self, logits, ret_rectified=False):
+    def get_mask(self, logits):
         assert self.thresh_method in ['AdaMatch', 'FreeMatch'], f'{self.thresh_method} not in list [AdaMatch, FreeMatch, SoftMatch]'
 
         scores = torch.softmax(logits / self.temperature, dim=-1)
         if self.thresh_method == 'AdaMatch':
             scores = self.rectify_sem_scores(scores)
             max_scores, labels = torch.max(scores, dim=-1)
-            if ret_rectified:
-                return max_scores > self._get_threshold(tag=self.lab_thresh_tag, thresh_alg=self.thresh_method), scores
-            return max_scores > self._get_threshold(tag=self.lab_thresh_tag, thresh_alg=self.thresh_method)
+            return max_scores > self._get_threshold(tag=self.lab_thresh_tag, thresh_alg=self.thresh_method), scores
 
         elif self.thresh_method == 'FreeMatch':
             max_scores, labels = torch.max(scores, dim=-1)
             thresh = self._get_threshold(tag='sem_scores_wa', thresh_alg=self.thresh_method)
             thresh = thresh.repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
-            return max_scores > thresh
+            return max_scores > thresh, scores # these scores will be discarded
 
     def _get_threshold(self, sem_scores_wa_lbl=None, tag='sem_scores_wa', thresh_alg='AdaMatch'):
         if thresh_alg == 'AdaMatch':

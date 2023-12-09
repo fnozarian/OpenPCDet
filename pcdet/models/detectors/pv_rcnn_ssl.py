@@ -172,7 +172,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         ulb_pred_labels = torch.cat([pseudo_labels_teacher_wa[ind]['pred_labels'] for ind in ulb_inds]).int().detach()
         pl_cls_count_pre_filter = torch.bincount(ulb_pred_labels, minlength=4)[1:]
 
-        pseudo_boxes, pseudo_scores, pseudo_sem_scores, pseudo_sem_scores_multi = self._filter_pls(pseudo_labels_teacher_wa, ulb_inds)
+        pseudo_boxes, pseudo_scores, pseudo_sem_scores, pseudo_sem_scores_multi, sem_scores_multi_rect = self._filter_pls(pseudo_labels_teacher_wa, ulb_inds)
         self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, ulb_inds, lbl_inds)
 
         pl_cls_count_post_filter = torch.bincount(batch_dict['gt_boxes'][ulb_inds][...,-1].view(-1).int().detach(), minlength=4)[1:]
@@ -181,6 +181,10 @@ class PVRCNN_SSL(Detector3DTemplate):
         pl_count_dict = {'avg_num_gts_per_sample': self._arr2dict(gt_cls_count / len(ulb_inds)),
                          'avg_num_pls_pre_filter_per_sample': self._arr2dict(pl_cls_count_pre_filter / len(ulb_inds)),
                          'avg_num_pls_post_filter_per_sample': self._arr2dict(pl_cls_count_post_filter / len(ulb_inds))}
+
+        if sem_scores_multi_rect:
+            pl_count_dict['sem_scores_multi_org'] = self._arr2dict(torch.softmax(pseudo_sem_scores_multi / self.thresh_alg.temperature, dim=-1).mean(dim=0).tolist())
+            pl_count_dict['sem_scores_multi_rect'] = self._arr2dict(torch.cat(sem_scores_multi_rect, dim=0).mean(dim=0).tolist())
 
         # apply student's augs on teacher's pseudo-labels (filtered) only (not points)
         batch_dict = self.apply_augmentation(batch_dict, batch_dict, ulb_inds, key='gt_boxes')
@@ -491,6 +495,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         pseudo_scores = []
         pseudo_sem_scores = []
         sem_scores_multi = []
+        sem_scores_multi_rect = []
         for boxs, labels, scores, sem_scores, sem_scores_multi, pseudo_pre_nms_thresh_masks in zip(*self._unpack_preds(pls_dict, ulb_inds)):
 
             if labels[0] == 0:
@@ -506,7 +511,9 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             if self.adapt_thresholding and self.thresh_alg.iteration_count > 0:
                 # apply dynamic thresholding
-                sem_score_mask = self.thresh_alg.get_mask(sem_scores_multi) # freematch
+                sem_score_mask, rect_scores = self.thresh_alg.get_mask(sem_scores_multi)
+                if self.thresh_alg.thresh_method == 'AdaMatch':
+                    sem_scores_multi_rect.append(rect_scores)
             else:
                 sem_conf_thresh = torch.tensor(self.sem_thresh, device=labels.device).unsqueeze(
                     0).repeat(len(labels), 1).gather(dim=1, index=(labels - 1).unsqueeze(-1))
@@ -523,7 +530,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             pseudo_sem_scores.append(sem_scores)
             pseudo_scores.append(scores)
 
-        return pseudo_boxes, pseudo_scores, pseudo_sem_scores, sem_scores_multi
+        return pseudo_boxes, pseudo_scores, pseudo_sem_scores, sem_scores_multi, sem_scores_multi_rect
 
     @staticmethod
     def _fill_with_pseudo_labels(batch_dict, pseudo_boxes, unlabeled_inds, labeled_inds, key=None):
