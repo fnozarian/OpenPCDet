@@ -45,8 +45,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.adapt_thresholding = False
         for key, confs in self.thresh_config.items():
             thresh_registry.register(key, **confs)
-            if confs['ENABLE']:
-                self.thresh_alg = thresh_registry.get(key)
+            self.thresh_alg = thresh_registry.get(key) # make it available for logging
+            if confs['ENABLE']: 
                 self.adapt_thresholding = True
 
         for bank_configs in model_cfg.get("FEATURE_BANK_LIST", []):
@@ -192,7 +192,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         for cur_module in self.pv_rcnn.module_list:
             batch_dict = cur_module(batch_dict)
 
-        if self.adapt_thresholding:
+        if self.thresh_alg is not None:
             batch_dict_pre_gt_sample = self._split_batch(batch_dict, tag='pre_gt_sample')
             self._gen_pseudo_labels(batch_dict_pre_gt_sample)
 
@@ -273,7 +273,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 feature_bank_registry.get(tag).compute()
 
         # update dynamic thresh alg
-        if self.adapt_thresholding and (results := self.thresh_alg.compute()):
+        if self.thresh_alg is not None and (results := self.thresh_alg.compute()):
             tb_dict_.update(results)
 
         for tag in metrics_registry.tags():
