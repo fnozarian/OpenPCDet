@@ -26,34 +26,27 @@ def update_metrics(targets_dict, mask_type='cls'):
         # (Proposals) ROI info
         rois = targets_dict['rois'][uind][mask].detach().clone()
         roi_labels = targets_dict['roi_labels'][uind][mask].unsqueeze(-1).detach().clone()
-        # TODO(farzad): temporarily using softmax scores for metrics to match with the softmax sem scores used in adamatch.py
-        # TODO(farzad): adjust the temperature for the softmax scores according to the adamatch.py temperature
         temperature = cfg.MODEL.ADAPTIVE_THRESH_CONFIG.AdaMatch.TEMPERATURE_SA
-        roi_scores_multiclass = torch.softmax(targets_dict['roi_scores_multiclass'][uind][mask].detach().clone() / temperature, dim=-1)
+        roi_scores_multiclass = torch.softmax(targets_dict['roi_scores_logits'][uind][mask].detach().clone() / temperature, dim=-1)
         roi_sim_scores_multiclass = targets_dict['roi_sim_scores'][uind][mask].detach().clone()
         roi_labeled_boxes = torch.cat([rois, roi_labels], dim=-1)
-        gt_iou_of_rois = targets_dict['gt_iou_of_rois'][uind][mask].unsqueeze(-1).detach().clone()
         metrics_input['rois'].append(roi_labeled_boxes)
         metrics_input['roi_scores'].append(roi_scores_multiclass)
         metrics_input['roi_sim_scores'].append(roi_sim_scores_multiclass)
-        metrics_input['roi_iou_wrt_pl'].append(gt_iou_of_rois)
-
-        # Target info
-        target_labeled_boxes = targets_dict['gt_of_rois_src'][uind][mask].detach().clone()
-        target_scores = targets_dict['rcnn_cls_labels'][uind][mask].detach().clone()
-        metrics_input['roi_target_scores'].append(target_scores)
+        # gt_iou_of_rois = targets_dict['gt_iou_of_rois'][uind][mask].unsqueeze(-1).detach().clone()
+        # metrics_input['roi_iou_wrt_pl'].append(gt_iou_of_rois)
 
         # (Real labels) GT info
         gt_labeled_boxes = targets_dict['ori_unlabeled_boxes'][i]
         metrics_input['ground_truths'].append(gt_labeled_boxes)
 
         # RoI weights
-        target_weights = targets_dict['rcnn_cls_weights'][uind][mask].detach().clone()
-        metrics_input['roi_weights'].append(target_weights)
+        # target_weights = targets_dict['rcnn_cls_weights'][uind][mask].detach().clone()
+        # metrics_input['roi_weights'].append(target_weights)
 
-        bs_id = targets_dict['points'][:, 0] == uind
-        points = targets_dict['points'][bs_id, 1:].detach().clone()
-        metrics_input['points'].append(points)
+        # bs_id = targets_dict['points'][:, 0] == uind
+        # points = targets_dict['points'][bs_id, 1:].detach().clone()
+        # metrics_input['points'].append(points)
     if len(metrics_input['rois']) == 0:
         # print(f'Warning: No {mask_type} rois for any unlabeled index')
         return
@@ -72,6 +65,9 @@ class RoIHeadTemplate(nn.Module):
         self.proposal_target_layer = ProposalTargetLayer(roi_sampler_cfg=self.model_cfg.TARGET_CONFIG)
         self.build_losses(self.model_cfg.LOSS_CONFIG)
         self.forward_ret_dict = None
+        self.fg_mean_p_model_sa = None
+        self.target_dist = torch.tensor([0.82, 0.13, 0.05])
+        self.momentum = 0.9
         self.predict_boxes_when_training = predict_boxes_when_training
 
     def build_losses(self, losses_cfg):
@@ -117,16 +113,13 @@ class RoIHeadTemplate(nn.Module):
         """
         if batch_dict.get('rois', None) is not None:
             return batch_dict
-
         batch_size = batch_dict['batch_size']
         batch_box_preds = batch_dict['batch_box_preds']
         batch_cls_preds = batch_dict['batch_cls_preds']
         rois = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_box_preds.shape[-1]))
         roi_scores = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
         roi_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
-        roi_scores_multiclass = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_cls_preds.shape[-1]))
-        roi_ious = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE))
-        box_cls_labels = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE), dtype=torch.long)
+        roi_scores_logits = batch_box_preds.new_zeros((batch_size, nms_config.NMS_POST_MAXSIZE, batch_cls_preds.shape[-1]))
         for index in range(batch_size):
             if batch_dict.get('batch_index', None) is not None:
                 assert batch_cls_preds.shape.__len__() == 2
@@ -138,7 +131,6 @@ class RoIHeadTemplate(nn.Module):
             cls_preds = batch_cls_preds[batch_mask]
 
             cur_roi_scores, cur_roi_labels = torch.max(cls_preds, dim=1)
-
             if nms_config.MULTI_CLASSES_NMS:
                 raise NotImplementedError
             else:
@@ -146,70 +138,17 @@ class RoIHeadTemplate(nn.Module):
                     box_scores=cur_roi_scores, box_preds=box_preds, nms_config=nms_config
                 )
 
-            # get_max_iou on selected boxes
-            cur_gt_boxes = batch_dict['gt_boxes'][index]
-            max_overlaps, gt_assignment = self.get_max_iou_with_same_class(
-                rois=box_preds[selected], roi_labels=cur_roi_labels[selected] + 1,
-                gt_boxes=cur_gt_boxes[:, 0:7], gt_labels=cur_gt_boxes[:, -1].long()
-            )
-
             rois[index, :len(selected), :] = box_preds[selected]
             roi_scores[index, :len(selected)] = cur_roi_scores[selected]
             roi_labels[index, :len(selected)] = cur_roi_labels[selected]
-            roi_scores_multiclass[index, :len(selected), :] = cls_preds[selected]
-            roi_ious[index] = max_overlaps
-            # this was previously used to get fg_mask for student stats in adamatch
-            # do we need to maintain this or can we use roi_ious similar to teacher
-            if 'box_cls_labels' in batch_dict:
-                box_cls_labels[index] = batch_dict['box_cls_labels'][batch_mask][selected]
-
+            roi_scores_logits[index, :len(selected), :] = cls_preds[selected]
         batch_dict['rois'] = rois
         batch_dict['roi_scores'] = roi_scores
-        batch_dict['roi_scores_multiclass'] = roi_scores_multiclass
-        batch_dict['roi_scores_multiclass_rpn'] = batch_cls_preds
-        batch_dict['roi_ious'] = roi_ious
-        batch_dict['box_cls_labels_sa'] = box_cls_labels
+        batch_dict['roi_scores_logits'] = roi_scores_logits
         batch_dict['roi_labels'] = roi_labels + 1
         batch_dict['has_class_labels'] = batch_cls_preds.shape[-1] > 1
         batch_dict.pop('batch_index', None)
         return batch_dict
-
-    @staticmethod
-    def get_max_iou_with_same_class(rois, roi_labels, gt_boxes, gt_labels):
-        """
-        Args:
-            rois: (N, 7)
-            roi_labels: (N)
-            gt_boxes: (N, )
-            gt_labels:
-
-        Returns:
-
-        """
-        """
-        :param rois: (N, 7)
-        :param roi_labels: (N)
-        :param gt_boxes: (N, 8)
-        :return:
-        """
-        max_overlaps = rois.new_zeros(rois.shape[0])
-        gt_assignment = roi_labels.new_zeros(roi_labels.shape[0])
-
-        for k in range(gt_labels.min().item(), gt_labels.max().item() + 1):
-            roi_mask = (roi_labels == k)
-            gt_mask = (gt_labels == k)
-            if roi_mask.sum() > 0 and gt_mask.sum() > 0:
-                cur_roi = rois[roi_mask]
-                cur_gt = gt_boxes[gt_mask]
-                original_gt_assignment = gt_mask.nonzero().view(-1)
-
-                iou3d = iou3d_nms_utils.boxes_iou3d_gpu(cur_roi, cur_gt)  # (M, N)
-                cur_max_overlaps, cur_gt_assignment = torch.max(iou3d, dim=1)
-                max_overlaps[roi_mask] = cur_max_overlaps
-                gt_assignment[roi_mask] = original_gt_assignment[cur_gt_assignment]
-
-        return max_overlaps, gt_assignment
-
     def assign_targets(self, batch_dict):
 
         with torch.no_grad():
@@ -247,31 +186,56 @@ class RoIHeadTemplate(nn.Module):
         return targets_dict
 
     def get_ulb_cls_dist_loss(self, forward_ret_dict):
-        loss_cfgs = self.model_cfg.LOSS_CONFIG
-
-        # TODO(farzad) get lbl_cls_dist from dataset
-        # Car: 0.8192846565668072, Ped - 0.12985533659870144, Cyc - 0.0508600068344914
-        lbl_cls_dist = torch.tensor([0.8192846565668072, 0.12985533659870144, 0.0508600068344914],
-                                    device=forward_ret_dict['roi_labels'].device)
-
+        # ulb_num_cls = torch.bincount(ulb_sem_preds.view(-1), minlength=4)[1:].float()
+        # ulb_cls_dist = ulb_num_cls / ulb_num_cls.sum()
+        loss_weight = self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS.get('ulb_cls_dist_weight', 0.2)
+        batch_size = forward_ret_dict['rcnn_cls_labels'].shape[0]
         ulb_inds = forward_ret_dict['unlabeled_inds']
-        ulb_cls_labels = forward_ret_dict['roi_labels'][ulb_inds]
-        ulb_num_cls = torch.bincount(ulb_cls_labels.view(-1), minlength=4)[1:].float()
-        ulb_cls_dist = ulb_num_cls / ulb_num_cls.sum()
 
-        # calculate kl divergence between lbl_cls_dist and cls_dist_batch
-        ulb_cls_dist = ulb_cls_dist + 1e-6
-        lbl_cls_dist = lbl_cls_dist + 1e-6
-        ulb_cls_dist_loss = torch.sum(lbl_cls_dist * torch.log(lbl_cls_dist / ulb_cls_dist))
-        # clamp ulb_cls_dist_loss
+        ulb_sem_logits = forward_ret_dict['roi_scores_logits'][ulb_inds]
+        # torch.sigmoid(ulb_sem_logits) # TODO: Check sigmoid version later with binary cross entropy loss
+        ulb_sem_scores = torch.softmax(ulb_sem_logits / 4, dim=-1)
+
+        ulb_conf_logits = forward_ret_dict['rcnn_cls'].reshape(batch_size, -1)[ulb_inds]
+        ulb_conf_preds_scores = torch.sigmoid(ulb_conf_logits)
+
+        ulb_sem_conf_scores = ulb_sem_scores * ulb_conf_preds_scores.unsqueeze(-1).expand_as(ulb_sem_scores)
+        ulb_sem_conf_scores = ulb_sem_conf_scores.view(-1, 3)
+        ulb_fg_mask = forward_ret_dict['reg_valid_mask'][ulb_inds]
+        num_fgs = ulb_fg_mask.sum()
+        fg_ratio = ulb_fg_mask.float().mean()
+        ulb_fg_mask = ulb_fg_mask.view(-1, 1).expand_as(ulb_sem_conf_scores)
+        print(f"ratio_fg: {fg_ratio}")
+        if num_fgs == 0:
+            print("Warning: No fg in ULB")
+            return torch.tensor(0.0), {}
+        # TODO: Should we calculate class distribution only on fgs or all rois (i.e., both fg and bg)?
+        ulb_sem_conf_scores_fg = ulb_sem_conf_scores * ulb_fg_mask
+        fg_mean_p_model = ulb_sem_conf_scores_fg.sum(dim=0) / num_fgs
+
+        if self.fg_mean_p_model_sa is None:
+            self.fg_mean_p_model_sa = fg_mean_p_model
+        else:
+            self.fg_mean_p_model_sa = self.momentum * self.fg_mean_p_model_sa.detach() + (1 - self.momentum) * fg_mean_p_model
+
+        target_dist = self.target_dist.to(self.fg_mean_p_model_sa.device)
+        ulb_cls_dist_loss = torch.sum(target_dist * torch.log((target_dist + 1e-6) / (self.fg_mean_p_model_sa + 1e-6)), dim=-1)
+        ulb_cls_dist_loss = ulb_cls_dist_loss * loss_weight
         ulb_cls_dist_loss = torch.clamp(ulb_cls_dist_loss, min=0.0, max=2.0)
-        ulb_cls_dist_loss = ulb_cls_dist_loss * loss_cfgs.LOSS_WEIGHTS['ulb_cls_dist_weight']
 
         tb_dict = {
-            # For consistency with other losses
-            'ulb_cls_dist_loss': ulb_cls_dist_loss.unsqueeze(0).repeat(forward_ret_dict['roi_labels'].shape[0], 1)
+            'cls_dist_loss_unlabeled': ulb_cls_dist_loss.item(),
+            'fg_mean_p_model_sa': self._arr2dict(self.fg_mean_p_model_sa.clone().detach().cpu().numpy()),
         }
         return ulb_cls_dist_loss, tb_dict
+
+    def _arr2dict(self, array):
+        if array.shape[-1] == 2:
+            return {cls: array[cind] for cind, cls in enumerate(['Bg', 'Fg'])}
+        elif array.shape[-1] == 3:
+            return {cls: array[cind] for cind, cls in enumerate(['Car', 'Ped', 'Cyc'])}
+        else:
+            raise ValueError(f"Invalid array shape: {array.shape}")
 
     def get_box_reg_layer_loss(self, forward_ret_dict, scalar=True):
         loss_cfgs = self.model_cfg.LOSS_CONFIG
@@ -497,17 +461,14 @@ class RoIHeadTemplate(nn.Module):
 
         rcnn_loss_cls, cls_tb_dict = self.get_box_cls_layer_loss(self.forward_ret_dict, scalar=scalar)
         rcnn_loss_reg, reg_tb_dict = self.get_box_reg_layer_loss(self.forward_ret_dict, scalar=scalar)
-        ulb_loss_cls_dist, cls_dist_dict = self.get_ulb_cls_dist_loss(self.forward_ret_dict)
-        rcnn_loss = rcnn_loss_cls + rcnn_loss_reg + ulb_loss_cls_dist
-
+        rcnn_loss = rcnn_loss_cls + rcnn_loss_reg
         tb_dict.update(cls_tb_dict)
         tb_dict.update(reg_tb_dict)
-        tb_dict.update(cls_dist_dict)
         tb_dict['rcnn_loss'] = rcnn_loss.item() if scalar else rcnn_loss
         if scalar:
             return rcnn_loss, tb_dict
         else:
-            return rcnn_loss_cls, rcnn_loss_reg, ulb_loss_cls_dist, tb_dict
+            return rcnn_loss_cls, rcnn_loss_reg, tb_dict
 
     def generate_predicted_boxes(self, batch_size, rois, cls_preds, box_preds):
         """

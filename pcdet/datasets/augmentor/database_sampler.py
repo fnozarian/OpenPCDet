@@ -229,10 +229,10 @@ class DataBaseSampler(object):
         Returns:
 
         """
-        data_dict['gt_boxes_pre_gt_sample'] = data_dict['gt_boxes'].copy()
-        data_dict['gt_names_pre_gt_sample'] = data_dict['gt_names'].copy()
-        data_dict['points_pre_gt_sample'] = data_dict['points'].copy()
-        data_dict['instance_idx_pre_gt_sample'] = data_dict['instance_idx'].copy()
+        # data_dict['gt_boxes_pre_gt_sample'] = data_dict['gt_boxes'].copy()
+        # data_dict['gt_names_pre_gt_sample'] = data_dict['gt_names'].copy()
+        # data_dict['points_pre_gt_sample'] = data_dict['points'].copy()
+        # data_dict['instance_idx_pre_gt_sample'] = data_dict['instance_idx'].copy()
         gt_boxes = data_dict['gt_boxes']
         gt_names = data_dict['gt_names'].astype(str)
         assert gt_boxes.shape[0] == data_dict['instance_idx'].shape[0], "gt_boxes, instance_idx in call"

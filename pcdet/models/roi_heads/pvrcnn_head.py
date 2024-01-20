@@ -163,8 +163,7 @@ class PVRCNNHead(RoIHeadTemplate):
             batch_dict['rois'] = targets_dict['rois']
             batch_dict['roi_scores'] = targets_dict['roi_scores']
             batch_dict['roi_labels'] = targets_dict['roi_labels']
-            batch_dict['roi_scores_multiclass'] = targets_dict['roi_scores_multiclass']
-            batch_dict['box_cls_labels_sa'] = targets_dict['box_cls_labels_sa']
+            batch_dict['roi_scores_logits'] = targets_dict['roi_scores_logits']
             batch_dict['rcnn_cls_labels'] = targets_dict['rcnn_cls_labels']
             (batch_dict['rcnn_cls_labels'] == -1).any().item() and print('rcnn_cls_labels has -1')
             batch_dict['gt_iou_of_rois'] = targets_dict['gt_iou_of_rois']

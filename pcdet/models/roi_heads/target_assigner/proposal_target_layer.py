@@ -49,9 +49,8 @@ class ProposalTargetLayer(nn.Module):
         code_size = rois.shape[-1]
         batch_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size)
         batch_roi_scores = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
-        batch_roi_scores_multiclass = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, 3)
+        batch_roi_scores_logits = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, 3)
         batch_roi_labels = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
-        batch_box_cls_labels_sa = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
         batch_gt_of_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size + 1)
         batch_roi_ious = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
         batch_reg_valid_mask = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
@@ -79,16 +78,14 @@ class ProposalTargetLayer(nn.Module):
             batch_gt_of_rois[index] = cur_gt_boxes[gt_assignment[sampled_inds]]
             batch_roi_ious[index] = roi_ious
             batch_roi_scores[index] = batch_dict['roi_scores'][index][sampled_inds]
-            batch_roi_scores_multiclass[index] = batch_dict['roi_scores_multiclass'][index][sampled_inds]
-            batch_box_cls_labels_sa[index] = batch_dict['box_cls_labels_sa'][index][sampled_inds]
+            batch_roi_scores_logits[index] = batch_dict['roi_scores_logits'][index][sampled_inds]
             batch_roi_labels[index] = batch_dict['roi_labels'][index][sampled_inds]
             batch_reg_valid_mask[index] = cur_reg_valid_mask
             batch_cls_labels[index] = cur_cls_labels
             interval_mask[index] = cur_interval_mask
 
         return {'rois': batch_rois, 'gt_of_rois': batch_gt_of_rois, 'gt_iou_of_rois': batch_roi_ious,
-                'roi_scores': batch_roi_scores, 'roi_scores_multiclass': batch_roi_scores_multiclass,
-                'box_cls_labels_sa': batch_box_cls_labels_sa, 
+                'roi_scores': batch_roi_scores, 'roi_scores_logits': batch_roi_scores_logits,
                 'roi_labels': batch_roi_labels, 'reg_valid_mask': batch_reg_valid_mask,
                 'rcnn_cls_labels': batch_cls_labels, 'interval_mask': interval_mask}
 

@@ -544,11 +544,11 @@ class KittiDatasetSSL(DatasetTemplate):
             data_dict['gt_names'] = data_dict['gt_names'][selected]
             if self.training:
                 data_dict['gt_boxes_ema'] = data_dict['gt_boxes_ema'][selected]
-                if data_dict.get('gt_boxes_pre_gt_sample', None) is not None:
-                    selected = common_utils.keep_arrays_by_name(data_dict['gt_names_pre_gt_sample'], self.class_names)
-                    data_dict['gt_boxes_pre_gt_sample'] = data_dict['gt_boxes_pre_gt_sample'][selected]
-                    data_dict['instance_idx_pre_gt_sample'] = data_dict['instance_idx_pre_gt_sample'][selected]
-                    data_dict['gt_names_pre_gt_sample'] = data_dict['gt_names_pre_gt_sample'][selected]
+                # if data_dict.get('gt_boxes_pre_gt_sample', None) is not None:
+                #     selected = common_utils.keep_arrays_by_name(data_dict['gt_names_pre_gt_sample'], self.class_names)
+                #     data_dict['gt_boxes_pre_gt_sample'] = data_dict['gt_boxes_pre_gt_sample'][selected]
+                #     data_dict['instance_idx_pre_gt_sample'] = data_dict['instance_idx_pre_gt_sample'][selected]
+                #     data_dict['gt_names_pre_gt_sample'] = data_dict['gt_names_pre_gt_sample'][selected]
             gt_classes = np.array([self.class_names.index(n) + 1 for n in data_dict['gt_names']], dtype=np.int32)
             gt_boxes = np.concatenate((data_dict['gt_boxes'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
             data_dict['gt_boxes'] = gt_boxes
@@ -556,10 +556,10 @@ class KittiDatasetSSL(DatasetTemplate):
                 gt_boxes_ema = np.concatenate((data_dict['gt_boxes_ema'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
                 data_dict['gt_boxes_ema'] = gt_boxes_ema
 
-                if data_dict.get('gt_boxes_pre_gt_sample', None) is not None:
-                    gt_classes_pre_gt_sample = np.array([self.class_names.index(n) + 1 for n in data_dict['gt_names_pre_gt_sample']], dtype=np.int32)
-                    gt_boxes_pre_gt_sample = np.concatenate((data_dict['gt_boxes_pre_gt_sample'], gt_classes_pre_gt_sample.reshape(-1, 1).astype(np.float32)), axis=1)
-                    data_dict['gt_boxes_pre_gt_sample'] = gt_boxes_pre_gt_sample
+                # if data_dict.get('gt_boxes_pre_gt_sample', None) is not None:
+                #     gt_classes_pre_gt_sample = np.array([self.class_names.index(n) + 1 for n in data_dict['gt_names_pre_gt_sample']], dtype=np.int32)
+                #     gt_boxes_pre_gt_sample = np.concatenate((data_dict['gt_boxes_pre_gt_sample'], gt_classes_pre_gt_sample.reshape(-1, 1).astype(np.float32)), axis=1)
+                #     data_dict['gt_boxes_pre_gt_sample'] = gt_boxes_pre_gt_sample
 
         # print((data_dict['points'] ** 2).sum(), (data_dict['points_ema'] ** 2).sum()*(data_dict['scale']**2))
         if self.training:
@@ -583,21 +583,21 @@ class KittiDatasetSSL(DatasetTemplate):
             data_dict['voxel_num_points_ema'] = data_dict['voxel_num_points']
             data_dict['instance_idx_ema'] = data_dict['instance_idx']
             # pre_gt_sample
-            if data_dict.get('gt_boxes_pre_gt_sample', None) is not None:
-                data_dict['points'] = data_dict['points_pre_gt_sample']
-                data_dict['gt_boxes'] = data_dict['gt_boxes_pre_gt_sample']
-                data_dict['instance_idx'] = data_dict['instance_idx_pre_gt_sample']
-                data_dict = self.point_feature_encoder.forward(data_dict)
-                data_dict = self.data_processor.forward(
-                    data_dict=data_dict
-                )
-
-                data_dict['points_pre_gt_sample'] = data_dict['points']
-                data_dict['gt_boxes_pre_gt_sample'] = data_dict['gt_boxes']
-                data_dict['instance_idx_pre_gt_sample'] = data_dict['instance_idx']
-                data_dict['voxels_pre_gt_sample'] = data_dict['voxels']
-                data_dict['voxel_coords_pre_gt_sample'] = data_dict['voxel_coords']
-                data_dict['voxel_num_points_pre_gt_sample'] = data_dict['voxel_num_points']
+            # if data_dict.get('gt_boxes_pre_gt_sample', None) is not None:
+            #     data_dict['points'] = data_dict['points_pre_gt_sample']
+            #     data_dict['gt_boxes'] = data_dict['gt_boxes_pre_gt_sample']
+            #     data_dict['instance_idx'] = data_dict['instance_idx_pre_gt_sample']
+            #     data_dict = self.point_feature_encoder.forward(data_dict)
+            #     data_dict = self.data_processor.forward(
+            #         data_dict=data_dict
+            #     )
+            #
+            #     data_dict['points_pre_gt_sample'] = data_dict['points']
+            #     data_dict['gt_boxes_pre_gt_sample'] = data_dict['gt_boxes']
+            #     data_dict['instance_idx_pre_gt_sample'] = data_dict['instance_idx']
+            #     data_dict['voxels_pre_gt_sample'] = data_dict['voxels']
+            #     data_dict['voxel_coords_pre_gt_sample'] = data_dict['voxel_coords']
+            #     data_dict['voxel_num_points_pre_gt_sample'] = data_dict['voxel_num_points']
             # students
             data_dict['points'] = points
             data_dict['gt_boxes'] = gt_boxes

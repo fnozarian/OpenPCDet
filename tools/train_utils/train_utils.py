@@ -32,6 +32,7 @@ def log_tb_dict(tb_log, tb_dict, accumulated_iter):
 
         elif isinstance(val, plt.Figure):
             tb_log.add_figure(cat + key, val, accumulated_iter)
+            plt.close(val)
         else:
             tb_log.add_scalar(cat + key, val, accumulated_iter)
 
