@@ -164,6 +164,7 @@ MODEL:
         ENABLE_PROTO_CONTRASTIVE_LOSS: False
         PROTO_CONTRASTIVE_LOSS_WEIGHT: 1.0
         ENABLE_SOFT_TEACHER: False
+        # ULB_CLS_DIST_LOSS is the current experimental feature we are working on not DebiasedPL, Adamatch or FreeMatch!
         ENABLE_ULB_CLS_DIST_LOSS: True
         ENABLE_EVAL: True
         METRICS_PRED_TYPES: [roi_pl_gt]
@@ -285,15 +286,17 @@ MODEL:
     ADAPTIVE_THRESH_CONFIG:
       AdaMatch:
         ENABLE: True
-        THRESH_METHOD: DebiasedPL # AdaMatch, FreeMatch
+        # DebiasedPL is the default thresh method since it doesn't apply any filtering on PLs with semantic scores.
+        # Thus, it's just for debugging purpose.
+        THRESH_METHOD: DebiasedPL # AdaMatch, FreeMatch or DebiasedPL.
         TARGET_TO_ALIGN: 'gt_labels_pre_gt_wa' # for AdaMatch only: sem_scores_wa or sem_scores_pre_gt_wa
         LBL_THRESH_TAG: 'sem_scores_wa' # for AdaMatch only: sem_scores_wa or sem_scores_pre_gt_wa
         TEMPERATURE: 4.0
         TEMPERATURE_SA: 4.0
-        FIXED_THRESH: 0.9
-        MOMENTUM: 0.99
+        FIXED_THRESH: 0.9  # this is based on the empirical observation and also the value used in AdaMatch paper
+        MOMENTUM: 0.99  # since reset state interval reduced to 1, stats are more noisy and need more momentum
         SEM_FG_THRESH: 0.5  # [0.65, 0.40, 0.45]
-        RESET_STATE_INTERVAL: 1
+        RESET_STATE_INTERVAL: 1  # I changed this to 1 to make it consistent with other papers.
         ENABLE_PLOTS: False
 
 OPTIMIZATION:
@@ -302,7 +305,9 @@ OPTIMIZATION:
     NUM_EPOCHS: 80
 
     OPTIMIZER: adam_onecycle
-    LR: 0.1
+    # Compared to baseline LR=0.01, LR=0.001 makes the p_max_model to increase monotonically throughout the training.
+    # Note: 0.1 is for fast debugging purpose.
+    LR: 0.001
     WEIGHT_DECAY: 0.01
     MOMENTUM: 0.9
 

@@ -169,6 +169,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         logits_pad = torch.cat(logits_pad).clone().detach()
 
         return scores_pad, logits_pad
+    # This is being used for debugging the loss functions, specially the new ones,
+    # to see if they can be minimized to zero or converged to their lowest expected value or not.
     def _get_fixed_batch_dict(self):
         batch_dict_out = {}
         if self.fixed_batch_dict is None:
@@ -193,7 +195,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         filtering_masks, ps_sem_scores_rect = self._filter_pls_sem_scores(pseudo_sem_logits)
         pseudo_boxes = [boxes[mask] for boxes, mask in zip(pseudo_boxes, filtering_masks)]
 
-        # self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, ulb_inds, lbl_inds)
+        # Comment the following line to use gt boxes for unlabeled data!
+        self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, ulb_inds, lbl_inds)
 
         pl_cls_count_post_filter = torch.bincount(batch_dict['gt_boxes'][ulb_inds][...,-1].view(-1).int().detach(), minlength=4)[1:]
         gt_cls_count = torch.bincount(batch_dict['ori_unlabeled_boxes'][...,-1].view(-1).int().detach(), minlength=4)[1:]
