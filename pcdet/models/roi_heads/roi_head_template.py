@@ -65,7 +65,7 @@ class RoIHeadTemplate(nn.Module):
         self.proposal_target_layer = ProposalTargetLayer(roi_sampler_cfg=self.model_cfg.TARGET_CONFIG)
         self.build_losses(self.model_cfg.LOSS_CONFIG)
         self.forward_ret_dict = None
-        self.fg_mean_p_model_sa = None
+        self.mean_p_model_sa = None
         self.target_dist = torch.tensor([0.82, 0.13, 0.05])
         self.momentum = 0.9
         self.predict_boxes_when_training = predict_boxes_when_training
@@ -193,39 +193,38 @@ class RoIHeadTemplate(nn.Module):
         ulb_inds = forward_ret_dict['unlabeled_inds']
 
         ulb_sem_logits = forward_ret_dict['roi_scores_logits'][ulb_inds]
-        # torch.sigmoid(ulb_sem_logits) # TODO: Check sigmoid version later with binary cross entropy loss
-        ulb_sem_scores = torch.softmax(ulb_sem_logits / 4, dim=-1)
+        ulb_sem_scores = torch.sigmoid(ulb_sem_logits)
 
+        rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels']
         ulb_conf_logits = forward_ret_dict['rcnn_cls'].reshape(batch_size, -1)[ulb_inds]
         ulb_conf_preds_scores = torch.sigmoid(ulb_conf_logits)
 
         ulb_sem_conf_scores = ulb_sem_scores * ulb_conf_preds_scores.unsqueeze(-1).expand_as(ulb_sem_scores)
-        ulb_sem_conf_scores = ulb_sem_conf_scores.view(-1, 3)
-        ulb_fg_mask = forward_ret_dict['reg_valid_mask'][ulb_inds]
-        num_fgs = ulb_fg_mask.sum()
-        fg_ratio = ulb_fg_mask.float().mean()
-        ulb_fg_mask = ulb_fg_mask.view(-1, 1).expand_as(ulb_sem_conf_scores)
-        print(f"ratio_fg: {fg_ratio}")
-        if num_fgs == 0:
-            print("Warning: No fg in ULB")
-            return torch.tensor(0.0), {}
-        # TODO: Should we calculate class distribution only on fgs or all rois (i.e., both fg and bg)?
-        ulb_sem_conf_scores_fg = ulb_sem_conf_scores * ulb_fg_mask
-        fg_mean_p_model = ulb_sem_conf_scores_fg.sum(dim=0) / num_fgs
-
-        if self.fg_mean_p_model_sa is None:
-            self.fg_mean_p_model_sa = fg_mean_p_model
+        # ulb_fg_mask = forward_ret_dict['reg_valid_mask'][ulb_inds]
+        # num_fgs = ulb_fg_mask.sum()
+        # fg_ratio = ulb_fg_mask.float().mean()
+        # ulb_fg_mask = ulb_fg_mask.view(-1, 1).expand_as(ulb_sem_conf_scores)
+        # print(f"ratio_fg: {fg_ratio}")
+        # if num_fgs == 0:
+        #     print("Warning: No fg in ULB")
+        #     return torch.tensor(0.0), {}
+        # ulb_sem_conf_scores_fg = ulb_sem_conf_scores * ulb_fg_mask
+        # fg_mean_p_model = ulb_sem_conf_scores_fg.sum(dim=0) / num_fgs
+        mean_p_model = ulb_sem_conf_scores.view(-1, 3).sum(dim=0) / ulb_conf_preds_scores.sum()
+        mean_p_model = mean_p_model / mean_p_model.sum()
+        if self.mean_p_model_sa is None:
+            self.mean_p_model_sa = mean_p_model
         else:
-            self.fg_mean_p_model_sa = self.momentum * self.fg_mean_p_model_sa.detach() + (1 - self.momentum) * fg_mean_p_model
+            self.mean_p_model_sa = self.momentum * self.mean_p_model_sa.detach() + (1 - self.momentum) * mean_p_model
 
-        target_dist = self.target_dist.to(self.fg_mean_p_model_sa.device)
-        ulb_cls_dist_loss = torch.sum(target_dist * torch.log((target_dist + 1e-6) / (self.fg_mean_p_model_sa + 1e-6)), dim=-1)
+        target_dist = self.target_dist.to(self.mean_p_model_sa.device)
+        ulb_cls_dist_loss = torch.sum(target_dist * torch.log((target_dist + 1e-6) / (self.mean_p_model_sa + 1e-6)))
         ulb_cls_dist_loss = ulb_cls_dist_loss * loss_weight
         ulb_cls_dist_loss = torch.clamp(ulb_cls_dist_loss, min=0.0, max=2.0)
-
+        # ulb_cls_dist_loss = torch.tensor(0.0).to(ulb_sem_logits.device)
         tb_dict = {
             'cls_dist_loss_unlabeled': ulb_cls_dist_loss.item(),
-            'fg_mean_p_model_sa': self._arr2dict(self.fg_mean_p_model_sa.clone().detach().cpu().numpy()),
+            'mean_p_model_sa': self._arr2dict(self.mean_p_model_sa.clone().detach().cpu().numpy()),
         }
         return ulb_cls_dist_loss, tb_dict
 
@@ -329,8 +328,6 @@ class RoIHeadTemplate(nn.Module):
             cls_valid_mask = (rcnn_cls_labels >= 0).float()
             if scalar:
                 rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum() / torch.clamp(cls_valid_mask.sum(), min=1.0)
-                rcnn_acc_cls = (torch.abs(torch.sigmoid(rcnn_cls_flat) - rcnn_cls_labels) * cls_valid_mask).sum() \
-                               / torch.clamp(cls_valid_mask.sum(), min=1.0)
             else:
                 batch_size = forward_ret_dict['rcnn_cls_labels'].shape[0]
                 batch_loss_cls = batch_loss_cls.reshape(batch_size, -1)
@@ -341,8 +338,6 @@ class RoIHeadTemplate(nn.Module):
                     rcnn_loss_cls = (batch_loss_cls * cls_valid_mask * rcnn_cls_weights).sum(-1) / torch.clamp(rcnn_loss_cls_norm, min=1.0)
                 else:
                     rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
-                rcnn_acc_cls = torch.abs(torch.sigmoid(rcnn_cls_flat) - rcnn_cls_labels).reshape(batch_size, -1)
-                rcnn_acc_cls = (rcnn_acc_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
         elif loss_cfgs.CLS_LOSS == 'CrossEntropy':
             batch_loss_cls = F.cross_entropy(rcnn_cls, rcnn_cls_labels, reduction='none', ignore_index=-1)
             cls_valid_mask = (rcnn_cls_labels >= 0).float()
@@ -358,8 +353,7 @@ class RoIHeadTemplate(nn.Module):
 
         rcnn_loss_cls = rcnn_loss_cls * loss_cfgs.LOSS_WEIGHTS['rcnn_cls_weight']
         tb_dict = {
-            'rcnn_loss_cls': rcnn_loss_cls.item() if scalar else rcnn_loss_cls,
-            'rcnn_acc_cls': rcnn_acc_cls.item() if scalar else rcnn_acc_cls
+            'rcnn_loss_cls': rcnn_loss_cls.item() if scalar else rcnn_loss_cls
         }
         return rcnn_loss_cls, tb_dict
 

@@ -111,19 +111,18 @@ class AdaMatch(Metric):
             fg_labels = _split(labels, fg_mask)
             p_max_model = fg_labels.new_zeros(hist_minlength, dtype=fg_max_scores.dtype).scatter_add_(0, fg_labels, fg_max_scores)
             fg_labels_hist = torch.bincount(fg_labels, minlength=hist_minlength)
-
+            mean_p_max_classwise = p_max_model / (fg_labels_hist + 1e-6)
             if type == 'micro':
                 p_max_model = p_max_model.sum() / fg_labels_hist.sum()
             elif type == 'macro':
-                p_max_model /= (fg_labels_hist + 1e-6)
-                p_max_model = p_max_model.mean()
+                p_max_model = mean_p_max_classwise.mean()
 
             fg_labels_hist = fg_labels_hist / fg_labels_hist.sum()
-            return p_max_model, fg_labels_hist
+            return p_max_model, fg_labels_hist, mean_p_max_classwise
         elif isinstance(split, list) and len(split) == 2:
-            p_s0, h_s0 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask, hist_minlength=hist_minlength, split=split[0], type=type)
-            p_s1, h_s1 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask, hist_minlength=hist_minlength, split=split[1], type=type)
-            return torch.vstack([p_s0, p_s1]).squeeze(), torch.vstack([h_s0, h_s1])
+            p_s0, h_s0, pc_s0 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask, hist_minlength=hist_minlength, split=split[0], type=type)
+            p_s1, h_s1, pc_s1 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask, hist_minlength=hist_minlength, split=split[1], type=type)
+            return torch.vstack([p_s0, p_s1]).squeeze(), torch.vstack([h_s0, h_s1]), torch.vstack([pc_s0, pc_s1])
         else:
             raise ValueError(f"Invalid split type: {split}")
 
@@ -143,7 +142,7 @@ class AdaMatch(Metric):
             max_scores, labels = torch.max(sem_scores, dim=-1)
 
             hist_minlength = sem_scores.shape[-1]
-            mean_p_max_model, labels_hist = self._get_mean_p_max_model_and_label_hist(max_scores, labels, padding_mask, hist_minlength)
+            mean_p_max_model, labels_hist, mean_p_max_model_classwise = self._get_mean_p_max_model_and_label_hist(max_scores, labels, padding_mask, hist_minlength)
             mean_p_model_lbl = _lbl(sem_scores, padding_mask).mean(dim=0)
             mean_p_model_ulb = _ulb(sem_scores, padding_mask).mean(dim=0)
             mean_p_model = torch.vstack([mean_p_model_lbl, mean_p_model_ulb])
@@ -152,17 +151,19 @@ class AdaMatch(Metric):
             self._update_ema('labels_hist', labels_hist, sname)
             self._update_ema('mean_p_model', mean_p_model, sname)
 
+            results[f'mean_p_model_classwise_lbl/{sname}'] = self._arr2dict(_lbl(mean_p_max_model_classwise), ignore_zeros=True)
+            results[f'mean_p_model_classwise_ulb/{sname}'] = self._arr2dict(_ulb(mean_p_max_model_classwise), ignore_zeros=True)
             self.log_results(results, sname=sname)
-            if self.enable_plots:
+
+            if self.enable_plots and self.iteration_count % 10 == 0:
                 fig = self.draw_dist_plots(max_scores, labels, padding_mask, sname)
                 results[f'dist_plots_{sname}'] = fig
-                plt.close()
 
         # ratio =  _lbl(self.mean_p_model['sem_scores_pre_gt_wa']) / (_ulb(self.mean_p_model['sem_scores_wa']) + 1e-6)
         sem_scores_wa_ulb = _ulb(self.mean_p_model['sem_scores_wa'])
         self.ratio['AdaMatch'] =  self.mean_p_model['gt'].to(sem_scores_wa_ulb.device) / sem_scores_wa_ulb
         # self._update_ema('ratio', ratio, 'AdaMatch')
-        results[f'ratio/lbl_{self.target_to_align}_over_ulb_wa'] = self._arr2dict(self.ratio['AdaMatch'])
+        results[f'ratio/gt_over_ulb_sem_scores_wa'] = self._arr2dict(self.ratio['AdaMatch'])
         results['labels_hist_lbl/gts_wa'] = self._arr2dict(_get_cls_dist(_lbl(acc_metrics['gt_labels_wa'].view(-1))))
         results['labels_hist_ulb/gts_wa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_wa'].view(-1))))
         # results['labels_hist_lbl/gts_sa'] = self._arr2dict(_get_cls_dist(_lbl(acc_metrics['gt_labels_sa'].view(-1))))
@@ -277,10 +278,10 @@ class AdaMatch(Metric):
             # TODO idk about the values of these thresholds. Let's let all the PLs pass through to tune then based on metrics!
             return self.mean_p_max_model[tag].new_tensor([0.0, 0.0, 0.0])
 
-    def _arr2dict(self, array):
+    def _arr2dict(self, array, ignore_zeros=False):
         if array.shape[-1] == 2:
             return {cls: array[cind] for cind, cls in enumerate(['Bg', 'Fg'])}
         elif array.shape[-1] == len(self.class_names):
-            return {cls: array[cind] for cind, cls in enumerate(self.class_names)}
+            return {cls: array[cind] for cind, cls in enumerate(self.class_names) if array[cind] > 0 or not ignore_zeros}
         else:
             raise ValueError(f"Invalid array shape: {array.shape}")

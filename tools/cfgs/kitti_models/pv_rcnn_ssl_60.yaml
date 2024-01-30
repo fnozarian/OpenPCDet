@@ -165,7 +165,7 @@ MODEL:
         PROTO_CONTRASTIVE_LOSS_WEIGHT: 1.0
         ENABLE_SOFT_TEACHER: False
         # ULB_CLS_DIST_LOSS is the current experimental feature we are working on not DebiasedPL, Adamatch or FreeMatch!
-        ENABLE_ULB_CLS_DIST_LOSS: True
+        ENABLE_ULB_CLS_DIST_LOSS: False
         ENABLE_EVAL: True
         METRICS_PRED_TYPES: [roi_pl_gt]
         SHARED_FC: [256, 256]
@@ -288,9 +288,9 @@ MODEL:
         ENABLE: True
         # DebiasedPL is the default thresh method since it doesn't apply any filtering on PLs with semantic scores.
         # Thus, it's just for debugging purpose.
-        THRESH_METHOD: DebiasedPL # AdaMatch, FreeMatch or DebiasedPL.
-        TARGET_TO_ALIGN: 'gt_labels_pre_gt_wa' # for AdaMatch only: sem_scores_wa or sem_scores_pre_gt_wa
-        LBL_THRESH_TAG: 'sem_scores_wa' # for AdaMatch only: sem_scores_wa or sem_scores_pre_gt_wa
+        THRESH_METHOD: AdaMatch # AdaMatch, FreeMatch or DebiasedPL.
+        TARGET_TO_ALIGN: 'gt_labels_wa'
+        LBL_THRESH_TAG: 'sem_scores_wa'
         TEMPERATURE: 4.0
         TEMPERATURE_SA: 4.0
         FIXED_THRESH: 0.9  # this is based on the empirical observation and also the value used in AdaMatch paper
@@ -307,7 +307,7 @@ OPTIMIZATION:
     OPTIMIZER: adam_onecycle
     # Compared to baseline LR=0.01, LR=0.001 makes the p_max_model to increase monotonically throughout the training.
     # Note: 0.1 is for fast debugging purpose.
-    LR: 0.001
+    LR: 0.01
     WEIGHT_DECAY: 0.01
     MOMENTUM: 0.9
 
