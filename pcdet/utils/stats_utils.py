@@ -124,6 +124,14 @@ def plot_confusion_matrix(cm, class_names):
 
   return fig
 
+def _arr2dict(array, ignore_zeros=False):
+    if array.shape[-1] == 2:
+        return {cls: array[cind] for cind, cls in enumerate(['Bg', 'Fg'])}
+    elif array.shape[-1] == 3:
+        return {cls: array[cind] for cind, cls in enumerate(['Car', 'Pedestrian', 'Cyclist']) if array[cind] > 0 or not ignore_zeros}
+    else:
+        raise ValueError(f"Invalid array shape: {array.shape}")
+
 class PredQualityMetrics(Metric):
     full_state_update: bool = False
 
@@ -230,6 +238,9 @@ class PredQualityMetrics(Metric):
         y_scores = np.zeros((len(y_labels), 4))
         y_scores[:, :3] = scores.cpu().numpy()
 
+        classwise_metrics['mean_p_max_model'] = scores.max(dim=-1)[0].mean().item()
+        classwise_metrics['mean_p_model'] = _arr2dict(scores.mean(dim=0).cpu().numpy())
+
         # sim_scores = accumulated_metrics["roi_sim_scores"]
         # sim_labels = torch.argmax(sim_scores, dim=-1)
         # y_sim_scores = np.zeros((len(y_labels), 4))
@@ -269,7 +280,8 @@ class PredQualityMetrics(Metric):
                 #     classwise_metrics[f'uc_{key}'][cls] = (metric * cls_uc_mask.float()).sum() / cls_uc_mask.sum()
                 # classwise_metrics[f'bg_{key}'][cls] = (metric * cls_bg_mask.float()).sum() / cls_bg_mask.sum()
 
-            classwise_metrics['avg_num_pred_rois_using_sem_score_per_sample'][cls] = cls_pred_mask.sum() / self.num_samples
+            classwise_metrics['avg_num_rois_per_sample'][cls] = cls_pred_mask.sum() / self.num_samples
+            classwise_metrics['avg_num_gts_per_sample'][cls] = self.num_gts[cind] / self.num_samples
 
             classwise_metrics['rois_fg_ratio'][cls] = cls_fg_mask.sum() / torch.clip(cls_pred_mask.sum(), min=1)
             classwise_metrics['rois_uc_ratio'][cls] = cls_uc_mask.sum() / torch.clip(cls_pred_mask.sum(), min=1)

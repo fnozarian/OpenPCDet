@@ -151,8 +151,8 @@ class AdaMatch(Metric):
             self._update_ema('labels_hist', labels_hist, sname)
             self._update_ema('mean_p_model', mean_p_model, sname)
 
-            results[f'mean_p_model_classwise_lbl/{sname}'] = self._arr2dict(_lbl(mean_p_max_model_classwise), ignore_zeros=True)
-            results[f'mean_p_model_classwise_ulb/{sname}'] = self._arr2dict(_ulb(mean_p_max_model_classwise), ignore_zeros=True)
+            results[f'mean_p_max_model_lbl/{sname}'] = self._arr2dict(_lbl(mean_p_max_model_classwise), ignore_zeros=True)
+            results[f'mean_p_max_model_ulb/{sname}'] = self._arr2dict(_ulb(mean_p_max_model_classwise), ignore_zeros=True)
             self.log_results(results, sname=sname)
 
             if self.enable_plots and self.iteration_count % 10 == 0:
@@ -275,8 +275,8 @@ class AdaMatch(Metric):
             return normalized_p_model * _ulb(self.mean_p_max_model[tag])
 
         elif self.thresh_method == 'DebiasedPL':
-            # TODO idk about the values of these thresholds. Let's let all the PLs pass through to tune then based on metrics!
-            return self.mean_p_max_model[tag].new_tensor([0.0, 0.0, 0.0])
+            thresh = _ulb(self.mean_p_max_model[tag]) * self.fixed_thresh
+            return thresh.repeat(3)
 
     def _arr2dict(self, array, ignore_zeros=False):
         if array.shape[-1] == 2:

@@ -166,7 +166,7 @@ MODEL:
         ENABLE_SOFT_TEACHER: False
         # ULB_CLS_DIST_LOSS is the current experimental feature we are working on not DebiasedPL, Adamatch or FreeMatch!
         ENABLE_ULB_CLS_DIST_LOSS: False
-        ENABLE_EVAL: True
+        ENABLE_EVAL: False
         METRICS_PRED_TYPES: [roi_pl_gt]
         SHARED_FC: [256, 256]
         CLS_FC: [256, 256]
@@ -291,7 +291,7 @@ MODEL:
         ENABLE: True
         # DebiasedPL is the default thresh method since it doesn't apply any filtering on PLs with semantic scores.
         # Thus, it's just for debugging purpose.
-        THRESH_METHOD: AdaMatch # AdaMatch, FreeMatch or DebiasedPL.
+        THRESH_METHOD: DebiasedPL # AdaMatch, FreeMatch or DebiasedPL.
         TARGET_TO_ALIGN: 'gt_labels_wa'
         LBL_THRESH_TAG: 'sem_scores_wa'
         TEMPERATURE: 4.0

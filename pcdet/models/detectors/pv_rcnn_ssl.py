@@ -204,18 +204,10 @@ class PVRCNN_SSL(Detector3DTemplate):
         pl_cls_count_post_filter = torch.bincount(batch_dict['gt_boxes'][ulb_inds][...,-1].view(-1).int().detach(), minlength=4)[1:]
         gt_cls_count = torch.bincount(batch_dict['ori_unlabeled_boxes'][...,-1].view(-1).int().detach(), minlength=4)[1:]
 
-        pl_count_dict = {'avg_num_gts_per_sample': self._arr2dict(gt_cls_count / len(ulb_inds)),
+        pl_count_dict = {'avg_num_gts_per_sample': self._arr2dict(gt_cls_count / len(ulb_inds)),  # backward compatibility. Added to stats_utils. Will be removed later.
                          'avg_num_pls_pre_filter_per_sample': self._arr2dict(pl_cls_count_pre_filter / len(ulb_inds)),
+                         # backward compatibility. Added to stats_utils. Will be removed later.
                          'avg_num_pls_post_filter_per_sample': self._arr2dict(pl_cls_count_post_filter / len(ulb_inds))}
-
-        if self.thresh_alg and ps_sem_scores_rect:
-            mean_p_model_rect = torch.cat(ps_sem_scores_rect, dim=0).mean(dim=0).tolist()
-            pl_count_dict['sem_scores_multi_rect'] = self._arr2dict(mean_p_model_rect)  # backward compatibility
-            pl_count_dict['mean_p_model_rect'] = self._arr2dict(mean_p_model_rect)
-
-            pl_count_dict['mean_p_max_model_rect'] = torch.cat(ps_sem_scores_rect, dim=0).max(dim=-1)[0].mean().item()
-            rects_filtered = [rects[mask] for rects, mask in zip(ps_sem_scores_rect, filtering_masks)]
-            pl_count_dict['mean_p_model_rect_filtered'] = self._arr2dict(torch.cat(rects_filtered, dim=0).mean(dim=0).tolist())
 
         # apply student's augs on teacher's pseudo-labels (filtered) only (not points)
         batch_dict = self.apply_augmentation(batch_dict, batch_dict, ulb_inds, key='gt_boxes')
