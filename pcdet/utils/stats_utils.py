@@ -29,10 +29,10 @@ def _assert_inputs_are_valid(rois: [torch.Tensor], roi_scores: [torch.Tensor], g
     assert all(roi.shape[-1] == 8 for roi in rois) and all(
         gt.shape[-1] == 8 for gt in ground_truths
     )
-    assert all(
-        torch.logical_not(torch.all(sample_rois == 0, dim=-1).any())
-        for sample_rois in rois
-    ), "rois should not contains all zero boxes"
+    # assert all(
+    #     torch.logical_not(torch.all(sample_rois == 0, dim=-1).any())
+    #     for sample_rois in rois
+    # ), "rois should not contains all zero boxes"
 
 
 def get_max_iou_with_same_class(rois, roi_labels, gt_boxes, gt_labels):
@@ -72,22 +72,24 @@ def get_max_iou_with_same_class(rois, roi_labels, gt_boxes, gt_labels):
 
 def get_max_iou(anchors, gt_boxes, gt_classes, matched_threshold=0.6):
     num_anchors = anchors.shape[0]
+    num_gts = gt_boxes.shape[0]
 
     ious = torch.zeros((num_anchors,), dtype=torch.float, device=anchors.device)
     labels = torch.ones((num_anchors,), dtype=torch.int64, device=anchors.device) * -1
+    gt_to_anchor_max = torch.zeros((num_gts,), dtype=torch.float, device=anchors.device)
 
     if len(gt_boxes) > 0 and anchors.shape[0] > 0:
         anchor_by_gt_overlap = iou3d_nms_utils.boxes_iou3d_gpu(anchors[:, 0:7], gt_boxes[:, 0:7])
-
+        gt_to_anchor_max = anchor_by_gt_overlap.max(dim=0)[0]
         anchor_to_gt_argmax = anchor_by_gt_overlap.argmax(dim=1)
         anchor_to_gt_max = anchor_by_gt_overlap[torch.arange(num_anchors, device=anchors.device), anchor_to_gt_argmax]
 
         pos_inds = anchor_to_gt_max >= matched_threshold
         gt_inds_over_thresh = anchor_to_gt_argmax[pos_inds]
         labels[pos_inds] = gt_classes[gt_inds_over_thresh]
-        ious[pos_inds] = anchor_to_gt_max[pos_inds]
+        ious[:] = anchor_to_gt_max
 
-    return ious, labels
+    return ious, labels, gt_to_anchor_max
 
 def plot_confusion_matrix(cm, class_names):
   """
@@ -131,18 +133,18 @@ class PredQualityMetrics(Metric):
         self.tag = kwargs.get('tag', None)
         self.dataset = kwargs.get('dataset', None)
 
-        self.states_name = ["roi_scores", "roi_labels", "roi_iou_wrt_gt", "roi_sim_scores", "roi_assigned_labels"]
+        self.states_name = ["roi_scores", "roi_labels", "roi_iou_wrt_gt", "roi_assigned_labels"]
         self.fg_threshs = kwargs.get('fg_threshs', None)
         self.bg_thresh = kwargs.get('BG_THRESH', 0.25)
         self.min_overlaps = np.array([0.7, 0.5, 0.5])
 
         self.add_state('num_samples', default=torch.tensor(0).cuda(), dist_reduce_fx='sum')
         self.add_state('num_gts', default=torch.zeros((3,)).cuda(), dist_reduce_fx='sum')
+        self.add_state('num_gts_matched', default=torch.zeros((3,3)).cuda(), dist_reduce_fx='sum')  # 3 recall thresholds, 3 classes
         for name in self.states_name:
             self.add_state(name, default=[], dist_reduce_fx='cat')
 
-    def update(self, rois: [torch.Tensor], roi_scores: [torch.Tensor], ground_truths: [torch.Tensor],
-               roi_sim_scores: [torch.Tensor]) -> None:
+    def update(self, rois: [torch.Tensor], roi_scores: [torch.Tensor], ground_truths: [torch.Tensor]) -> None:
 
         _assert_inputs_are_valid(rois, roi_scores, ground_truths)
 
@@ -155,15 +157,20 @@ class PredQualityMetrics(Metric):
             sample_gts_labels = sample_gts[:, -1].long() - 1
             if len(sample_gts) > 0:
                 matched_threshold = torch.tensor(self.min_overlaps, dtype=torch.float, device=sample_roi_labels.device)[sample_roi_labels]
-                sample_roi_iou_wrt_gt, assigned_label = get_max_iou(sample_rois[:, 0:7], sample_gts[:, 0:7],
+                sample_roi_iou_wrt_gt, assigned_label, gt_to_roi_max_iou = get_max_iou(sample_rois[:, 0:7], sample_gts[:, 0:7],
                                                                        sample_gts_labels, matched_threshold=matched_threshold)
-                num_gts += torch.bincount(sample_gts[:, -1].int() - 1, minlength=3)
+                sample_gt_labels = sample_gts[:, -1].int() - 1
+                num_gts += torch.bincount(sample_gt_labels, minlength=3)
+
+                for t, thresh in enumerate([0.3, 0.5, 0.7]):
+                    for c in range(3):
+                         self.num_gts_matched[t, c] += gt_to_roi_max_iou[sample_gt_labels == c].ge(thresh).sum()
             else:
                 sample_roi_iou_wrt_gt = torch.zeros_like(sample_rois[:, 0])
                 assigned_label = torch.ones_like(sample_roi_iou_wrt_gt, dtype=torch.int64) * -1
 
             self.roi_scores.append(roi_scores[i])
-            self.roi_sim_scores.append(roi_sim_scores[i])
+            # self.roi_sim_scores.append(roi_sim_scores[i])
             self.roi_iou_wrt_gt.append(sample_roi_iou_wrt_gt.view(-1, 1))
             self.roi_assigned_labels.append(assigned_label.view(-1, 1))
             self.roi_labels.append(sample_roi_labels.view(-1, 1))
@@ -209,8 +216,6 @@ class PredQualityMetrics(Metric):
         accumulated_metrics = self._accumulate_metrics()  # shape (N, 1)
 
         scores = accumulated_metrics["roi_scores"]
-        sim_scores = accumulated_metrics["roi_sim_scores"]
-        sim_labels = torch.argmax(sim_scores, dim=-1)
         iou_wrt_gt = accumulated_metrics["roi_iou_wrt_gt"].view(-1)
         pred_labels = accumulated_metrics["roi_labels"].view(-1)
         assigned_labels = accumulated_metrics["roi_assigned_labels"].view(-1)
@@ -223,9 +228,12 @@ class PredQualityMetrics(Metric):
 
         y_labels = y_labels.cpu().numpy()
         y_scores = np.zeros((len(y_labels), 4))
-        y_sim_scores = np.zeros((len(y_labels), 4))
         y_scores[:, :3] = scores.cpu().numpy()
-        y_sim_scores[:, :3] = sim_scores.cpu().numpy()
+
+        # sim_scores = accumulated_metrics["roi_sim_scores"]
+        # sim_labels = torch.argmax(sim_scores, dim=-1)
+        # y_sim_scores = np.zeros((len(y_labels), 4))
+        # y_sim_scores[:, :3] = sim_scores.cpu().numpy()
 
         # y_pred = pred_labels.cpu().numpy()
         # cm = confusion_matrix(y_labels, y_pred)
@@ -256,20 +264,24 @@ class PredQualityMetrics(Metric):
 
             def add_avg_metric(key, metric):
                 if cls_fg_mask.sum() > 0:
-                    classwise_metrics[f'fg_{key}'][cls] = (metric * cls_fg_mask.float()).sum() / cls_fg_mask.sum()
+                    classwise_metrics[f'fg_{key}'][cls] = (metric * cls_fg_mask.float()).sum() / torch.clip(cls_fg_mask.sum(), min=1)
                 # if cls_fg_mask.sum() > 0:
                 #     classwise_metrics[f'uc_{key}'][cls] = (metric * cls_uc_mask.float()).sum() / cls_uc_mask.sum()
                 # classwise_metrics[f'bg_{key}'][cls] = (metric * cls_bg_mask.float()).sum() / cls_bg_mask.sum()
 
             classwise_metrics['avg_num_pred_rois_using_sem_score_per_sample'][cls] = cls_pred_mask.sum() / self.num_samples
 
-            classwise_metrics['rois_fg_ratio'][cls] = cls_fg_mask.sum() / cls_pred_mask.sum()
-            # classwise_metrics['rois_uc_ratio'][cls] = cls_uc_mask.sum() / cls_pred_mask.sum()
-            classwise_metrics['rois_bg_ratio'][cls] = cls_bg_mask.sum() / cls_pred_mask.sum()
+            classwise_metrics['rois_fg_ratio'][cls] = cls_fg_mask.sum() / torch.clip(cls_pred_mask.sum(), min=1)
+            classwise_metrics['rois_uc_ratio'][cls] = cls_uc_mask.sum() / torch.clip(cls_pred_mask.sum(), min=1)
+            classwise_metrics['rois_bg_ratio'][cls] = cls_bg_mask.sum() / torch.clip(cls_pred_mask.sum(), min=1)
 
             add_avg_metric('rois_avg_score', cls_roi_scores)
             add_avg_metric('rois_avg_iou_wrt_gt', cls_roi_iou_wrt_gt)
             # add_avg_metric('rois_avg_weight', cls_roi_weights)
+
+            # recall
+            for t, thresh in enumerate([0.3, 0.5, 0.7]):
+                classwise_metrics[f'recall_{thresh}'][cls] = self.num_gts_matched[t, cind] / torch.clip(self.num_gts[cind], min=1)
 
             # y_sim_scores = sim_scores[:, cind].cpu().numpy()
             # sem_clf_pr_curve_sim_score_data = {'labels': y_labels, 'predictions': y_sim_scores}

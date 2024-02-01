@@ -28,11 +28,11 @@ def update_metrics(targets_dict, mask_type='cls'):
         roi_labels = targets_dict['roi_labels'][uind][mask].unsqueeze(-1).detach().clone()
         temperature = cfg.MODEL.ADAPTIVE_THRESH_CONFIG.AdaMatch.TEMPERATURE_SA
         roi_scores_multiclass = torch.softmax(targets_dict['roi_scores_logits'][uind][mask].detach().clone() / temperature, dim=-1)
-        roi_sim_scores_multiclass = targets_dict['roi_sim_scores'][uind][mask].detach().clone()
+        # roi_sim_scores_multiclass = targets_dict['roi_sim_scores'][uind][mask].detach().clone()
         roi_labeled_boxes = torch.cat([rois, roi_labels], dim=-1)
         metrics_input['rois'].append(roi_labeled_boxes)
         metrics_input['roi_scores'].append(roi_scores_multiclass)
-        metrics_input['roi_sim_scores'].append(roi_sim_scores_multiclass)
+        # metrics_input['roi_sim_scores'].append(roi_sim_scores_multiclass)
         # gt_iou_of_rois = targets_dict['gt_iou_of_rois'][uind][mask].unsqueeze(-1).detach().clone()
         # metrics_input['roi_iou_wrt_pl'].append(gt_iou_of_rois)
 

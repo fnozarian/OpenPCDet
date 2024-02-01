@@ -193,6 +193,9 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         # Semantic Filtering
         filtering_masks, ps_sem_scores_rect = self._filter_pls_sem_scores(pseudo_sem_logits)
+
+        self.update_metrics(pseudo_boxes, ps_sem_scores_rect, filtering_masks, batch_dict_ema['gt_boxes'][ulb_inds])
+
         pseudo_boxes = [boxes[mask] for boxes, mask in zip(pseudo_boxes, filtering_masks)]
 
         # Comment the following line to use gt boxes for unlabeled data!
@@ -457,34 +460,24 @@ class PVRCNN_SSL(Detector3DTemplate):
         file_path = os.path.join(output_dir, 'scores.pkl')
         pickle.dump(self.val_dict, open(file_path, 'wb'))
 
-    # def update_metrics(self, input_dict, pred_dict, unlabeled_inds, labeled_inds):
-    #     """
-    #     Recording PL vs GT statistics BEFORE filtering
-    #     """
-    #     if 'pl_gt_metrics_before_filtering' in self.model_cfg.ROI_HEAD.METRICS_PRED_TYPES:
-    #         pseudo_boxes, pseudo_labels, pseudo_scores, pseudo_sem_scores, _, _ = self._unpack_predictions(
-    #             pred_dict, unlabeled_inds)
-    #         pseudo_boxes = [torch.cat([pseudo_box, pseudo_label.view(-1, 1).float()], dim=1) \
-    #                         for (pseudo_box, pseudo_label) in zip(pseudo_boxes, pseudo_labels)]
-    #
-    #         # Making consistent # of pseudo boxes in each batch
-    #         # NOTE: Need to store them in batch_dict in a new key, which can be removed later
-    #         input_dict['pseudo_boxes_prefilter'] = torch.zeros_like(input_dict['gt_boxes'])
-    #         self._fill_with_pseudo_labels(input_dict, pseudo_boxes, unlabeled_inds, labeled_inds,
-    #                                       key='pseudo_boxes_prefilter')
-    #
-    #         # apply student's augs on teacher's pseudo-boxes (w/o filtered)
-    #         batch_dict = self.apply_augmentation(input_dict, input_dict, unlabeled_inds, key='pseudo_boxes_prefilter')
-    #
-    #         tag = f'pl_gt_metrics_before_filtering'
-    #         metrics = metrics_registry.get(tag)
-    #
-    #         preds_prefilter = [batch_dict['pseudo_boxes_prefilter'][uind] for uind in unlabeled_inds]
-    #         gts_prefilter = [batch_dict['gt_boxes'][uind] for uind in unlabeled_inds]
-    #         metric_inputs = {'preds': preds_prefilter, 'pred_scores': pseudo_scores, 'roi_scores': pseudo_sem_scores,
-    #                          'ground_truths': gts_prefilter}
-    #         metrics.update(**metric_inputs)
-    #         batch_dict.pop('pseudo_boxes_prefilter')
+    def update_metrics(self, rois, sem_scores, filtering_masks, gts, tag='pl_metrics'):
+        metrics_input = defaultdict(list)
+        bs = len(rois)
+        for i in range(bs):
+            smpl_mask = filtering_masks[i]
+            if smpl_mask.sum() == 0:
+                # TODO: fix stats for no preds case
+                smpl_rois = gts[i].new_zeros((1, 8)).float().to(gts[i].device)  # dummy rois
+                smpl_scores = gts[i].new_zeros((1, 3)).float().to(gts[i].device)
+            else:
+                smpl_rois = rois[i][smpl_mask].clone().detach()
+                smpl_scores = sem_scores[i][smpl_mask].clone().detach()
+
+            metrics_input['rois'].append(smpl_rois)
+            metrics_input['roi_scores'].append(smpl_scores)
+            metrics_input['ground_truths'].append(gts[i].clone().detach())
+
+        metrics_registry.get(tag).update(**metrics_input)
 
     @staticmethod
     def _unpack_preds(pred_dicts, ulb_inds):
@@ -536,19 +529,20 @@ class PVRCNN_SSL(Detector3DTemplate):
         return pseudo_boxes, pseudo_scores, pseudo_sem_scores, sem_scores_logits_list
     def _filter_pls_sem_scores(self, batch_roi_sem_scores_logtis):
         masks = []
-        rect_scores_list = []
+        scores_list = []
         for logits in batch_roi_sem_scores_logtis:
             if self.thresh_alg:
-                mask, rect_scores = self.thresh_alg.get_mask(logits)
-                rect_scores_list.append(rect_scores)
+                mask, scores = self.thresh_alg.get_mask(logits)
             else:  # 3dioumatch baseline
                 labels = torch.argmax(logits, dim=1)
-                scores = torch.sigmoid(logits).max(dim=-1)[0]
+                scores = torch.sigmoid(logits)
+                max_scores = scores.max(dim=-1)[0]
                 sem_conf_thresh = torch.tensor(self.sem_thresh, device=logits.device).unsqueeze(0).expand_as(logits).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
-                mask = scores > sem_conf_thresh
+                mask = max_scores > sem_conf_thresh
 
             masks.append(mask)
-        return masks, rect_scores_list
+            scores_list.append(scores)
+        return masks, scores_list
 
     @staticmethod
     def _fill_with_pseudo_labels(batch_dict, pseudo_boxes, unlabeled_inds, labeled_inds, key=None):

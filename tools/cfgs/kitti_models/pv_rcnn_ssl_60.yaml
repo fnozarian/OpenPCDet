@@ -283,6 +283,9 @@ MODEL:
         - NAME: rcnn_roi_pl_gt_metrics_cls
           RESET_STATE_INTERVAL: 32
           BG_THRESH: 0.25
+        - NAME: pl_metrics
+          RESET_STATE_INTERVAL: 16
+          BG_THRESH: 0.25
     ADAPTIVE_THRESH_CONFIG:
       AdaMatch:
         ENABLE: True
