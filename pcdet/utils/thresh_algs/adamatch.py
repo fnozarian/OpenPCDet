@@ -151,8 +151,8 @@ class AdaMatch(Metric):
             self._update_ema('labels_hist', labels_hist, sname)
             self._update_ema('mean_p_model', mean_p_model, sname)
 
-            results[f'mean_p_max_model_lbl/{sname}'] = self._arr2dict(_lbl(mean_p_max_model_classwise), ignore_zeros=True)
-            results[f'mean_p_max_model_ulb/{sname}'] = self._arr2dict(_ulb(mean_p_max_model_classwise), ignore_zeros=True)
+            results[f'mean_p_max_model_classwise_lbl/{sname}'] = self._arr2dict(_lbl(mean_p_max_model_classwise), ignore_zeros=True)
+            results[f'mean_p_max_model_classwise_ulb/{sname}'] = self._arr2dict(_ulb(mean_p_max_model_classwise), ignore_zeros=True)
             self.log_results(results, sname=sname)
 
             if self.enable_plots and self.iteration_count % 10 == 0:

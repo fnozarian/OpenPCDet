@@ -18,7 +18,7 @@ DATA_CONFIG:
               NUM_POINT_FEATURES: 4
               DATABASE_WITH_FAKELIDAR: False
               REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]
-              LIMIT_WHOLE_SCENE: True  # Temporarily enabled to fix KeyError bug in prototyping
+              LIMIT_WHOLE_SCENE: False
 
             - NAME: random_world_flip
               ALONG_AXIS_LIST: ['x']
@@ -201,7 +201,6 @@ MODEL:
 
             SAMPLE_ROI_BY_EACH_CLASS: True
             CLS_SCORE_TYPE: roi_iou
-            CLS_WEIGHT: 0.35
             CLS_FG_THRESH: 0.75
             CLS_BG_THRESH: 0.25
             UNLABELED_CLS_FG_THRESH: [0.65, 0.45, 0.4]
