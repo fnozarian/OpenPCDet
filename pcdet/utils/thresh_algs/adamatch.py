@@ -268,7 +268,7 @@ class AdaMatch(Metric):
 
     def _get_threshold(self, tag='sem_scores_wa'):
         if self.thresh_method == 'AdaMatch':
-            return _lbl(self.mean_p_max_model[tag]) * self.fixed_thresh
+            return _ulb(self.mean_p_max_model[tag]) * self.fixed_thresh
 
         elif self.thresh_method == 'FreeMatch':
             normalized_p_model = torch.div(_ulb(self.mean_p_model[tag]), _ulb(self.mean_p_model[tag]).max())

@@ -227,7 +227,8 @@ MODEL:
                 'rcnn_reg_weight': 1.0,
                 'rcnn_corner_weight': 1.0,
                 'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
-                ulb_cls_dist_weight: 1.0
+                'ulb_cls_dist_weight': 1.0,
+                'unbiased_ce_tau': 2.0,
             }
         
         ROI_AUG:
@@ -290,15 +291,15 @@ MODEL:
         ENABLE: True
         # DebiasedPL is the default thresh method since it doesn't apply any filtering on PLs with semantic scores.
         # Thus, it's just for debugging purpose.
-        THRESH_METHOD: DebiasedPL # AdaMatch, FreeMatch or DebiasedPL.
+        THRESH_METHOD: AdaMatch # AdaMatch, FreeMatch or DebiasedPL.
         TARGET_TO_ALIGN: 'gt_labels_wa'
         LBL_THRESH_TAG: 'sem_scores_wa'
         TEMPERATURE: 4.0
         TEMPERATURE_SA: 4.0
-        FIXED_THRESH: 0.9  # this is based on the empirical observation and also the value used in AdaMatch paper
+        FIXED_THRESH: 0.8
         MOMENTUM: 0.99  # since reset state interval reduced to 1, stats are more noisy and need more momentum
         SEM_FG_THRESH: 0.5  # [0.65, 0.40, 0.45]
-        RESET_STATE_INTERVAL: 1  # I changed this to 1 to make it consistent with other papers.
+        RESET_STATE_INTERVAL: 8  # with bs=4, this is less noisy than 1
         ENABLE_PLOTS: False
 
 OPTIMIZATION:
