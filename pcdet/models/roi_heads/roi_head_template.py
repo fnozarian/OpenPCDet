@@ -13,7 +13,7 @@ from ...ops.iou3d_nms import iou3d_nms_utils
 from collections import defaultdict
 from pcdet.config import cfg # temporarily adding cfg for temprature scaling
 
-def update_metrics(targets_dict, mask_type='cls'):
+def get_roi_metrics_input(targets_dict, mask_type='cls'):
     metrics_input = defaultdict(list)
 
     for i, uind in enumerate(targets_dict['unlabeled_inds']):
@@ -50,8 +50,7 @@ def update_metrics(targets_dict, mask_type='cls'):
     if len(metrics_input['rois']) == 0:
         # print(f'Warning: No {mask_type} rois for any unlabeled index')
         return
-    tag = f'rcnn_roi_pl_gt_metrics_{mask_type}'
-    metrics_registry.get(tag).update(**metrics_input)
+    return metrics_input
 
 
 class RoIHeadTemplate(nn.Module):
@@ -238,13 +237,14 @@ class RoIHeadTemplate(nn.Module):
         else:
             raise ValueError(f"Invalid array shape: {array.shape}")
 
-    def get_box_reg_layer_loss(self, forward_ret_dict, scalar=True):
+    def get_box_reg_layer_loss(self, forward_ret_dict):
         loss_cfgs = self.model_cfg.LOSS_CONFIG
         code_size = self.box_coder.code_size
 
         reg_valid_mask = forward_ret_dict['reg_valid_mask'].view(-1)
         gt_boxes3d_ct = forward_ret_dict['gt_of_rois'][..., 0:code_size]
         gt_of_rois_src = forward_ret_dict['gt_of_rois_src'][..., 0:code_size].view(-1, code_size)
+        gt_of_rois_loss_weight = forward_ret_dict['gt_of_rois'][..., -1].view(-1)
         rcnn_reg = forward_ret_dict['rcnn_reg']  # (rcnn_batch_size, C)
         roi_boxes3d = forward_ret_dict['rois']
         rcnn_batch_size = gt_boxes3d_ct.view(-1, code_size).shape[0]
@@ -267,15 +267,15 @@ class RoIHeadTemplate(nn.Module):
                 rcnn_reg.view(rcnn_batch_size, -1).unsqueeze(dim=0),
                 reg_targets.unsqueeze(dim=0),
             )  # [B, M, 7]
-            if scalar:
-                rcnn_loss_reg = (rcnn_loss_reg.view(rcnn_batch_size, -1) * fg_mask.unsqueeze(dim=-1).float()).sum() \
-                                / max(fg_sum, 1)
-            else:
-                fg_sum_ = fg_mask.reshape(batch_size, -1).long().sum(-1)
-                rcnn_loss_reg = (rcnn_loss_reg.view(rcnn_batch_size, -1) *
-                                 fg_mask.unsqueeze(dim=-1).float()).reshape(batch_size, -1).sum(-1) / torch.clamp(fg_sum_.float(), min=1.0)
+
+            fg_sum_ = fg_mask.reshape(batch_size, -1).long().sum(-1)
+            assert gt_of_rois_loss_weight[:rcnn_batch_size // 2].sum() == rcnn_batch_size // 2
+            rcnn_loss_reg = (rcnn_loss_reg.view(rcnn_batch_size, -1) *
+                             gt_of_rois_loss_weight.view(rcnn_batch_size, -1) *
+                             fg_mask.unsqueeze(dim=-1).float()
+                             ).reshape(batch_size, -1).sum(-1) / torch.clamp(fg_sum_.float(), min=1.0)
             rcnn_loss_reg = rcnn_loss_reg * loss_cfgs.LOSS_WEIGHTS['rcnn_reg_weight']
-            tb_dict['rcnn_loss_reg'] = rcnn_loss_reg.item() if scalar else rcnn_loss_reg
+            tb_dict['rcnn_loss_reg'] = rcnn_loss_reg
 
             if loss_cfgs.CORNER_LOSS_REGULARIZATION and fg_sum > 0:
                 split_size = []
@@ -304,23 +304,21 @@ class RoIHeadTemplate(nn.Module):
                     rcnn_boxes3d[:, 0:7],
                     gt_of_rois_src[fg_mask][:, 0:7]
                 )
-                if scalar:
-                    loss_corner = loss_corner.mean()
-                else:
-                    loss_corner = torch.split(loss_corner, split_size, dim=0)
-                    zero = torch.zeros([1], device=fg_mask.device)
-                    loss_corner = [x.mean(dim=0, keepdim=True) if len(x) > 0 else zero for x in loss_corner]
-                    loss_corner = torch.cat(loss_corner, dim=0)
+
+                loss_corner = torch.split(loss_corner, split_size, dim=0)
+                zero = torch.zeros([1], device=fg_mask.device)
+                loss_corner = [x.mean(dim=0, keepdim=True) if len(x) > 0 else zero for x in loss_corner]
+                loss_corner = torch.cat(loss_corner, dim=0)
                 loss_corner = loss_corner * loss_cfgs.LOSS_WEIGHTS['rcnn_corner_weight']
 
                 rcnn_loss_reg += loss_corner
-                tb_dict['rcnn_loss_corner'] = loss_corner.item() if scalar else loss_corner
+                tb_dict['rcnn_loss_corner'] = loss_corner
         else:
             raise NotImplementedError
 
         return rcnn_loss_reg, tb_dict
 
-    def get_box_cls_layer_loss(self, forward_ret_dict, scalar=True):
+    def get_box_cls_layer_loss(self, forward_ret_dict):
         loss_cfgs = self.model_cfg.LOSS_CONFIG
         rcnn_cls = forward_ret_dict['rcnn_cls']
         rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'].view(-1)
@@ -328,28 +326,22 @@ class RoIHeadTemplate(nn.Module):
             rcnn_cls_flat = rcnn_cls.view(-1)
             batch_loss_cls = F.binary_cross_entropy(torch.sigmoid(rcnn_cls_flat), rcnn_cls_labels.float(), reduction='none')
             cls_valid_mask = (rcnn_cls_labels >= 0).float()
-            if scalar:
-                rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum() / torch.clamp(cls_valid_mask.sum(), min=1.0)
+            batch_size = forward_ret_dict['rcnn_cls_labels'].shape[0]
+            batch_loss_cls = batch_loss_cls.reshape(batch_size, -1)
+            cls_valid_mask = cls_valid_mask.reshape(batch_size, -1)
+            if 'rcnn_cls_weights' in forward_ret_dict:
+                rcnn_cls_weights = forward_ret_dict['rcnn_cls_weights']
+                rcnn_loss_cls_norm = (cls_valid_mask * rcnn_cls_weights).sum(-1)
+                rcnn_loss_cls = (batch_loss_cls * cls_valid_mask * rcnn_cls_weights).sum(-1) / torch.clamp(rcnn_loss_cls_norm, min=1.0)
             else:
-                batch_size = forward_ret_dict['rcnn_cls_labels'].shape[0]
-                batch_loss_cls = batch_loss_cls.reshape(batch_size, -1)
-                cls_valid_mask = cls_valid_mask.reshape(batch_size, -1)
-                if 'rcnn_cls_weights' in forward_ret_dict:
-                    rcnn_cls_weights = forward_ret_dict['rcnn_cls_weights']
-                    rcnn_loss_cls_norm = (cls_valid_mask * rcnn_cls_weights).sum(-1)
-                    rcnn_loss_cls = (batch_loss_cls * cls_valid_mask * rcnn_cls_weights).sum(-1) / torch.clamp(rcnn_loss_cls_norm, min=1.0)
-                else:
-                    rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
+                rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
         elif loss_cfgs.CLS_LOSS == 'CrossEntropy':
             batch_loss_cls = F.cross_entropy(rcnn_cls, rcnn_cls_labels, reduction='none', ignore_index=-1)
             cls_valid_mask = (rcnn_cls_labels >= 0).float()
-            if scalar:
-                rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum() / torch.clamp(cls_valid_mask.sum(), min=1.0)
-            else:
-                batch_size = forward_ret_dict['rcnn_cls_labels'].shape[0]
-                batch_loss_cls = batch_loss_cls.reshape(batch_size, -1)
-                cls_valid_mask = cls_valid_mask.reshape(batch_size, -1)
-                rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
+            batch_size = forward_ret_dict['rcnn_cls_labels'].shape[0]
+            batch_loss_cls = batch_loss_cls.reshape(batch_size, -1)
+            cls_valid_mask = cls_valid_mask.reshape(batch_size, -1)
+            rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
         elif loss_cfgs.CLS_LOSS == 'UnbiasedCrossEntropy':
 
             tau = self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS.get('unbiased_ce_tau', 1.0)
@@ -376,7 +368,7 @@ class RoIHeadTemplate(nn.Module):
 
         rcnn_loss_cls = rcnn_loss_cls * loss_cfgs.LOSS_WEIGHTS['rcnn_cls_weight']
         tb_dict = {
-            'rcnn_loss_cls': rcnn_loss_cls.item() if scalar else rcnn_loss_cls
+            'rcnn_loss_cls': rcnn_loss_cls
         }
         return rcnn_loss_cls, tb_dict
 
@@ -468,7 +460,7 @@ class RoIHeadTemplate(nn.Module):
 
         return unlabeled_rcnn_cls_weights
 
-    def get_loss(self, tb_dict=None, scalar=True):
+    def get_loss(self, tb_dict=None):
         tb_dict = {} if tb_dict is None else tb_dict
 
         if not self.model_cfg.ENABLE_SOFT_TEACHER or self.model_cfg.TARGET_CONFIG.DISABLE_ST_WEIGHTS:
@@ -478,22 +470,19 @@ class RoIHeadTemplate(nn.Module):
             unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
             self.forward_ret_dict['rcnn_cls_weights'][unlabeled_inds] = self._get_reliability_weight(unlabeled_inds)
 
-        if self.model_cfg.get("ENABLE_EVAL", None):
+        if 'rcnn_roi_metrics' in metrics_registry.tags():
             # update_metrics(self.forward_ret_dict, mask_type='reg')
-            metrics_pred_types = self.model_cfg.get("METRICS_PRED_TYPES", None)
-            if metrics_pred_types is not None:
-                update_metrics(self.forward_ret_dict, mask_type='cls')
+            metrics_input = get_roi_metrics_input(self.forward_ret_dict, mask_type='cls')
+            metrics_registry.get('rcnn_roi_metrics').update(**metrics_input)
 
-        rcnn_loss_cls, cls_tb_dict = self.get_box_cls_layer_loss(self.forward_ret_dict, scalar=scalar)
-        rcnn_loss_reg, reg_tb_dict = self.get_box_reg_layer_loss(self.forward_ret_dict, scalar=scalar)
+        rcnn_loss_cls, cls_tb_dict = self.get_box_cls_layer_loss(self.forward_ret_dict)
+        rcnn_loss_reg, reg_tb_dict = self.get_box_reg_layer_loss(self.forward_ret_dict)
         rcnn_loss = rcnn_loss_cls + rcnn_loss_reg
         tb_dict.update(cls_tb_dict)
         tb_dict.update(reg_tb_dict)
-        tb_dict['rcnn_loss'] = rcnn_loss.item() if scalar else rcnn_loss
-        if scalar:
-            return rcnn_loss, tb_dict
-        else:
-            return rcnn_loss_cls, rcnn_loss_reg, tb_dict
+        tb_dict['rcnn_loss'] = rcnn_loss
+
+        return rcnn_loss_cls, rcnn_loss_reg, tb_dict
 
     def generate_predicted_boxes(self, batch_size, rois, cls_preds, box_preds):
         """

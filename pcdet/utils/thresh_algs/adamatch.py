@@ -56,7 +56,7 @@ class AdaMatch(Metric):
         self.temperature = configs.get('TEMPERATURE', 1)  # TODO: Both temperatures should be tuned
         self.temperature_sa = configs.get('TEMPERATURE_SA', 1)
         self.ulb_ratio = configs.get('ULB_RATIO', 0.5)
-
+        self.joint_dist_align = configs.get('JOINT_DIST_ALIGN', False)
         self.enable_ulb_cls_dist_loss = configs.get('ENABLE_ULB_CLS_DIST_LOSS', False)
         self.states_name = ['sem_scores_wa', 'conf_scores_wa', 'gt_labels_wa']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
@@ -68,7 +68,7 @@ class AdaMatch(Metric):
 
         # mean_p_model aka p_target (_lbl(mean_p_model)) and p_model (_ulb(mean_p_model))
         self.mean_p_model = {s_name: None for s_name in self.states_name}
-        self.fg_mean_p_model_sa = None
+        self.mean_p_conf_model = {s_name: None for s_name in self.states_name}
         self.mean_p_max_model = {s_name: None for s_name in self.states_name}
         self.labels_hist = {s_name: None for s_name in self.states_name}
         self.ratio = {'AdaMatch': None}
@@ -102,26 +102,27 @@ class AdaMatch(Metric):
 
         return accumulated_metrics
 
-    def _get_mean_p_max_model_and_label_hist(self, max_scores, labels, fg_mask, hist_minlength=3, split=None, type='micro'):
+    def _get_mean_p_max_model_and_label_hist(self, max_scores, labels, mask, hist_minlength=3, split=None, type='micro'):
         if split is None:
             split = ['lbl', 'ulb']
         if isinstance(split, str) and split in ['lbl', 'ulb']:
             _split = _lbl if split == 'lbl' else _ulb
-            fg_max_scores = _split(max_scores, fg_mask)
-            fg_labels = _split(labels, fg_mask)
-            p_max_model = fg_labels.new_zeros(hist_minlength, dtype=fg_max_scores.dtype).scatter_add_(0, fg_labels, fg_max_scores)
-            fg_labels_hist = torch.bincount(fg_labels, minlength=hist_minlength)
-            mean_p_max_classwise = p_max_model / (fg_labels_hist + 1e-6)
+            max_scores = _split(max_scores, mask)
+            labels = _split(labels, mask)
+            labels_hist = torch.bincount(labels, minlength=hist_minlength)
+            p_max_model = labels.new_zeros(hist_minlength, dtype=max_scores.dtype).scatter_add_(0, labels, max_scores)
+            mean_p_max_classwise = p_max_model / (labels_hist + 1e-6)
+
             if type == 'micro':
-                p_max_model = p_max_model.sum() / fg_labels_hist.sum()
+                p_max_model = p_max_model.sum() / labels_hist.sum()
             elif type == 'macro':
                 p_max_model = mean_p_max_classwise.mean()
 
-            fg_labels_hist = fg_labels_hist / fg_labels_hist.sum()
-            return p_max_model, fg_labels_hist, mean_p_max_classwise
+            labels_hist = labels_hist / labels_hist.sum()
+            return p_max_model, labels_hist, mean_p_max_classwise
         elif isinstance(split, list) and len(split) == 2:
-            p_s0, h_s0, pc_s0 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask, hist_minlength=hist_minlength, split=split[0], type=type)
-            p_s1, h_s1, pc_s1 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, fg_mask, hist_minlength=hist_minlength, split=split[1], type=type)
+            p_s0, h_s0, pc_s0 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, mask, hist_minlength=hist_minlength, split=split[0], type=type)
+            p_s1, h_s1, pc_s1 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, mask, hist_minlength=hist_minlength, split=split[1], type=type)
             return torch.vstack([p_s0, p_s1]).squeeze(), torch.vstack([h_s0, h_s1]), torch.vstack([pc_s0, pc_s1])
         else:
             raise ValueError(f"Invalid split type: {split}")
@@ -136,9 +137,11 @@ class AdaMatch(Metric):
         acc_metrics = self._accumulate_metrics()
         for sname in ['sem_scores_wa']:
             sem_scores = acc_metrics[sname]
-
+            conf_scores = acc_metrics['conf_scores_wa']
             padding_mask = torch.logical_not(torch.all(sem_scores == 0, dim=-1))
             sem_scores = torch.softmax(sem_scores / (self.temperature_sa if '_sa' in sname else self.temperature), dim=-1)
+            if self.joint_dist_align:
+                sem_scores = sem_scores * conf_scores.unsqueeze(-1)
             max_scores, labels = torch.max(sem_scores, dim=-1)
 
             hist_minlength = sem_scores.shape[-1]
@@ -147,9 +150,14 @@ class AdaMatch(Metric):
             mean_p_model_ulb = _ulb(sem_scores, padding_mask).mean(dim=0)
             mean_p_model = torch.vstack([mean_p_model_lbl, mean_p_model_ulb])
 
+            mean_p_conf_model_lbl = _lbl(conf_scores, padding_mask).mean(dim=0)
+            mean_p_conf_model_ulb = _ulb(conf_scores, padding_mask).mean(dim=0)
+            mean_p_conf_model = torch.vstack([mean_p_conf_model_lbl, mean_p_conf_model_ulb])
+
             self._update_ema('mean_p_max_model', mean_p_max_model, sname)
             self._update_ema('labels_hist', labels_hist, sname)
             self._update_ema('mean_p_model', mean_p_model, sname)
+            self._update_ema('mean_p_conf_model', mean_p_conf_model, sname)
 
             results[f'mean_p_max_model_classwise_lbl/{sname}'] = self._arr2dict(_lbl(mean_p_max_model_classwise), ignore_zeros=True)
             results[f'mean_p_max_model_classwise_ulb/{sname}'] = self._arr2dict(_ulb(mean_p_max_model_classwise), ignore_zeros=True)
@@ -183,13 +191,14 @@ class AdaMatch(Metric):
         results[f'mean_p_max_model_ulb/{sname}'] = _ulb(self.mean_p_max_model[sname])
         results[f'labels_hist_lbl/{sname}'] = self._arr2dict(_lbl(self.labels_hist[sname]))
         results[f'labels_hist_ulb/{sname}'] = self._arr2dict(_ulb(self.labels_hist[sname]))
-
-        unbiased_p_model = self.mean_p_model[sname] / self.labels_hist[sname]
-        unbiased_p_model = unbiased_p_model / unbiased_p_model.sum(dim=-1, keepdim=True)
-        results[f'unbiased_p_model_lbl/{sname}'] = self._arr2dict(_lbl(unbiased_p_model))
-        results[f'unbiased_p_model_ulb/{sname}'] = self._arr2dict(_ulb(unbiased_p_model))
+        results[f'mean_p_conf_model_lbl/{sname}'] = _lbl(self.mean_p_conf_model[sname])
+        results[f'mean_p_conf_model_ulb/{sname}'] = _ulb(self.mean_p_conf_model[sname])
         results[f'mean_p_model_lbl/{sname}'] = self._arr2dict(_lbl(self.mean_p_model[sname]))
         results[f'mean_p_model_ulb/{sname}'] = self._arr2dict(_ulb(self.mean_p_model[sname]))
+        # unbiased_p_model = self.mean_p_model[sname] / self.labels_hist[sname]
+        # unbiased_p_model = unbiased_p_model / unbiased_p_model.sum(dim=-1, keepdim=True)
+        # results[f'unbiased_p_model_lbl/{sname}'] = self._arr2dict(_lbl(unbiased_p_model))
+        # results[f'unbiased_p_model_ulb/{sname}'] = self._arr2dict(_ulb(unbiased_p_model))
 
 
     def draw_dist_plots(self, max_scores, labels, fg_mask, tag, meta_info=''):
@@ -232,23 +241,27 @@ class AdaMatch(Metric):
         prob = getattr(self, p_name)
         prob[tag] = probs if prob[tag] is None else self.momentum * prob[tag] + (1 - self.momentum) * probs
 
-    def get_mask(self, logits):
+    def get_mask(self, conf_scores, sem_logits):
         assert self.thresh_method in ['AdaMatch', 'FreeMatch', 'DebiasedPL'],\
             f'{self.thresh_method} not in list [AdaMatch, FreeMatch, SoftMatch, DebiasedPL]'
 
         if self.iteration_count == 0:
-            scores = torch.softmax(logits / self.temperature, dim=-1)
+            scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            if self.joint_dist_align:
+                scores = scores * conf_scores.unsqueeze(-1)
             max_scores, labels = torch.max(scores, dim=-1)
             return max_scores > torch.ones_like(max_scores) / len(self.class_names), scores
 
         if self.thresh_method == 'AdaMatch':
-            scores = torch.softmax(logits / self.temperature, dim=-1)
+            scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            if self.joint_dist_align:
+                scores = scores * conf_scores.unsqueeze(-1)
             scores = self.rectify_sem_scores(scores)
             max_scores, labels = torch.max(scores, dim=-1)
             return max_scores > self._get_threshold(tag=self.lab_thresh_tag), scores
 
         elif self.thresh_method == 'FreeMatch':
-            scores = torch.softmax(logits / self.temperature, dim=-1)
+            scores = torch.softmax(sem_logits / self.temperature, dim=-1)
             max_scores, labels = torch.max(scores, dim=-1)
             thresh = self._get_threshold()
             thresh = thresh.repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
@@ -259,7 +272,7 @@ class AdaMatch(Metric):
             # I guess the rect_logits can be equivalently implemented as:
             # rect_logits = logits - lambda * torch.log(_ulb(self.mean_p_model['sem_scores_wa']))
             # where lambda is a hyperparameter proportional to the temperature.
-            rect_logits = logits / self.temperature - torch.log(_ulb(self.mean_p_model['sem_scores_wa']))
+            rect_logits = sem_logits / self.temperature - torch.log(_ulb(self.mean_p_model['sem_scores_wa']))
             scores = torch.softmax(rect_logits, dim=-1)
             max_scores, labels = torch.max(scores, dim=-1)
             thresh = self._get_threshold()

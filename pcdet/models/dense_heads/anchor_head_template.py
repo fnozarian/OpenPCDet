@@ -98,7 +98,7 @@ class AnchorHeadTemplate(nn.Module):
         )
         return targets_dict
 
-    def get_cls_layer_loss(self, scalar=True):
+    def get_cls_layer_loss(self):
         cls_preds = self.forward_ret_dict['cls_preds']
         box_cls_labels = self.forward_ret_dict['box_cls_labels']
         batch_size = int(cls_preds.shape[0])
@@ -127,18 +127,15 @@ class AnchorHeadTemplate(nn.Module):
         cls_preds = cls_preds.view(batch_size, -1, self.num_class)
         one_hot_targets = one_hot_targets[..., 1:]
         cls_loss_src = self.cls_loss_func(cls_preds, one_hot_targets, weights=cls_weights)  # [N, M]
-        if scalar:
-            cls_loss = cls_loss_src.sum() / batch_size
-            rpn_acc_cls = ((cls_preds.max(-1)[1] + 1) == cls_targets.long()).sum().float() / \
-                          torch.clamp((cls_targets > 0).sum().float(), min=1.0)
-        else:
-            cls_loss = cls_loss_src.reshape(batch_size, -1).sum(-1)
-            rpn_acc_cls = ((cls_preds.max(-1)[1] + 1) == cls_targets.long()).view(batch_size, -1).sum(-1).float() / \
-                          torch.clamp((cls_targets > 0).view(batch_size, -1).sum(-1).float(), min=1.0)
+
+        cls_loss = cls_loss_src.reshape(batch_size, -1).sum(-1)
+        correct_preds = (cls_preds.max(-1)[1] + 1) == cls_targets.long()
+        rpn_acc_cls = (correct_preds & positives).sum(-1).float() / torch.clamp(positives.sum(-1).float(), min=1.0)
 
         cls_loss = cls_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['cls_weight']
         tb_dict = {
-            'rpn_loss_cls': cls_loss.item() if scalar else cls_loss,
+            'rpn_loss_cls': cls_loss,
+            'rpn_acc_cls': rpn_acc_cls
         }
 
         return cls_loss, tb_dict
@@ -168,7 +165,7 @@ class AnchorHeadTemplate(nn.Module):
             dir_cls_targets = dir_targets
         return dir_cls_targets
 
-    def get_box_reg_layer_loss(self, scalar=True):
+    def get_box_reg_layer_loss(self):
         box_preds = self.forward_ret_dict['box_preds']
         box_dir_cls_preds = self.forward_ret_dict.get('dir_cls_preds', None)
         box_reg_targets = self.forward_ret_dict['box_reg_targets']
@@ -196,15 +193,13 @@ class AnchorHeadTemplate(nn.Module):
         # sin(a - b) = sinacosb-cosasinb
         box_preds_sin, reg_targets_sin = self.add_sin_difference(box_preds, box_reg_targets)
         loc_loss_src = self.reg_loss_func(box_preds_sin, reg_targets_sin, weights=reg_weights)  # [N, M]
-        if scalar:
-            loc_loss = loc_loss_src.sum() / batch_size
-        else:
-            loc_loss = loc_loss_src.reshape(batch_size, -1).sum(-1)
+
+        loc_loss = loc_loss_src.reshape(batch_size, -1).sum(-1)
 
         loc_loss = loc_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['loc_weight']
         box_loss = loc_loss
         tb_dict = {
-            'rpn_loss_loc': loc_loss.item() if scalar else loc_loss
+            'rpn_loss_loc': loc_loss
         }
 
         if box_dir_cls_preds is not None:
@@ -218,29 +213,23 @@ class AnchorHeadTemplate(nn.Module):
             weights = positives.type_as(dir_logits)
             weights /= torch.clamp(weights.sum(-1, keepdim=True), min=1.0)
             dir_loss = self.dir_loss_func(dir_logits, dir_targets, weights=weights)
-            if scalar:
-                dir_loss = dir_loss.sum() / batch_size
-            else:
-                dir_loss = dir_loss.reshape(batch_size, -1).sum(-1)
+
+            dir_loss = dir_loss.reshape(batch_size, -1).sum(-1)
 
             dir_loss = dir_loss * self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS['dir_weight']
             box_loss += dir_loss
-            tb_dict['rpn_loss_dir'] = dir_loss.item() if scalar else dir_loss
+            tb_dict['rpn_loss_dir'] = dir_loss
 
         return box_loss, tb_dict
 
-    def get_loss(self, scalar=True):
-        cls_loss, tb_dict = self.get_cls_layer_loss(scalar=scalar)
-        box_loss, tb_dict_box = self.get_box_reg_layer_loss(scalar=scalar)
+    def get_loss(self):
+        cls_loss, tb_dict = self.get_cls_layer_loss()
+        box_loss, tb_dict_box = self.get_box_reg_layer_loss()
         tb_dict.update(tb_dict_box)
         rpn_loss = cls_loss + box_loss
 
-        if scalar:
-            tb_dict['rpn_loss'] = rpn_loss.item()
-            return rpn_loss, tb_dict
-        else:
-            tb_dict['rpn_loss'] = rpn_loss
-            return cls_loss, box_loss, tb_dict
+        tb_dict['rpn_loss'] = rpn_loss
+        return cls_loss, box_loss, tb_dict
 
     def generate_predicted_boxes(self, batch_size, cls_preds, box_preds, dir_cls_preds=None):
         """

@@ -54,7 +54,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             feature_bank_registry.register(tag=bank_configs["NAME"], **bank_configs)
 
         for metrics_configs in model_cfg.get("METRICS_BANK_LIST", []):
-            metrics_registry.register(tag=metrics_configs["NAME"], dataset=self.dataset, **metrics_configs)
+            if metrics_configs.ENABLE:
+                metrics_registry.register(tag=metrics_configs["NAME"], dataset=self.dataset, **metrics_configs)
 
         vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores',
                          'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels', 'iteration']
@@ -87,7 +88,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             sample_mask = batch_dict['points'][:, 0].int() == ix
             points = batch_dict['points'][sample_mask, 1:4]
             gt_feat = batch_gt_feats[ix][nonzero_mask]
-            gt_labels = gt_boxes[:, -1].int() - 1
+            gt_labels = gt_boxes[:, 7].int() - 1
             gt_boxes = gt_boxes[:, :7]
             ins_idxs = batch_dict['instance_idx'][ix][nonzero_mask].int()
             smpl_id = torch.from_numpy(batch_dict['frame_id'].astype(np.int32))[ix].to(gt_boxes.device)
@@ -187,21 +188,26 @@ class PVRCNN_SSL(Detector3DTemplate):
         batch_dict_ema = self._split_batch(batch_dict, tag='ema')
         self._gen_pseudo_labels(batch_dict_ema)
         pls_teacher_wa, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
-        pseudo_boxes, pseudo_scores, pseudo_sem_scores, pseudo_sem_logits = self._filter_pls_conf_scores(pls_teacher_wa, ulb_inds)
-        ulb_pred_labels = torch.cat([pb[:, -1] for pb in pseudo_boxes]).int().detach()
+        pl_boxes, pl_scores, pl_sem_scores, pl_sem_logits = self._filter_pls_conf_scores(pls_teacher_wa, ulb_inds)
+        ulb_pred_labels = torch.cat([pb[:, -1] for pb in pl_boxes]).int().detach()
         pl_cls_count_pre_filter = torch.bincount(ulb_pred_labels, minlength=4)[1:]
 
         # Semantic Filtering
-        filtering_masks, ps_sem_scores_rect = self._filter_pls_sem_scores(pseudo_sem_logits)
+        filtering_masks, pl_sem_scores_rect = self._filter_pls_sem_scores(pl_scores, pl_sem_logits)
 
-        self.update_metrics(pseudo_boxes, ps_sem_scores_rect, filtering_masks, batch_dict_ema['gt_boxes'][ulb_inds])
+        # TODO(farzad): Set the scores of pseudo-labels that their argmax is changed after rectification to zero.
+        pl_weights = [scores_rect.max(-1, keepdim=True)[0] for scores_rect in pl_sem_scores_rect]
+        # pl_weights = [scores.new_ones(scores.shape[0], 1) for scores in pl_sem_scores_rect]
+        if 'pl_metrics' in metrics_registry.tags():
+            metrics_input = self.get_pl_metrics_input(pl_boxes, pl_sem_scores_rect, pl_weights, filtering_masks, batch_dict_ema['gt_boxes'][ulb_inds])
+            metrics_registry.get('pl_metrics').update(**metrics_input)
 
-        pseudo_boxes = [boxes[mask] for boxes, mask in zip(pseudo_boxes, filtering_masks)]
+        pl_boxes = [torch.hstack([boxes[mask], weights[mask]]) for boxes, weights, mask in zip(pl_boxes, pl_weights, filtering_masks)]
 
         # Comment the following line to use gt boxes for unlabeled data!
-        self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, ulb_inds, lbl_inds)
+        self._fill_with_pseudo_labels(batch_dict, pl_boxes, ulb_inds, lbl_inds)
 
-        pl_cls_count_post_filter = torch.bincount(batch_dict['gt_boxes'][ulb_inds][...,-1].view(-1).int().detach(), minlength=4)[1:]
+        pl_cls_count_post_filter = torch.bincount(batch_dict['gt_boxes'][ulb_inds][...,7].view(-1).int().detach(), minlength=4)[1:]
         gt_cls_count = torch.bincount(batch_dict['ori_unlabeled_boxes'][...,-1].view(-1).int().detach(), minlength=4)[1:]
 
         pl_count_dict = {'avg_num_gts_per_sample': self._arr2dict(gt_cls_count / len(ulb_inds)),  # backward compatibility. Added to stats_utils. Will be removed later.
@@ -233,7 +239,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             pl_scores_lbl = [pls_teacher_wa[i]['pred_scores'] for i in lbl_inds]
             pl_sem_logits_lbl = [pls_teacher_wa[i]['pred_sem_scores_logits'] for i in lbl_inds]
             conf_scores_wa_lbl, sem_scores_wa_lbl = self._get_thresh_alg_inputs(pl_scores_lbl, pl_sem_logits_lbl)
-            conf_scores_wa_ulb, sem_scores_wa_ulb = self._get_thresh_alg_inputs(pseudo_scores, pseudo_sem_logits)
+            conf_scores_wa_ulb, sem_scores_wa_ulb = self._get_thresh_alg_inputs(pl_scores, pl_sem_logits)
             thresh_inputs['conf_scores_wa'] = torch.cat([conf_scores_wa_lbl, conf_scores_wa_ulb])
             thresh_inputs['sem_scores_wa'] = torch.cat([sem_scores_wa_lbl, sem_scores_wa_ulb])
             thresh_inputs['gt_labels_wa'] = self.pad_tensor(batch_dict_ema['gt_boxes'][..., 7:8], max_len=100).detach().clone()
@@ -255,9 +261,9 @@ class PVRCNN_SSL(Detector3DTemplate):
                 self._add_teacher_scores(batch_dict, batch_dict_ema, ulb_inds)
 
         disp_dict = {}
-        loss_rpn_cls, loss_rpn_box, tb_dict = self.pv_rcnn.dense_head.get_loss(scalar=False)
-        loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict, scalar=False)
-        loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict, scalar=False)
+        loss_rpn_cls, loss_rpn_box, tb_dict = self.pv_rcnn.dense_head.get_loss()
+        loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict)
+        loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict)
 
         loss = 0
         # Use the same reduction method as the baseline model (3diou) by the default
@@ -317,7 +323,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         gt_boxes = batch_dict['gt_boxes']
         B, N = gt_boxes.shape[:2]
         sa_pl_feats = self.pv_rcnn.roi_head.pool_features(batch_dict, use_gtboxes=True).view(B * N, -1)
-        pl_labels = batch_dict['gt_boxes'][..., -1].view(-1).long() - 1
+        pl_labels = batch_dict['gt_boxes'][..., 7].view(-1).long() - 1
         proto_cont_loss = bank.get_proto_contrastive_loss(sa_pl_feats, pl_labels)
         if proto_cont_loss is None:
             return
@@ -452,7 +458,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         file_path = os.path.join(output_dir, 'scores.pkl')
         pickle.dump(self.val_dict, open(file_path, 'wb'))
 
-    def update_metrics(self, rois, sem_scores, filtering_masks, gts, tag='pl_metrics'):
+    @staticmethod
+    def get_pl_metrics_input(rois, sem_scores, weights, filtering_masks, gts):
         metrics_input = defaultdict(list)
         bs = len(rois)
         for i in range(bs):
@@ -461,15 +468,17 @@ class PVRCNN_SSL(Detector3DTemplate):
                 # TODO: fix stats for no preds case
                 smpl_rois = gts[i].new_zeros((1, 8)).float().to(gts[i].device)  # dummy rois
                 smpl_scores = gts[i].new_zeros((1, 3)).float().to(gts[i].device)
+                smpl_weights = gts[i].new_zeros((1, 1)).float().to(gts[i].device)
             else:
                 smpl_rois = rois[i][smpl_mask].clone().detach()
                 smpl_scores = sem_scores[i][smpl_mask].clone().detach()
+                smpl_weights = weights[i][smpl_mask].clone().detach()
 
             metrics_input['rois'].append(smpl_rois)
             metrics_input['roi_scores'].append(smpl_scores)
             metrics_input['ground_truths'].append(gts[i].clone().detach())
-
-        metrics_registry.get(tag).update(**metrics_input)
+            metrics_input['roi_weights'].append(smpl_weights)
+        return metrics_input
 
     @staticmethod
     def _unpack_preds(pred_dicts, ulb_inds):
@@ -519,17 +528,17 @@ class PVRCNN_SSL(Detector3DTemplate):
                 sem_scores_logits_list.append(sem_scores_logits[mask])
                 pseudo_scores.append(scores[mask])
         return pseudo_boxes, pseudo_scores, pseudo_sem_scores, sem_scores_logits_list
-    def _filter_pls_sem_scores(self, batch_roi_sem_scores_logtis):
+    def _filter_pls_sem_scores(self, batch_conf_scores, batch_sem_logtis):
         masks = []
         scores_list = []
-        for logits in batch_roi_sem_scores_logtis:
+        for conf_scores, sem_logits in zip(batch_conf_scores, batch_sem_logtis):
             if self.thresh_alg:
-                mask, scores = self.thresh_alg.get_mask(logits)
+                mask, scores = self.thresh_alg.get_mask(conf_scores, sem_logits)
             else:  # 3dioumatch baseline
-                labels = torch.argmax(logits, dim=1)
-                scores = torch.sigmoid(logits)
+                labels = torch.argmax(sem_logits, dim=1)
+                scores = torch.sigmoid(sem_logits)
                 max_scores = scores.max(dim=-1)[0]
-                sem_conf_thresh = torch.tensor(self.sem_thresh, device=logits.device).unsqueeze(0).expand_as(logits).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
+                sem_conf_thresh = torch.tensor(self.sem_thresh, device=sem_logits.device).unsqueeze(0).expand_as(sem_logits).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
                 mask = max_scores > sem_conf_thresh
 
             masks.append(mask)
@@ -541,6 +550,13 @@ class PVRCNN_SSL(Detector3DTemplate):
         key = 'gt_boxes' if key is None else key
         max_box_num = batch_dict['gt_boxes'].shape[1]
 
+        # Expand the gt_boxes to have the same shape as the pseudo_boxes
+        gt_scores = torch.zeros((batch_dict['gt_boxes'].shape[0], max_box_num, 1), device=batch_dict['gt_boxes'].device)
+        batch_dict['gt_boxes'] = torch.cat([batch_dict['gt_boxes'], gt_scores], dim=-1)
+        # Make sure that scores of labeled boxes are always 1, except for the padding rows which should remain zero.
+        valid_inds_lbl = torch.logical_not(torch.eq(batch_dict['gt_boxes'][labeled_inds], 0).all(dim=-1)).nonzero().long()
+        batch_dict['gt_boxes'][valid_inds_lbl[:, 0], valid_inds_lbl[:, 1], 8] = 1
+
         # Ignore the count of pseudo boxes if filled with default values(zeros) when no preds are made
         max_pseudo_box_num = max(
             [torch.logical_not(torch.all(ps_box == 0, dim=-1)).sum().item() for ps_box in pseudo_boxes])
@@ -549,24 +565,23 @@ class PVRCNN_SSL(Detector3DTemplate):
             for i, pseudo_box in enumerate(pseudo_boxes):
                 diff = max_box_num - pseudo_box.shape[0]
                 if diff > 0:
-                    pseudo_box = torch.cat([pseudo_box, torch.zeros((diff, 8), device=pseudo_box.device)], dim=0)
+                    pseudo_box = torch.cat([pseudo_box, torch.zeros((diff, pseudo_box.shape[-1]), device=pseudo_box.device)], dim=0)
                 batch_dict[key][unlabeled_inds[i]] = pseudo_box
         else:
             ori_boxes = batch_dict['gt_boxes']
             ori_ins_ids = batch_dict['instance_idx']
-            new_boxes = torch.zeros((ori_boxes.shape[0], max_pseudo_box_num, ori_boxes.shape[2]),
-                                    device=ori_boxes.device)
+            new_boxes = torch.zeros((ori_boxes.shape[0], max_pseudo_box_num, ori_boxes.shape[-1]), device=ori_boxes.device)
             new_ins_idx = torch.full((ori_boxes.shape[0], max_pseudo_box_num), fill_value=-1, device=ori_boxes.device)
             for idx in labeled_inds:
                 diff = max_pseudo_box_num - ori_boxes[idx].shape[0]
-                new_box = torch.cat([ori_boxes[idx], torch.zeros((diff, 8), device=ori_boxes[idx].device)], dim=0)
+                new_box = torch.cat([ori_boxes[idx], torch.zeros((diff, ori_boxes.shape[-1]), device=ori_boxes[idx].device)], dim=0)
                 new_boxes[idx] = new_box
                 new_ins_idx[idx] = torch.cat([ori_ins_ids[idx], -torch.ones((diff,), device=ori_boxes[idx].device)], dim=0)
             for i, pseudo_box in enumerate(pseudo_boxes):
 
                 diff = max_pseudo_box_num - pseudo_box.shape[0]
                 if diff > 0:
-                    pseudo_box = torch.cat([pseudo_box, torch.zeros((diff, 8), device=pseudo_box.device)], dim=0)
+                    pseudo_box = torch.cat([pseudo_box, torch.zeros((diff, pseudo_box.shape[-1]), device=pseudo_box.device)], dim=0)
                 new_boxes[unlabeled_inds[i]] = pseudo_box
             batch_dict[key] = new_boxes
             batch_dict['instance_idx'] = new_ins_idx

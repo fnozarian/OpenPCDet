@@ -164,10 +164,7 @@ MODEL:
         ENABLE_PROTO_CONTRASTIVE_LOSS: False
         PROTO_CONTRASTIVE_LOSS_WEIGHT: 1.0
         ENABLE_SOFT_TEACHER: False
-        # ULB_CLS_DIST_LOSS is the current experimental feature we are working on not DebiasedPL, Adamatch or FreeMatch!
         ENABLE_ULB_CLS_DIST_LOSS: False
-        ENABLE_EVAL: False
-        METRICS_PRED_TYPES: [roi_pl_gt]
         SHARED_FC: [256, 256]
         CLS_FC: [256, 256]
         REG_FC: [256, 256]
@@ -280,11 +277,13 @@ MODEL:
           MOMENTUM: 0.9
           FILTER_MIN_POINTS_IN_GT: 20
     METRICS_BANK_LIST:
-        - NAME: rcnn_roi_pl_gt_metrics_cls
+        - NAME: rcnn_roi_metrics
+          ENABLE: False
           RESET_STATE_INTERVAL: 32
           BG_THRESH: 0.25
         - NAME: pl_metrics
-          RESET_STATE_INTERVAL: 16
+          ENABLE: True
+          RESET_STATE_INTERVAL: 32
           BG_THRESH: 0.25
     ADAPTIVE_THRESH_CONFIG:
       AdaMatch:
@@ -299,7 +298,7 @@ MODEL:
         FIXED_THRESH: 0.8
         MOMENTUM: 0.99  # since reset state interval reduced to 1, stats are more noisy and need more momentum
         SEM_FG_THRESH: 0.5  # [0.65, 0.40, 0.45]
-        RESET_STATE_INTERVAL: 8  # with bs=4, this is less noisy than 1
+        RESET_STATE_INTERVAL: 32  # with bs=4, this is less noisy than 1
         ENABLE_PLOTS: False
 
 OPTIMIZATION:
