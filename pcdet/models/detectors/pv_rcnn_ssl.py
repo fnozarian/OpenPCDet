@@ -153,7 +153,6 @@ class PVRCNN_SSL(Detector3DTemplate):
         batch_dict_ema['cls_preds_normalized'] = True
 
     def _gen_pseudo_labels(self, batch_dict_ema, ulb_inds,lbl_inds):
-        batch_dict_sa = copy.deepcopy(batch_dict_ema)
         with torch.no_grad():
             # self.pv_rcnn_ema.eval()  # https://github.com/yezhen17/3DIoUMatch-PVRCNN/issues/6
             for cur_module in self.pv_rcnn_ema.module_list:
@@ -161,29 +160,13 @@ class PVRCNN_SSL(Detector3DTemplate):
                     batch_dict_ema = cur_module(batch_dict_ema, test_only=True)
                 except TypeError as e:
                     batch_dict_ema = cur_module(batch_dict_ema)
-        '''        
-        # Implementing supervised contrastive loss at Teacher
-        if self.model_cfg['ROI_HEAD'].get('ENABLE_INSTANCE_SUP_LOSS', False) and  self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_MODEL', False) =='Teacher':
 
-        #1.  @ Teacher : Obtain GT features over ema -
-            batch_dict_ema = self.pv_rcnn_ema.roi_head.forward(batch_dict_ema, test_only=True,use_gtboxes=True)
-
-            #2. Create strongly augmented batch_dict_sa
-            batch_dict_sa = self.apply_augmentation(batch_dict_sa, batch_dict_ema, lbl_inds, key='gt_boxes')
-
-            #3. @ Generate features for batch_dict_sa
-            for cur_module in self.pv_rcnn.module_list:
-                try:
-                    batch_dict_sa = cur_module(batch_dict_sa, test_only=True,use_gtboxes=True)
-                except TypeError as e:
-                    batch_dict_sa = cur_module(batch_dict_sa)        
-        '''
         if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
             self._rectify_pl_scores(batch_dict_ema, ulb_inds)
 
         pseudo_labels, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
 
-        return pseudo_labels, batch_dict_sa
+        return batch_dict_ema,pseudo_labels 
 
     @staticmethod
     def _split_ema_batch(batch_dict):
@@ -213,7 +196,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         batch_dict_ema = self._split_ema_batch(batch_dict)
         batch_dict_wa = copy.deepcopy(batch_dict_ema)
 
-        pseudo_labels, batch_dict_sa = self._gen_pseudo_labels(batch_dict_ema, ulb_inds,lbl_inds)
+        batch_dict_ema, pseudo_labels = self._gen_pseudo_labels(batch_dict_ema, ulb_inds,lbl_inds)
         pseudo_boxes, pseudo_scores, pseudo_sem_scores = self._filter_pseudo_labels(pseudo_labels, ulb_inds)
 
         self._fill_with_pseudo_labels(batch_dict, pseudo_boxes, ulb_inds, lbl_inds)
@@ -224,7 +207,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         for cur_module in self.pv_rcnn.module_list:
             batch_dict = cur_module(batch_dict)
         
-        if self.model_cfg['ROI_HEAD'].get('ENABLE_INSTANCE_SUP_LOSS', False) and  self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_MODEL', False) =='Student':
+        if self.model_cfg['ROI_HEAD'].get('ENABLE_INSTANCE_SUP_LOSS', False):
 
             #1. @Student - Get shared_features over strongly aug GTs
             batch_dict = self.pv_rcnn.roi_head.forward(batch_dict, test_only=True,use_gtboxes=True)
@@ -291,11 +274,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 loss += proto_cont_loss * self.model_cfg['ROI_HEAD']['PROTO_CONTRASTIVE_LOSS_WEIGHT']
                 tb_dict['proto_cont_loss'] = proto_cont_loss.item()
         if self.model_cfg['ROI_HEAD'].get('ENABLE_INSTANCE_SUP_LOSS', False):
-            #lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict,batch_dict_wa,lbl_inds,ulb_inds)
-            if self.model_cfg.ROI_HEAD.INSTANCE_CONTRASTIVE_LOSS_MODEL=='Teacher':
-                lbl_inst_cont_loss = self._get_instance_contrastive_loss(batch_dict_sa,batch_dict_ema,lbl_inds,ulb_inds)
-            elif self.model_cfg.ROI_HEAD.INSTANCE_CONTRASTIVE_LOSS_MODEL =='Student' :
-                lbl_inst_cont_loss, tb_dict = self._get_instance_contrastive_loss(tb_dict,batch_dict,batch_dict_wa,lbl_inds,ulb_inds)
+            lbl_inst_cont_loss, tb_dict = self._get_instance_contrastive_loss(tb_dict,batch_dict,batch_dict_wa,lbl_inds,ulb_inds)
             if lbl_inst_cont_loss is not None:
                 loss +=  lbl_inst_cont_loss * self.model_cfg['ROI_HEAD']['INSTANCE_CONTRASTIVE_LOSS_WEIGHT']
         tb_dict_ = self._prep_tb_dict(tb_dict, lbl_inds, lbl_inds, reduce_loss_fn)
@@ -491,7 +470,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         exp_logits = torch.exp(logits) * logits_mask # compute log_prob
         log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
         mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)         # compute mean of log-likelihood over positive
-
+        # Do ema update of mean_log_prob_pos?
+        
         #unscaled_loss
         unscaled_instloss_car = mean_log_prob_pos[[labels==1]].mean()
         unscaled_instloss_ped = mean_log_prob_pos[[labels==2]].mean()
@@ -501,6 +481,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         # batch_dict['unscaled_instloss_ped'] = unscaled_instloss_ped.unsqueeze(-1)
         # batch_dict['unscaled_instloss_cyc'] = unscaled_instloss_cyc.unsqueeze(-1)
 
+        #Role of temperature scaling in SupConLoss ... rescaling instance_loss by 0.1 to see results
         instance_loss = - ( temperature/ base_temperature) * mean_log_prob_pos # base_temperature only scales the loss, temperature sharpens / smoothes the loss
         #scaled_loss
         instloss_car = instance_loss[labels==1].mean()
