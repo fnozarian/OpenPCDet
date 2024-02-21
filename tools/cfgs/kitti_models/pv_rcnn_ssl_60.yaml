@@ -18,7 +18,7 @@ DATA_CONFIG:
               NUM_POINT_FEATURES: 4
               DATABASE_WITH_FAKELIDAR: False
               REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]
-              LIMIT_WHOLE_SCENE: True  # Temporarily enabled to fix KeyError bug in prototyping
+              LIMIT_WHOLE_SCENE: False  # Temporarily enabled to fix KeyError bug in prototyping
 
             - NAME: random_world_flip
               ALONG_AXIS_LIST: ['x']
@@ -161,14 +161,22 @@ MODEL:
         CLASS_AGNOSTIC: True
         ENABLE_VIS: False
         ENABLE_PROTO_CONTRASTIVE_LOSS: False
+        ENABLE_INSTANCE_SUP_LOSS: False
         PROTO_CONTRASTIVE_LOSS_WEIGHT: 1.0
+        INSTANCE_CONTRASTIVE_LOSS_WEIGHT: 1.0
+        INSTANCE_CONTRASTIVE_LOSS_START_EPOCH: 0
+        INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH: 60
+        TEMPERATURE : 1.0
+        INSTANCE_IDX: Labeled
+        NORMALIZATION: False
+        PROJECTOR : False
         ENABLE_SOFT_TEACHER: False
         ENABLE_ULB_CLS_DIST_LOSS: False
         ENABLE_EVAL: True
         METRICS_PRED_TYPES: [roi_pl_gt, pl_gt_metrics_before_filtering]
         ADAPTIVE_THRESH_CONFIG:
             NAME: AdaMatchThreshold
-            ENABLE: True
+            ENABLE: False
             PERCENT: 0.1
             MOMENTUM: 0.9
             PRE_FILTERING_THRESH: 0.1
@@ -179,6 +187,7 @@ MODEL:
             MU1: 0.1
             MU2: 0.9
         SHARED_FC: [256, 256]
+        PROJECTED_FC:  [256,256]  #[256,128]
         CLS_FC: [256, 256]
         REG_FC: [256, 256]
         DP_RATIO: 0.3

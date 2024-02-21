@@ -1,8 +1,10 @@
+import torch
 import torch.nn as nn
 from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
 from pcdet.utils.prototype_utils import feature_bank_registry
+import torch.nn.functional as F     # TODO - refactor imports
 
 
 class PVRCNNHead(RoIHeadTemplate):
@@ -18,6 +20,7 @@ class PVRCNNHead(RoIHeadTemplate):
 
         GRID_SIZE = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
         pre_channel = GRID_SIZE * GRID_SIZE * GRID_SIZE * num_c_out
+        pre_channel2 = GRID_SIZE * GRID_SIZE * GRID_SIZE * num_c_out
 
         shared_fc_list = []
         for k in range(0, self.model_cfg.SHARED_FC.__len__()):
@@ -31,7 +34,21 @@ class PVRCNNHead(RoIHeadTemplate):
             if k != self.model_cfg.SHARED_FC.__len__() - 1 and self.model_cfg.DP_RATIO > 0:
                 shared_fc_list.append(nn.Dropout(self.model_cfg.DP_RATIO))
 
-        self.shared_fc_layer = nn.Sequential(*shared_fc_list)
+        self.shared_fc_layer = nn.Sequential(*shared_fc_list) 
+
+        projected_fc_list = []
+        for k in range(0, self.model_cfg.PROJECTED_FC.__len__()):
+            projected_fc_list.extend([
+                nn.Conv1d(pre_channel2, self.model_cfg.PROJECTED_FC[k], kernel_size=1, bias=False),
+                nn.BatchNorm1d(self.model_cfg.PROJECTED_FC[k]),
+                nn.ReLU()
+            ])
+            pre_channel2 = self.model_cfg.PROJECTED_FC[k]
+
+            if k != self.model_cfg.PROJECTED_FC.__len__() - 1 and self.model_cfg.DP_RATIO > 0:
+                projected_fc_list.append(nn.Dropout(self.model_cfg.DP_RATIO))
+
+        self.projector_fc_layer = nn.Sequential(*projected_fc_list) # Using this layer's projections to calculate instance wise contrastive loss on
 
         self.cls_layers = self.make_fc_layers(
             input_channels=pre_channel, output_channels=self.num_class, fc_list=self.model_cfg.CLS_FC
@@ -79,7 +96,10 @@ class PVRCNNHead(RoIHeadTemplate):
 
         """
         batch_size = batch_dict['batch_size']
-        rois = batch_dict['gt_boxes'][..., 0:7] if use_gtboxes else batch_dict['rois']
+        if use_gtboxes:
+            rois = batch_dict['gt_boxes'][..., 0:7]
+        else:
+            rois = batch_dict['rois']
         point_coords = batch_dict["point_coords"]
         point_features = batch_dict["point_features"]
         point_cls_scores = batch_dict["point_cls_scores"]
@@ -145,7 +165,7 @@ class PVRCNNHead(RoIHeadTemplate):
 
         return pooled_features
 
-    def forward(self, batch_dict, test_only=False):
+    def forward(self, batch_dict, test_only=False,use_gtboxes=False):
         """
         :param input_data: input dict
         :return:
@@ -165,7 +185,21 @@ class PVRCNNHead(RoIHeadTemplate):
             targets_dict['ori_unlabeled_boxes'] = batch_dict['ori_unlabeled_boxes']
             targets_dict['points'] = batch_dict['points']
 
-        pooled_features = self.pool_features(batch_dict)
+        pooled_features = self.pool_features(batch_dict,use_gtboxes=use_gtboxes)
+        if use_gtboxes == True:
+            # batch_dict['pooled_features_gt'] = pooled_features
+            batch_size_rcnn = pooled_features.shape[0]
+            start_epoch = self.model_cfg['INSTANCE_CONTRASTIVE_LOSS_START_EPOCH']
+            stop_epoch = self.model_cfg['INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH']
+            if self.model_cfg.ENABLE_INSTANCE_SUP_LOSS==True and start_epoch<=batch_dict['cur_epoch']<stop_epoch: # normalize embedding and produce projected representation only when instance_sup_loss true.
+                
+                if self.model_cfg['NORMALIZATION']:
+                    # pooled_features dim : [GT_boxes,27648]
+                    pooled_features = F.normalize(pooled_features, dim = -1)
+                proj_features = pooled_features.clone().detach()
+                projected_features_gt = self.projector_fc_layer(proj_features.view(batch_size_rcnn, -1, 1))
+                batch_dict['shared_features_gt'] = projected_features_gt
+            return batch_dict
         batch_size_rcnn = pooled_features.shape[0]
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)

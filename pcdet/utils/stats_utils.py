@@ -5,7 +5,7 @@ import numpy as np
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 from sklearn.metrics import average_precision_score
 from matplotlib import pyplot as plt
-from tools.visual_utils import open3d_vis_utils as V
+# from tools.visual_utils import open3d_vis_utils as V
 # from pcdet.models.roi_heads.target_assigner.proposal_target_layer import ProposalTargetLayer
 # get_max_iou_with_same_class = ProposalTargetLayer.get_max_iou_with_same_class
 from torch.distributions import Categorical

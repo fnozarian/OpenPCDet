@@ -13,12 +13,12 @@ class FeatureBank(Metric):
         super().__init__()
         self.tag = kwargs.get('NAME', None)
 
-        self.temperature = kwargs.get('TEMPERATURE')
-        self.feat_size = kwargs.get('FEATURE_SIZE')
+        self.temperature = kwargs.get('TEMPERATURE',0.1)
+        self.feat_size = kwargs.get('FEATURE_SIZE',256)
         self.bank_size = kwargs.get('BANK_SIZE')  # e.g., num. of classes or labeled instances
-        self.momentum = kwargs.get('MOMENTUM')
+        self.momentum = kwargs.get('MOMENTUM',0.9)
         self.direct_update = kwargs.get('DIRECT_UPDATE')
-        self.reset_state_interval = kwargs.get('RESET_STATE_INTERVAL')  # reset the state when N unique samples are seen
+        self.reset_state_interval = kwargs.get('RESET_STATE_INTERVAL',37)  # reset the state when N unique samples are seen
         self.num_points_thresh = kwargs.get('FILTER_MIN_POINTS_IN_GT', 0)
 
         self.initialized = False
@@ -57,14 +57,28 @@ class FeatureBank(Metric):
             self.iterations.append(rois_iter)           # (N,)
 
     def compute(self):
-        unique_smpl_ids = torch.unique(torch.cat(self.smpl_ids))
+        try:
+            unique_smpl_ids = torch.unique(torch.cat((self.smpl_ids,), dim=0))
+        except:
+            unique_smpl_ids = torch.unique(torch.cat((self.smpl_ids), dim=0))
+            
         if len(unique_smpl_ids) < self.reset_state_interval:
             return None
-
-        features = torch.cat(self.feats)
-        labels = torch.cat(self.labels).int()
-        ins_ids = torch.cat(self.ins_ids).int().cpu().numpy()
-        iterations = torch.cat(self.iterations).int().cpu().numpy()
+        try:    
+            features = torch.cat((self.feats,), dim=0)
+            ins_ids = torch.cat((self.ins_ids,), dim=0).int().cpu().numpy()
+            labels = torch.cat((self.labels,), dim=0).int()
+            iterations = torch.cat((self.iterations,), dim=0).int().cpu().numpy()
+            ins_ids = torch.cat((self.ins_ids,), dim=0).int().cpu().numpy()
+            iterations = torch.cat((self.iterations,), dim=0).int().cpu().numpy()
+        except:
+            features = torch.cat((self.feats), dim=0)
+            ins_ids = torch.cat(self.ins_ids).int().cpu().numpy()
+            labels = torch.cat((self.labels), dim=0).int()
+            iterations = torch.cat(self.iterations).int().cpu().numpy()
+            ins_ids = torch.cat((self.ins_ids), dim=0).int().cpu().numpy()
+            iterations = torch.cat((self.iterations), dim=0).int().cpu().numpy()            
+        
         assert len(features) == len(labels) == len(ins_ids) == len(iterations), \
             "length of features, labels, ins_ids, and iterations should be the same"
         sorted_ins_ids, arg_sorted_ins_ids = np.sort(ins_ids), np.argsort(ins_ids)
@@ -79,7 +93,11 @@ class FeatureBank(Metric):
         for grouped_inds in inds_groupby_ins_ids:
             grouped_inds = grouped_inds[np.argsort(iterations[grouped_inds])]
             ins_id = ins_ids[grouped_inds[0]]
-            proto_id = self.insId_protoId_mapping[ins_id]
+            if ins_id in self.insId_protoId_mapping.keys():
+                proto_id = self.insId_protoId_mapping[ins_id]
+            else:
+                proto_id = len(self.insId_protoId_mapping)
+                self.insId_protoId_mapping[ins_id] = proto_id
             assert torch.allclose(labels[grouped_inds[0]], labels[grouped_inds]), "labels should be the same for the same instance id"
 
             if not self.initialized or self.direct_update:
@@ -87,9 +105,12 @@ class FeatureBank(Metric):
                 new_prototype = torch.mean(features[grouped_inds], dim=0, keepdim=True)  # TODO: maybe it'd be better to replaced it by the EMA
                 self.prototypes[proto_id] = new_prototype
             else:
-                for ind in grouped_inds:
-                    new_prototype = self.momentum * self.prototypes[proto_id] + (1 - self.momentum) * features[ind]
-                    self.prototypes[proto_id] = new_prototype
+                if proto_id < len(self.prototypes):
+                    for ind in grouped_inds:
+                        new_prototype = (self.momentum * self.prototypes[proto_id]) + ((1 - self.momentum) * features[ind])
+                else:
+                    new_prototype = torch.mean(features[grouped_inds], dim=0, keepdim=True)  # NOTE: when it finds a new instance_idx,(edge case during mask boxes out of range)
+                    self.prototypes = torch.cat([self.prototypes,new_prototype])
         self._update_classwise_prototypes()
         self.initialized = True
         self.reset()
@@ -140,7 +161,7 @@ class FeatureBank(Metric):
         :return:
         """
         if not self.initialized:
-            return None
+            return F.normalize(feats) @ torch.zeros(1,256).t().to(feats.device)
         sim_scores = F.normalize(feats) @ F.normalize(self.classwise_prototypes).t()
         log_probs = F.log_softmax(sim_scores / self.temperature, dim=-1)
         return -log_probs[torch.arange(len(labels)), labels]
