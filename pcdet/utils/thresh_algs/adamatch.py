@@ -48,7 +48,6 @@ class AdaMatch(Metric):
         self.reset_state_interval = configs.get('RESET_STATE_INTERVAL', 32)
         self.thresh_method = configs.get('THRESH_METHOD', 'AdaMatch')
         self.target_to_align = configs.get('TARGET_TO_ALIGN', 'gt_labels_pre_gt_wa')
-        self.lab_thresh_tag = configs.get('LBL_THRESH_TAG','sem_scores_wa')
         self.prior_sem_fg_thresh = configs.get('SEM_FG_THRESH', 0.5)
         self.enable_plots = configs.get('ENABLE_PLOTS', False)
         self.fixed_thresh = configs.get('FIXED_THRESH', 0.9)
@@ -58,7 +57,7 @@ class AdaMatch(Metric):
         self.ulb_ratio = configs.get('ULB_RATIO', 0.5)
         self.joint_dist_align = configs.get('JOINT_DIST_ALIGN', False)
         self.enable_ulb_cls_dist_loss = configs.get('ENABLE_ULB_CLS_DIST_LOSS', False)
-        self.states_name = ['sem_scores_wa', 'conf_scores_wa', 'gt_labels_wa']
+        self.states_name = ['sem_scores_wa', 'sem_scores_wa_rect', 'conf_scores_wa', 'gt_labels_wa']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
         self.iteration_count = 0
 
@@ -68,8 +67,8 @@ class AdaMatch(Metric):
 
         # mean_p_model aka p_target (_lbl(mean_p_model)) and p_model (_ulb(mean_p_model))
         self.mean_p_model = {s_name: None for s_name in self.states_name}
-        self.mean_p_conf_model = {s_name: None for s_name in self.states_name}
         self.mean_p_max_model = {s_name: None for s_name in self.states_name}
+        self.mean_p_max_model_classwise = {s_name: None for s_name in self.states_name}
         self.labels_hist = {s_name: None for s_name in self.states_name}
         self.ratio = {'AdaMatch': None}
 
@@ -135,51 +134,38 @@ class AdaMatch(Metric):
 
         self.iteration_count += 1
         acc_metrics = self._accumulate_metrics()
-        for sname in ['sem_scores_wa']:
-            sem_scores = acc_metrics[sname]
-            conf_scores = acc_metrics['conf_scores_wa']
-            padding_mask = torch.logical_not(torch.all(sem_scores == 0, dim=-1))
-            sem_scores = torch.softmax(sem_scores / (self.temperature_sa if '_sa' in sname else self.temperature), dim=-1)
-            if self.joint_dist_align:
-                sem_scores = sem_scores * conf_scores.unsqueeze(-1)
-            max_scores, labels = torch.max(sem_scores, dim=-1)
+        for sname in ['sem_scores_wa', 'sem_scores_wa_rect', 'conf_scores_wa']:
+            scores = acc_metrics[sname]
+            padding_mask = torch.logical_not(torch.all(scores == 0, dim=-1))
+            if sname == 'sem_scores_wa':
+                scores = torch.softmax(scores / (self.temperature_sa if '_sa' in sname else self.temperature), dim=-1)
+            max_scores, labels = torch.max(scores, dim=-1)
 
-            hist_minlength = sem_scores.shape[-1]
+            hist_minlength = scores.shape[-1]
             mean_p_max_model, labels_hist, mean_p_max_model_classwise = self._get_mean_p_max_model_and_label_hist(max_scores, labels, padding_mask, hist_minlength)
-            mean_p_model_lbl = _lbl(sem_scores, padding_mask).mean(dim=0)
-            mean_p_model_ulb = _ulb(sem_scores, padding_mask).mean(dim=0)
+            mean_p_model_lbl = _lbl(scores, padding_mask).mean(dim=0)
+            mean_p_model_ulb = _ulb(scores, padding_mask).mean(dim=0)
             mean_p_model = torch.vstack([mean_p_model_lbl, mean_p_model_ulb])
 
-            mean_p_conf_model_lbl = _lbl(conf_scores, padding_mask).mean(dim=0)
-            mean_p_conf_model_ulb = _ulb(conf_scores, padding_mask).mean(dim=0)
-            mean_p_conf_model = torch.vstack([mean_p_conf_model_lbl, mean_p_conf_model_ulb])
-
             self._update_ema('mean_p_max_model', mean_p_max_model, sname)
+            self._update_ema('mean_p_max_model_classwise', mean_p_max_model_classwise, sname)
             self._update_ema('labels_hist', labels_hist, sname)
             self._update_ema('mean_p_model', mean_p_model, sname)
-            self._update_ema('mean_p_conf_model', mean_p_conf_model, sname)
 
-            results[f'mean_p_max_model_classwise_lbl/{sname}'] = self._arr2dict(_lbl(mean_p_max_model_classwise), ignore_zeros=True)
-            results[f'mean_p_max_model_classwise_ulb/{sname}'] = self._arr2dict(_ulb(mean_p_max_model_classwise), ignore_zeros=True)
             self.log_results(results, sname=sname)
 
             if self.enable_plots and self.iteration_count % 10 == 0:
                 fig = self.draw_dist_plots(max_scores, labels, padding_mask, sname)
                 results[f'dist_plots_{sname}'] = fig
 
-        # ratio =  _lbl(self.mean_p_model['sem_scores_pre_gt_wa']) / (_ulb(self.mean_p_model['sem_scores_wa']) + 1e-6)
         sem_scores_wa_ulb = _ulb(self.mean_p_model['sem_scores_wa'])
         self.ratio['AdaMatch'] =  self.mean_p_model['gt'].to(sem_scores_wa_ulb.device) / sem_scores_wa_ulb
         # self._update_ema('ratio', ratio, 'AdaMatch')
         results[f'ratio/gt_over_ulb_sem_scores_wa'] = self._arr2dict(self.ratio['AdaMatch'])
         results['labels_hist_lbl/gts_wa'] = self._arr2dict(_get_cls_dist(_lbl(acc_metrics['gt_labels_wa'].view(-1))))
         results['labels_hist_ulb/gts_wa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_wa'].view(-1))))
-        # results['labels_hist_lbl/gts_sa'] = self._arr2dict(_get_cls_dist(_lbl(acc_metrics['gt_labels_sa'].view(-1))))
-        # results['labels_hist_ulb/gts_sa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_sa'].view(-1))))
-        # results['labels_hist_lbl/gts_pre_gt_wa'] = self._arr2dict(_get_cls_dist(_lbl(acc_metrics['gt_labels_pre_gt_wa'].view(-1))))
-        # results['labels_hist_ulb/gts_pre_gt_wa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_pre_gt_wa'].view(-1))))
         if self.thresh_method == 'AdaMatch':
-            results[f'threshold/AdaMatch'] = self._get_threshold(tag=self.lab_thresh_tag)
+            results[f'threshold/AdaMatch'] = self._arr2dict(self._get_threshold('sem_scores_wa_rect'))
         elif self.thresh_method == 'FreeMatch':
             results[f'threshold/FreeMatch'] = self._arr2dict(self._get_threshold())
 
@@ -191,10 +177,10 @@ class AdaMatch(Metric):
         results[f'mean_p_max_model_ulb/{sname}'] = _ulb(self.mean_p_max_model[sname])
         results[f'labels_hist_lbl/{sname}'] = self._arr2dict(_lbl(self.labels_hist[sname]))
         results[f'labels_hist_ulb/{sname}'] = self._arr2dict(_ulb(self.labels_hist[sname]))
-        results[f'mean_p_conf_model_lbl/{sname}'] = _lbl(self.mean_p_conf_model[sname])
-        results[f'mean_p_conf_model_ulb/{sname}'] = _ulb(self.mean_p_conf_model[sname])
         results[f'mean_p_model_lbl/{sname}'] = self._arr2dict(_lbl(self.mean_p_model[sname]))
         results[f'mean_p_model_ulb/{sname}'] = self._arr2dict(_ulb(self.mean_p_model[sname]))
+        results[f'mean_p_max_model_classwise_lbl/{sname}'] = self._arr2dict(_lbl(self.mean_p_max_model_classwise[sname]), ignore_zeros=True)
+        results[f'mean_p_max_model_classwise_ulb/{sname}'] = self._arr2dict(_ulb(self.mean_p_max_model_classwise[sname]), ignore_zeros=True)
         # unbiased_p_model = self.mean_p_model[sname] / self.labels_hist[sname]
         # unbiased_p_model = unbiased_p_model / unbiased_p_model.sum(dim=-1, keepdim=True)
         # results[f'unbiased_p_model_lbl/{sname}'] = self._arr2dict(_lbl(unbiased_p_model))
@@ -237,9 +223,10 @@ class AdaMatch(Metric):
         sem_scores_ulb /= sem_scores_ulb.sum(dim=-1, keepdims=True)
         return sem_scores_ulb
 
-    def _update_ema(self, p_name, probs, tag):
+    def _update_ema(self, p_name, probs, tag, momentum=None):
+        momentum = self.momentum if momentum is None else momentum
         prob = getattr(self, p_name)
-        prob[tag] = probs if prob[tag] is None else self.momentum * prob[tag] + (1 - self.momentum) * probs
+        prob[tag] = probs if prob[tag] is None else momentum * prob[tag] + (1 - momentum) * probs
 
     def get_mask(self, conf_scores, sem_logits):
         assert self.thresh_method in ['AdaMatch', 'FreeMatch', 'DebiasedPL'],\
@@ -258,7 +245,9 @@ class AdaMatch(Metric):
                 scores = scores * conf_scores.unsqueeze(-1)
             scores = self.rectify_sem_scores(scores)
             max_scores, labels = torch.max(scores, dim=-1)
-            return max_scores > self._get_threshold(tag=self.lab_thresh_tag), scores
+            thresh = self._get_threshold('sem_scores_wa_rect')
+            thresh = thresh.view(1, 3).repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
+            return max_scores > thresh, scores
 
         elif self.thresh_method == 'FreeMatch':
             scores = torch.softmax(sem_logits / self.temperature, dim=-1)
@@ -281,7 +270,7 @@ class AdaMatch(Metric):
 
     def _get_threshold(self, tag='sem_scores_wa'):
         if self.thresh_method == 'AdaMatch':
-            return _ulb(self.mean_p_max_model[tag]) * self.fixed_thresh
+            return _ulb(self.mean_p_max_model_classwise[tag]) * self.fixed_thresh
 
         elif self.thresh_method == 'FreeMatch':
             normalized_p_model = torch.div(_ulb(self.mean_p_model[tag]), _ulb(self.mean_p_model[tag]).max())
@@ -292,8 +281,8 @@ class AdaMatch(Metric):
             return thresh.repeat(3)
 
     def _arr2dict(self, array, ignore_zeros=False):
-        if array.shape[-1] == 2:
-            return {cls: array[cind] for cind, cls in enumerate(['Bg', 'Fg'])}
+        if array.shape[-1] == 1:
+            return array.item()
         elif array.shape[-1] == len(self.class_names):
             return {cls: array[cind] for cind, cls in enumerate(self.class_names) if array[cind] > 0 or not ignore_zeros}
         else:

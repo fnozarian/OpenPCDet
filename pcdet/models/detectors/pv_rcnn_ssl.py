@@ -196,8 +196,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         filtering_masks, pl_sem_scores_rect = self._filter_pls_sem_scores(pl_scores, pl_sem_logits)
 
         # TODO(farzad): Set the scores of pseudo-labels that their argmax is changed after rectification to zero.
-        pl_weights = [scores_rect.max(-1, keepdim=True)[0] for scores_rect in pl_sem_scores_rect]
-        # pl_weights = [scores.new_ones(scores.shape[0], 1) for scores in pl_sem_scores_rect]
+        # pl_weights = [scores_rect.max(-1, keepdim=True)[0] for scores_rect in pl_sem_scores_rect]
+        pl_weights = [scores.new_ones(scores.shape[0], 1) for scores in pl_sem_scores_rect]
         if 'pl_metrics' in metrics_registry.tags():
             metrics_input = self.get_pl_metrics_input(pl_boxes, pl_sem_scores_rect, pl_weights, filtering_masks, batch_dict_ema['gt_boxes'][ulb_inds])
             metrics_registry.get('pl_metrics').update(**metrics_input)
@@ -243,6 +243,9 @@ class PVRCNN_SSL(Detector3DTemplate):
             thresh_inputs['conf_scores_wa'] = torch.cat([conf_scores_wa_lbl, conf_scores_wa_ulb])
             thresh_inputs['sem_scores_wa'] = torch.cat([sem_scores_wa_lbl, sem_scores_wa_ulb])
             thresh_inputs['gt_labels_wa'] = self.pad_tensor(batch_dict_ema['gt_boxes'][..., 7:8], max_len=100).detach().clone()
+            ulb_rect_scores = torch.cat([self.pad_tensor(scores.unsqueeze(0), max_len=100) for scores in pl_sem_scores_rect]).detach().clone()
+            lb_rect_scores = torch.ones_like(ulb_rect_scores)  # dummy
+            thresh_inputs['sem_scores_wa_rect'] = torch.cat([lb_rect_scores, ulb_rect_scores])
 
             self.thresh_alg.update(**thresh_inputs)
 

@@ -292,13 +292,12 @@ MODEL:
         # Thus, it's just for debugging purpose.
         THRESH_METHOD: AdaMatch # AdaMatch, FreeMatch or DebiasedPL.
         TARGET_TO_ALIGN: 'gt_labels_wa'
-        LBL_THRESH_TAG: 'sem_scores_wa'
         TEMPERATURE: 4.0
         TEMPERATURE_SA: 4.0
-        FIXED_THRESH: 0.8
-        MOMENTUM: 0.99  # since reset state interval reduced to 1, stats are more noisy and need more momentum
+        FIXED_THRESH: 0.95
+        MOMENTUM: 0.0
         SEM_FG_THRESH: 0.5  # [0.65, 0.40, 0.45]
-        RESET_STATE_INTERVAL: 32  # with bs=4, this is less noisy than 1
+        RESET_STATE_INTERVAL: 4  # with bs=4, this is less noisy than 1
         ENABLE_PLOTS: False
 
 OPTIMIZATION:
