@@ -29,11 +29,9 @@ def _assert_inputs_are_valid(rois: [torch.Tensor], roi_scores: [torch.Tensor], g
     assert all(roi.shape[-1] == 8 for roi in rois) and all(
         gt.shape[-1] == 8 for gt in ground_truths
     )
-    # assert all(
-    #     torch.logical_not(torch.all(sample_rois == 0, dim=-1).any())
-    #     for sample_rois in rois
-    # ), "rois should not contains all zero boxes"
-
+    num_gts = torch.stack([torch.logical_not(torch.all(sample_gts == 0, dim=-1)).sum() for sample_gts in ground_truths])
+    if num_gts.eq(0).any():
+        print(f"WARNING! Unlabeled sample (index {torch.nonzero(num_gts.eq(0)).item()}) has no ground truths!")
 
 def get_max_iou_with_same_class(rois, roi_labels, gt_boxes, gt_labels):
     """
@@ -154,26 +152,37 @@ class PredQualityMetrics(Metric):
 
         _assert_inputs_are_valid(rois, roi_scores, ground_truths)
 
-        num_gts = torch.zeros((3,), dtype=torch.int8, device=rois[0].device)
         for i, sample_rois in enumerate(rois):
-            sample_roi_labels = sample_rois[:, -1].long() - 1
+
+            valid_roi_mask = torch.logical_not(torch.all(sample_rois == 0, dim=-1))
+            sample_rois = sample_rois[valid_roi_mask]
+            roi_scores[i] = roi_scores[i][valid_roi_mask]
+            roi_weights[i] = roi_weights[i][valid_roi_mask]
 
             valid_gts_mask = torch.logical_not(torch.all(ground_truths[i] == 0, dim=-1))
             sample_gts = ground_truths[i][valid_gts_mask]
-            sample_gts_labels = sample_gts[:, -1].long() - 1
-            if len(sample_gts) > 0:
+
+            if len(sample_rois) == 0 and len(sample_gts) > 0:  # Skip empty samples
+                sample_gts_labels = sample_gts[:, -1].long() - 1
+                self.num_gts += torch.bincount(sample_gts_labels, minlength=3)
+                continue
+            elif len(sample_rois) > 0 and len(sample_gts) > 0:
+                sample_gts_labels = sample_gts[:, -1].long() - 1
+                sample_roi_labels = sample_rois[:, -1].long() - 1
                 matched_threshold = torch.tensor(self.min_overlaps, dtype=torch.float, device=sample_roi_labels.device)[sample_roi_labels]
                 sample_roi_iou_wrt_gt, assigned_label, gt_to_roi_max_iou = get_max_iou(sample_rois[:, 0:7], sample_gts[:, 0:7],
-                                                                       sample_gts_labels, matched_threshold=matched_threshold)
-                sample_gt_labels = sample_gts[:, -1].int() - 1
-                num_gts += torch.bincount(sample_gt_labels, minlength=3)
+                                                                                       sample_gts_labels, matched_threshold=matched_threshold)
+                self.num_gts += torch.bincount(sample_gts_labels, minlength=3)
 
                 for t, thresh in enumerate([0.3, 0.5, 0.7]):
                     for c in range(3):
-                         self.num_gts_matched[t, c] += gt_to_roi_max_iou[sample_gt_labels == c].ge(thresh).sum()
-            else:
+                        self.num_gts_matched[t, c] += gt_to_roi_max_iou[sample_gts_labels == c].ge(thresh).sum()
+            elif len(sample_rois) > 0 and len(sample_gts) == 0:
+                sample_roi_labels = sample_rois[:, -1].long() - 1
                 sample_roi_iou_wrt_gt = torch.zeros_like(sample_rois[:, 0])
                 assigned_label = torch.ones_like(sample_roi_iou_wrt_gt, dtype=torch.int64) * -1
+            else:
+                raise ValueError("Both rois and gts are empty!")
 
             self.roi_scores.append(roi_scores[i])
             # self.roi_sim_scores.append(roi_sim_scores[i])
@@ -193,15 +202,12 @@ class PredQualityMetrics(Metric):
         #               ref_boxes=pred_boxes, ref_scores=pred_scores, ref_labels=pred_labels)
 
         self.num_samples += len(rois)
-        self.num_gts += num_gts
 
     def _accumulate_metrics(self):
         accumulated_metrics = {}
         for mname in self.states_name:
             mstate = getattr(self, mname)
-            if isinstance(mstate, torch.Tensor):
-                mstate = [mstate]
-            accumulated_metrics[mname] = torch.cat(mstate, dim=0)
+            accumulated_metrics[mname] = torch.cat(mstate, dim=0) if len(mstate) > 0 else []
         return accumulated_metrics
 
     # @staticmethod
@@ -220,7 +226,9 @@ class PredQualityMetrics(Metric):
         classwise_metrics = defaultdict(dict)
 
         accumulated_metrics = self._accumulate_metrics()  # shape (N, 1)
-
+        if len(accumulated_metrics["roi_scores"]) == 0:  # No valid samples
+            self.reset()
+            return None
         scores = accumulated_metrics["roi_scores"]
         iou_wrt_gt = accumulated_metrics["roi_iou_wrt_gt"].view(-1)
         pred_labels = accumulated_metrics["roi_labels"].view(-1)

@@ -294,8 +294,8 @@ MODEL:
         TARGET_TO_ALIGN: 'gt_labels_wa'
         TEMPERATURE: 4.0
         TEMPERATURE_SA: 4.0
-        FIXED_THRESH: 0.95
-        MOMENTUM: 0.0
+        FIXED_THRESH: 1.0
+        MOMENTUM: 0.99
         SEM_FG_THRESH: 0.5  # [0.65, 0.40, 0.45]
         RESET_STATE_INTERVAL: 4  # with bs=4, this is less noisy than 1
         ENABLE_PLOTS: False

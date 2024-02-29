@@ -70,6 +70,12 @@ class AdaMatch(Metric):
         self.mean_p_max_model = {s_name: None for s_name in self.states_name}
         self.mean_p_max_model_classwise = {s_name: None for s_name in self.states_name}
         self.labels_hist = {s_name: None for s_name in self.states_name}
+
+        self.mean_p_model_shadow = {s_name: None for s_name in self.states_name}
+        self.mean_p_max_model_shadow = {s_name: None for s_name in self.states_name}
+        self.mean_p_max_model_classwise_shadow = {s_name: None for s_name in self.states_name}
+        self.labels_hist_shadow = {s_name: None for s_name in self.states_name}
+
         self.ratio = {'AdaMatch': None}
 
         # Two fixed targets dists
@@ -225,8 +231,12 @@ class AdaMatch(Metric):
 
     def _update_ema(self, p_name, probs, tag, momentum=None):
         momentum = self.momentum if momentum is None else momentum
+        prob_shadow = getattr(self, p_name + '_shadow')
+        if prob_shadow[tag] is None:
+            prob_shadow[tag] = torch.zeros_like(probs)
+        prob_shadow[tag] = momentum * prob_shadow[tag] + (1 - momentum) * probs
         prob = getattr(self, p_name)
-        prob[tag] = probs if prob[tag] is None else momentum * prob[tag] + (1 - momentum) * probs
+        prob[tag] = prob_shadow[tag] / (1 - momentum ** self.iteration_count)
 
     def get_mask(self, conf_scores, sem_logits):
         assert self.thresh_method in ['AdaMatch', 'FreeMatch', 'DebiasedPL'],\

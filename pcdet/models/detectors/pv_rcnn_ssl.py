@@ -468,7 +468,6 @@ class PVRCNN_SSL(Detector3DTemplate):
         for i in range(bs):
             smpl_mask = filtering_masks[i]
             if smpl_mask.sum() == 0:
-                # TODO: fix stats for no preds case
                 smpl_rois = gts[i].new_zeros((1, 8)).float().to(gts[i].device)  # dummy rois
                 smpl_scores = gts[i].new_zeros((1, 3)).float().to(gts[i].device)
                 smpl_weights = gts[i].new_zeros((1, 1)).float().to(gts[i].device)
