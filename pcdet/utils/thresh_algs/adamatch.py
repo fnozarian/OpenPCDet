@@ -3,8 +3,11 @@ import torch.functional as F
 from torchmetrics import Metric
 import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import kde
 import seaborn as sns
 from sklearn.mixture import GaussianMixture
+from pcdet.ops.iou3d_nms import iou3d_nms_utils
 palettes = dict(zip(['fp', 'tn', 'tp', 'fn'], sns.color_palette("hls", 4)))
 import pandas as pd
 import warnings
@@ -57,9 +60,10 @@ class AdaMatch(Metric):
         self.ulb_ratio = configs.get('ULB_RATIO', 0.5)
         self.joint_dist_align = configs.get('JOINT_DIST_ALIGN', False)
         self.enable_ulb_cls_dist_loss = configs.get('ENABLE_ULB_CLS_DIST_LOSS', False)
-        self.states_name = ['sem_scores_wa', 'sem_scores_wa_rect', 'conf_scores_wa', 'gt_labels_wa']
+        self.states_name = ['sem_scores_wa', 'sem_scores_wa_rect', 'conf_scores_wa', 'pls_wa', 'gts_wa', 'gt_labels_wa']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
         self.iteration_count = 0
+        self.min_overlaps = np.array([0.7, 0.5, 0.5])
 
         # States are of shape (N, M, P) where N is # samples, M is # RoIs and P = 4 is the Car, Ped, Cyc, FG scores
         for name in self.states_name:
@@ -87,6 +91,12 @@ class AdaMatch(Metric):
             value = kwargs.get(state_name)
             if value is not None:
                 getattr(self, state_name).append(value)
+    def _arrange_tesnor(self, tensor, bs):
+        splits = torch.split(tensor, int(self.ulb_ratio * bs), dim=0)
+        lbl = torch.cat(splits[::2], dim=0)
+        ulb = torch.cat(splits[1::2], dim=0)
+        mstate = torch.cat([lbl, ulb], dim=0)
+        return mstate.view(-1, mstate.shape[-1])
 
     def _accumulate_metrics(self):
         bs = len(self.sem_scores_wa[0])  # TODO: Refactor
@@ -97,16 +107,8 @@ class AdaMatch(Metric):
             assert all(m.shape[0] == mstate[0].shape[0] for m in mstate), "Shapes along axis 0 do not match."
             if isinstance(mstate, list):
                 mstate = torch.cat(mstate, dim=0)
-
-            splits = torch.split(mstate, int(self.ulb_ratio * bs), dim=0)
-            lbl = torch.cat(splits[::2], dim=0)
-            ulb = torch.cat(splits[1::2], dim=0)
-            mstate = torch.cat([lbl, ulb], dim=0)
-            mstate = mstate.view(-1, mstate.shape[-1])
-            accumulated_metrics[mname] = mstate
-
+            accumulated_metrics[mname] = self._arrange_tesnor(mstate, bs)
         return accumulated_metrics
-
     def _get_mean_p_max_model_and_label_hist(self, max_scores, labels, mask, hist_minlength=3, split=None, type='micro'):
         if split is None:
             split = ['lbl', 'ulb']
@@ -132,6 +134,38 @@ class AdaMatch(Metric):
         else:
             raise ValueError(f"Invalid split type: {split}")
 
+    def get_max_iou(self, anchors, gt_boxes, gt_classes, matched_threshold=0.6):
+        num_anchors = anchors.shape[0]
+        num_gts = gt_boxes.shape[0]
+
+        ious = torch.zeros((num_anchors,), dtype=torch.float, device=anchors.device)
+        labels = torch.ones((num_anchors,), dtype=torch.int64, device=anchors.device) * -1
+        gt_to_anchor_max = torch.zeros((num_gts,), dtype=torch.float, device=anchors.device)
+
+        if len(gt_boxes) > 0 and anchors.shape[0] > 0:
+            anchor_by_gt_overlap = iou3d_nms_utils.boxes_iou3d_gpu(anchors[:, 0:7], gt_boxes[:, 0:7])
+            gt_to_anchor_max = anchor_by_gt_overlap.max(dim=0)[0]
+            anchor_to_gt_argmax = anchor_by_gt_overlap.argmax(dim=1)
+            anchor_to_gt_max = anchor_by_gt_overlap[
+                torch.arange(num_anchors, device=anchors.device), anchor_to_gt_argmax]
+
+            pos_inds = anchor_to_gt_max >= matched_threshold
+            gt_inds_over_thresh = anchor_to_gt_argmax[pos_inds]
+            labels[pos_inds] = gt_classes[gt_inds_over_thresh]
+            ious[:len(anchor_to_gt_max)] = anchor_to_gt_max
+
+        return ious, labels, gt_to_anchor_max
+
+    @staticmethod
+    def pad_tensor(tensor_in, max_len=50):
+        assert tensor_in.dim() == 3, "Input tensor should be of shape (N, M, C)"
+        diff_ = max_len - tensor_in.shape[1]
+        if diff_ > 0:
+            tensor_in = torch.cat(
+                [tensor_in, torch.zeros((tensor_in.shape[0], diff_, tensor_in.shape[-1]), device=tensor_in.device)],
+                dim=1)
+        return tensor_in
+
     def compute(self):
         results = {}
 
@@ -140,9 +174,38 @@ class AdaMatch(Metric):
 
         self.iteration_count += 1
         acc_metrics = self._accumulate_metrics()
+        bs = self.pls_wa[0].shape[0]  # TODO: Refactor
+        batch_gts = torch.cat(self.gts_wa)
+        batch_pls = torch.cat(self.pls_wa)
+        assigned_labels = torch.ones((batch_pls.shape[0], batch_pls.shape[1], 1), dtype=torch.int64, device=batch_pls.device) * -1
+        for batch_idx in range(len(batch_gts)):
+            gts = batch_gts[batch_idx]
+            pls = batch_pls[batch_idx]
+            mask_gt = torch.logical_not(torch.all(gts == 0, dim=-1))
+            mask_pl = torch.logical_not(torch.all(pls == 0, dim=-1))
+
+            valid_gts = gts[mask_gt]
+            valid_pls = pls[mask_pl]
+
+            if len(valid_gts) > 0 and len(valid_pls) > 0:
+                valid_gts_labels = valid_gts[:, -1].long() - 1
+                valid_pls_labels = valid_pls[:, -1].long() - 1
+                matched_threshold = torch.tensor(self.min_overlaps, dtype=torch.float, device=valid_pls_labels.device)[valid_pls_labels]
+                valid_pls_iou_wrt_gt, assigned_label, gt_to_pls_max_iou = self.get_max_iou(valid_pls[:, 0:7],
+                                                                                       valid_gts[:, 0:7],
+                                                                                       valid_gts_labels,
+                                                                                       matched_threshold=matched_threshold)
+                assigned_labels[batch_idx, :len(assigned_label), 0] = assigned_label
+        assigned_labels = self._arrange_tesnor(assigned_labels, bs)
+
+        prev_pad_mask = None
         for sname in ['sem_scores_wa', 'sem_scores_wa_rect', 'conf_scores_wa']:
             scores = acc_metrics[sname]
             padding_mask = torch.logical_not(torch.all(scores == 0, dim=-1))
+            if prev_pad_mask is not None:
+                assert torch.equal(_ulb(prev_pad_mask), _ulb(padding_mask)), "Padding masks do not match."
+            prev_pad_mask = padding_mask
+
             if sname == 'sem_scores_wa':
                 scores = torch.softmax(scores / (self.temperature_sa if '_sa' in sname else self.temperature), dim=-1)
             max_scores, labels = torch.max(scores, dim=-1)
@@ -163,6 +226,38 @@ class AdaMatch(Metric):
             if self.enable_plots and self.iteration_count % 10 == 0:
                 fig = self.draw_dist_plots(max_scores, labels, padding_mask, sname)
                 results[f'dist_plots_{sname}'] = fig
+
+        if self.iteration_count % 50 == 0:
+            for split in ['lbl', 'ulb']:
+                fn = _lbl if split == 'lbl' else _ulb
+                # sem_scores = fn(acc_metrics['sem_scores_wa'], prev_pad_mask)
+                # sem_scores = torch.softmax(sem_scores / self.temperature, dim=-1)
+                sem_scores = fn(acc_metrics['sem_scores_wa_rect'], prev_pad_mask)
+                conf_scores = fn(acc_metrics['conf_scores_wa'], prev_pad_mask)
+                labels = fn(assigned_labels, prev_pad_mask)
+                max_sem, cls = torch.max(sem_scores, dim=-1)
+                nbins = 100
+                x_lim = (0.5, 1.0)
+                y_lim = (0.5, 1.0)
+                fig, ax = plt.subplots(1, 3, figsize=(12, 4))
+                for cls_ind, cls_name in enumerate(self.class_names):
+                    mask = cls == cls_ind
+                    x, y = max_sem[mask].cpu().numpy(), conf_scores[mask].view(-1).cpu().numpy()
+                    l = labels[mask].view(-1).cpu().numpy()
+                    k = kde.gaussian_kde([x, y])
+                    xi, yi = np.mgrid[x_lim[0]:x_lim[1]:nbins * 1j, y_lim[0]:y_lim[1]:nbins * 1j]
+                    zi = k(np.vstack([xi.flatten(), yi.flatten()]))
+                    ax[cls_ind].pcolormesh(xi, yi, zi.reshape(xi.shape), shading='auto')
+                    colors = np.where(l != -1, 'b', 'r')
+                    ax[cls_ind].scatter(x, y, s=4, c=colors, alpha=0.5, edgecolor='none')
+                    ax[cls_ind].set_xlim(x_lim)
+                    ax[cls_ind].set_ylim(y_lim)
+                    ax[cls_ind].set_title(f"Class: {cls_name}")
+                    ax[cls_ind].set_xlabel('Max Sem Scores')
+                    ax[cls_ind].set_ylabel('Conf Scores')
+                    plt.tight_layout()
+                results[f'joint_dist_plots_{split}'] = fig.get_figure()
+
 
         sem_scores_wa_ulb = _ulb(self.mean_p_model['sem_scores_wa'])
         self.ratio['AdaMatch'] =  self.mean_p_model['gt'].to(sem_scores_wa_ulb.device) / sem_scores_wa_ulb

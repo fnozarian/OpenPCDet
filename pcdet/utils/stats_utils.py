@@ -31,7 +31,7 @@ def _assert_inputs_are_valid(rois: [torch.Tensor], roi_scores: [torch.Tensor], g
     )
     num_gts = torch.stack([torch.logical_not(torch.all(sample_gts == 0, dim=-1)).sum() for sample_gts in ground_truths])
     if num_gts.eq(0).any():
-        print(f"WARNING! Unlabeled sample (index {torch.nonzero(num_gts.eq(0)).item()}) has no ground truths!")
+        print(f"WARNING! Unlabeled sample (index {torch.nonzero(num_gts.eq(0))}) has no ground truths!")
 
 def get_max_iou_with_same_class(rois, roi_labels, gt_boxes, gt_labels):
     """
@@ -182,7 +182,8 @@ class PredQualityMetrics(Metric):
                 sample_roi_iou_wrt_gt = torch.zeros_like(sample_rois[:, 0])
                 assigned_label = torch.ones_like(sample_roi_iou_wrt_gt, dtype=torch.int64) * -1
             else:
-                raise ValueError("Both rois and gts are empty!")
+                print("WARNING! Both rois and gts are empty!")
+                continue
 
             self.roi_scores.append(roi_scores[i])
             # self.roi_sim_scores.append(roi_sim_scores[i])

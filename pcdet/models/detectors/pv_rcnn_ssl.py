@@ -158,6 +158,7 @@ class PVRCNN_SSL(Detector3DTemplate):
 
     @staticmethod
     def pad_tensor(tensor_in, max_len=50):
+        assert tensor_in.dim() == 3, "Input tensor should be of shape (N, M, C), input shape is {}".format(tensor_in.shape)
         diff_ = max_len - tensor_in.shape[1]
         if diff_>0:
             tensor_in = torch.cat([tensor_in, torch.zeros((tensor_in.shape[0], diff_, tensor_in.shape[-1]), device=tensor_in.device)], dim=1)
@@ -243,8 +244,11 @@ class PVRCNN_SSL(Detector3DTemplate):
             thresh_inputs['conf_scores_wa'] = torch.cat([conf_scores_wa_lbl, conf_scores_wa_ulb])
             thresh_inputs['sem_scores_wa'] = torch.cat([sem_scores_wa_lbl, sem_scores_wa_ulb])
             thresh_inputs['gt_labels_wa'] = self.pad_tensor(batch_dict_ema['gt_boxes'][..., 7:8], max_len=100).detach().clone()
+            thresh_inputs['gts_wa'] = self.pad_tensor(batch_dict_ema['gt_boxes'], max_len=100).detach().clone()
+            pls_ws = [torch.cat([pl['pred_boxes'], pl['pred_labels'].view(-1, 1)], dim=-1) for pl in pls_teacher_wa]
+            thresh_inputs['pls_wa'] = torch.cat([self.pad_tensor(pl.unsqueeze(0), max_len=100) for pl in pls_ws]).detach().clone()
             ulb_rect_scores = torch.cat([self.pad_tensor(scores.unsqueeze(0), max_len=100) for scores in pl_sem_scores_rect]).detach().clone()
-            lb_rect_scores = torch.ones_like(ulb_rect_scores)  # dummy
+            lb_rect_scores = torch.softmax(sem_scores_wa_lbl / 4, dim=-1)  # note that the lbl data sem scores are not rectified
             thresh_inputs['sem_scores_wa_rect'] = torch.cat([lb_rect_scores, ulb_rect_scores])
 
             self.thresh_alg.update(**thresh_inputs)
