@@ -252,7 +252,7 @@ class PredQualityMetrics(Metric):
         classwise_metrics['mean_p_max_model_classwise'] = _arr2dict(mean_p_max_model_classwise.cpu().numpy(), ignore_nan=True)
         classwise_metrics['mean_p_model'] = _arr2dict(scores.mean(dim=0).cpu().numpy())
         classwise_metrics['label_hist'] = _arr2dict(label_hist.cpu().numpy(), ignore_zeros=True)
-        precision = precision_score(y_labels, pred_labels, sample_weight=weights, average=None, zero_division=np.nan)
+        precision = precision_score(y_labels, pred_labels, sample_weight=weights, average=None, labels=range(3), zero_division=np.nan)
         classwise_metrics['avg_precision_sem_score'] = _arr2dict(precision[:3], ignore_nan=True)
 
         # sim_scores = accumulated_metrics["roi_sim_scores"]

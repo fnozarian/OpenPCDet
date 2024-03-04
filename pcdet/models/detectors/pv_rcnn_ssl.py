@@ -39,13 +39,12 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.unlabeled_weight = model_cfg.UNLABELED_WEIGHT
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
-        self.thresh_config = self.model_cfg.ADAPTIVE_THRESH_CONFIG
         try:
             self.fixed_batch_dict = torch.load("batch_dict.pth")
         except:
             self.fixed_batch_dict = None
         self.thresh_alg = None
-        for key, confs in self.thresh_config.items():
+        for key, confs in self.model_cfg.ADAPTIVE_THRESH_CONFIG.items():
             thresh_registry.register(key, **confs)
             if confs['ENABLE']:
                 self.thresh_alg = thresh_registry.get(key)

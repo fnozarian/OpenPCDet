@@ -288,16 +288,12 @@ MODEL:
     ADAPTIVE_THRESH_CONFIG:
       AdaMatch:
         ENABLE: True
-        # DebiasedPL is the default thresh method since it doesn't apply any filtering on PLs with semantic scores.
-        # Thus, it's just for debugging purpose.
-        THRESH_METHOD: AdaMatch # AdaMatch, FreeMatch or DebiasedPL.
-        TARGET_TO_ALIGN: 'gt_labels_wa'
+        THRESH_METHOD: LabelMatch # AdaMatch, FreeMatch, DebiasedPL, LabelMatch
         TEMPERATURE: 4.0
         TEMPERATURE_SA: 4.0
         FIXED_THRESH: 1.0
         MOMENTUM: 0.99
-        SEM_FG_THRESH: 0.5  # [0.65, 0.40, 0.45]
-        RESET_STATE_INTERVAL: 4  # with bs=4, this is less noisy than 1
+        RESET_STATE_INTERVAL: 16  # LabelMatch: 16, AdaMatch: 4
         ENABLE_PLOTS: False
 
 OPTIMIZATION:
