@@ -288,7 +288,8 @@ MODEL:
     ADAPTIVE_THRESH_CONFIG:
       AdaMatch:
         ENABLE: True
-        THRESH_METHOD: LabelMatch # AdaMatch, FreeMatch, DebiasedPL, LabelMatch
+        THRESH_METHOD: AdaMatch # AdaMatch, FreeMatch, DebiasedPL, LabelMatch
+        JOINT_DIST_ALIGN: True  # LabelMatch: True (Tested)
         TEMPERATURE: 4.0
         TEMPERATURE_SA: 4.0
         FIXED_THRESH: 1.0

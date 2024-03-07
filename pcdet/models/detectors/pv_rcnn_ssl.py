@@ -191,7 +191,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         pl_boxes, pl_scores, pl_sem_scores, pl_sem_logits = self._filter_pls_conf_scores(pls_teacher_wa, ulb_inds)
         ulb_pred_labels = torch.cat([pb[:, -1] for pb in pl_boxes]).int().detach()
         pl_cls_count_pre_filter = torch.bincount(ulb_pred_labels, minlength=4)[1:]
-
+        pl_scores = self._calc_true_ious(pl_boxes, batch_dict_ema['gt_boxes'][ulb_inds])
         # Semantic Filtering
         filtering_masks, pl_sem_scores_rect = self._filter_pls_sem_scores(pl_scores, pl_sem_logits)
 
@@ -248,7 +248,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             thresh_inputs['pls_wa'] = torch.cat([self.pad_tensor(pl.unsqueeze(0), max_len=100) for pl in pls_ws]).detach().clone()
             ulb_rect_scores = torch.cat([self.pad_tensor(scores.unsqueeze(0), max_len=100) for scores in pl_sem_scores_rect]).detach().clone()
             lb_rect_scores = torch.softmax(sem_scores_wa_lbl / 4, dim=-1)  # note that the lbl data sem scores are not rectified
-            thresh_inputs['sem_scores_wa_rect'] = torch.cat([lb_rect_scores, ulb_rect_scores])
+            thresh_inputs['scores_rect'] = torch.cat([lb_rect_scores, ulb_rect_scores])
 
             self.thresh_alg.update(**thresh_inputs)
 
@@ -321,6 +321,52 @@ class PVRCNN_SSL(Detector3DTemplate):
             'loss': loss
         }
         return ret_dict, tb_dict_, disp_dict
+
+    def get_max_iou(self, anchors, gt_boxes, gt_classes, matched_threshold=0.6):
+        num_anchors = anchors.shape[0]
+        num_gts = gt_boxes.shape[0]
+
+        ious = torch.zeros((num_anchors,), dtype=torch.float, device=anchors.device)
+        labels = torch.ones((num_anchors,), dtype=torch.int64, device=anchors.device) * -1
+        gt_to_anchor_max = torch.zeros((num_gts,), dtype=torch.float, device=anchors.device)
+
+        if len(gt_boxes) > 0 and anchors.shape[0] > 0:
+            anchor_by_gt_overlap = iou3d_nms_utils.boxes_iou3d_gpu(anchors[:, 0:7], gt_boxes[:, 0:7])
+            gt_to_anchor_max = anchor_by_gt_overlap.max(dim=0)[0]
+            anchor_to_gt_argmax = anchor_by_gt_overlap.argmax(dim=1)
+            anchor_to_gt_max = anchor_by_gt_overlap[
+                torch.arange(num_anchors, device=anchors.device), anchor_to_gt_argmax]
+
+            pos_inds = anchor_to_gt_max >= matched_threshold
+            gt_inds_over_thresh = anchor_to_gt_argmax[pos_inds]
+            labels[pos_inds] = gt_classes[gt_inds_over_thresh]
+            ious[:len(anchor_to_gt_max)] = anchor_to_gt_max
+
+        return ious, labels, gt_to_anchor_max
+
+    def _calc_true_ious(self, pls: [torch.Tensor], batch_gts: torch.Tensor):
+        batch_ious = []
+        for batch_idx, sample_pls in enumerate(pls):
+            ious = torch.zeros((sample_pls.shape[0],), dtype=torch.float, device=sample_pls.device)
+            gts = batch_gts[batch_idx]
+            mask_gt = torch.logical_not(torch.all(gts == 0, dim=-1))
+            mask_pl = torch.logical_not(torch.all(sample_pls == 0, dim=-1))
+
+            valid_gts = gts[mask_gt]
+            valid_pls = sample_pls[mask_pl]
+
+            if len(valid_gts) > 0 and len(valid_pls) > 0:
+                valid_gts_labels = valid_gts[:, -1].long() - 1
+                valid_pls_labels = valid_pls[:, -1].long() - 1
+                matched_threshold = torch.tensor(np.array([0.7, 0.5, 0.5]), dtype=torch.float, device=valid_pls_labels.device)[valid_pls_labels]
+                valid_pls_iou_wrt_gt, assigned_label, gt_to_pls_max_iou = self.get_max_iou(valid_pls[:, 0:7],
+                                                                                           valid_gts[:, 0:7],
+                                                                                           valid_gts_labels,
+                                                                                           matched_threshold=matched_threshold)
+                ious[mask_pl] = valid_pls_iou_wrt_gt
+            batch_ious.append(ious)
+
+        return batch_ious
 
     def _arr2dict(self, array):
         return {cls: array[cind] for cind, cls in enumerate(self.class_names)}

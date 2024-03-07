@@ -56,7 +56,7 @@ class AdaMatch(Metric):
         self.ulb_ratio = configs.get('ULB_RATIO', 0.5)
         self.joint_dist_align = configs.get('JOINT_DIST_ALIGN', True)
         self.enable_ulb_cls_dist_loss = configs.get('ENABLE_ULB_CLS_DIST_LOSS', False)
-        self.states_name = ['sem_scores_wa', 'sem_scores_wa_rect', 'conf_scores_wa', 'joint', 'pls_wa', 'gts_wa', 'gt_labels_wa']
+        self.states_name = ['sem_scores_wa', 'scores_rect', 'conf_scores_wa', 'joint', 'pls_wa', 'gts_wa', 'gt_labels_wa']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
         self.iteration_count = 0
         self.min_overlaps = np.array([0.7, 0.5, 0.5])
@@ -173,8 +173,8 @@ class AdaMatch(Metric):
         self.iteration_count += 1
         acc_metrics = self._accumulate_metrics()
 
-        prev_pad_mask = None
-        for sname in ['sem_scores_wa', 'sem_scores_wa_rect', 'conf_scores_wa', 'joint']:
+        padding_mask = torch.logical_not(torch.all(acc_metrics['sem_scores_wa'] == 0, dim=-1))
+        for sname in ['sem_scores_wa', 'conf_scores_wa', 'joint', 'scores_rect']:
             if sname == 'joint':
                 scores = acc_metrics['sem_scores_wa']
                 conf_scores = acc_metrics['conf_scores_wa']
@@ -182,10 +182,6 @@ class AdaMatch(Metric):
                 scores *= conf_scores
             else:
                 scores = acc_metrics[sname]
-            padding_mask = torch.logical_not(torch.all(scores == 0, dim=-1))
-            if prev_pad_mask is not None:
-                assert torch.equal(_ulb(prev_pad_mask), _ulb(padding_mask)), "Padding masks do not match."
-            prev_pad_mask = padding_mask
 
             if sname == 'sem_scores_wa':
                 scores = torch.softmax(scores / (self.temperature_sa if '_sa' in sname else self.temperature), dim=-1)
@@ -211,17 +207,18 @@ class AdaMatch(Metric):
                 fig = self.draw_dist_plots(max_scores, labels, padding_mask, sname)
                 results[f'dist_plots_{sname}'] = fig
 
-        self.draw_joint_dist_plots(acc_metrics['sem_scores_wa'], acc_metrics['conf_scores_wa'], prev_pad_mask)
+        # self.draw_joint_dist_plots(acc_metrics['sem_scores_wa'], acc_metrics['conf_scores_wa'], prev_pad_mask,
+        #                            self.pls_wa, self.gts_wa)
 
         results['labels_hist_lbl/gts_wa'] = self._arr2dict(_get_cls_dist(_lbl(acc_metrics['gt_labels_wa'].view(-1))))
         results['labels_hist_ulb/gts_wa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_wa'].view(-1))))
 
         if self.thresh_method == 'AdaMatch':
-            sem_scores_wa_ulb = _ulb(self.mean_p_model['sem_scores_wa'])
+            sem_scores_wa_ulb = _ulb(self.mean_p_model['joint'])
             self.ratio['AdaMatch'] = self.mean_p_model['gt'].to(sem_scores_wa_ulb.device) / sem_scores_wa_ulb
             results[f'ratio/AdaMatch'] = self._arr2dict(self.ratio['AdaMatch'])
             # self._update_ema('ratio', ratio, 'AdaMatch')
-            results[f'threshold/AdaMatch'] = self._arr2dict(self._get_threshold('sem_scores_wa'))
+            results[f'threshold/AdaMatch'] = self._arr2dict(self._get_threshold('scores_rect'))
         elif self.thresh_method == 'FreeMatch':
             results[f'threshold/FreeMatch'] = self._arr2dict(self._get_threshold())
         elif self.thresh_method == 'LabelMatch':
@@ -229,8 +226,8 @@ class AdaMatch(Metric):
             exp_num_fgs = self.mean_p_model['gt'].to(scores.device) * self.num_fgs_per_sample * ulb_bs * self.reset_state_interval
             exp_num_fgs = exp_num_fgs.ceil().int()
             # Is LabelMatch agnostic to the scores?! I.e., can we use any scores, e.g., sem, conf, or joint?
-            max_scores_ulb = _ulb(self.max_scores['joint'], prev_pad_mask)
-            labels_ulb = _ulb(self.labels['joint'], prev_pad_mask)
+            max_scores_ulb = _ulb(self.max_scores['joint'], padding_mask)
+            labels_ulb = _ulb(self.labels['joint'], padding_mask)
             max_num_labels = torch.bincount(labels_ulb, minlength=3).max()
             classwise_max_scores = torch.zeros((3, max_num_labels), device=scores.device)
             for cls in range(3):
@@ -256,11 +253,14 @@ class AdaMatch(Metric):
         # results[f'unbiased_p_model_lbl/{sname}'] = self._arr2dict(_lbl(unbiased_p_model))
         # results[f'unbiased_p_model_ulb/{sname}'] = self._arr2dict(_ulb(unbiased_p_model))
 
-    def draw_joint_dist_plots(self, sem_scores_wa, conf_scores_wa, mask):
-        results = {}
-        batch_gts = torch.cat(self.gts_wa)
-        batch_pls = torch.cat(self.pls_wa)
-        assigned_labels = torch.ones((batch_pls.shape[0], batch_pls.shape[1], 1), dtype=torch.int64, device=batch_pls.device) * -1
+    # Use for debugging ;)
+    def _get_true_ious_labels(self, pls: [torch.Tensor], gts: [torch.Tensor]):
+        batch_gts = torch.cat(gts)
+        batch_pls = torch.cat(pls)
+        assigned_labels = torch.ones((batch_pls.shape[0], batch_pls.shape[1], 1), dtype=torch.int64,
+                                     device=batch_pls.device) * -1
+        ious = torch.ones((batch_pls.shape[0], batch_pls.shape[1], 1), dtype=torch.float,
+                                     device=batch_pls.device)
         for batch_idx in range(len(batch_gts)):
             gts = batch_gts[batch_idx]
             pls = batch_pls[batch_idx]
@@ -275,17 +275,26 @@ class AdaMatch(Metric):
                 valid_pls_labels = valid_pls[:, -1].long() - 1
                 matched_threshold = torch.tensor(self.min_overlaps, dtype=torch.float, device=valid_pls_labels.device)[valid_pls_labels]
                 valid_pls_iou_wrt_gt, assigned_label, gt_to_pls_max_iou = self.get_max_iou(valid_pls[:, 0:7],
-                                                                                       valid_gts[:, 0:7],
-                                                                                       valid_gts_labels,
-                                                                                       matched_threshold=matched_threshold)
-                assigned_labels[batch_idx, :len(assigned_label), 0] = assigned_label
-        assigned_labels = self._arrange_tesnor(assigned_labels)
+                                                                                           valid_gts[:, 0:7],
+                                                                                           valid_gts_labels,
+                                                                                           matched_threshold=matched_threshold)
+                # TODO: Verify the new implementation where mask_pl is used to index the assigned_labels.
+                # assigned_labels[batch_idx, :len(assigned_label), 0] = assigned_label
+                assigned_labels[batch_idx, mask_pl, 0] = assigned_label
+                ious[batch_idx, mask_pl, 0] = valid_pls_iou_wrt_gt
+        assigned_labels = self._arrange_tensor(assigned_labels)
+        return ious, assigned_labels
+
+    def draw_joint_dist_plots(self, sem_scores_wa, conf_scores_wa, mask, pls, gts):
+        results = {}
+
+        _, assigned_labels = self._get_true_ious_labels(pls, gts)
 
         for split in ['lbl', 'ulb']:
             fn = _lbl if split == 'lbl' else _ulb
             sem_scores = fn(sem_scores_wa, mask)
             sem_scores = torch.softmax(sem_scores / self.temperature, dim=-1)
-            # sem_scores = fn(acc_metrics['sem_scores_wa_rect'], mask)  # TODO: Decide which scores to use
+            # sem_scores = fn(acc_metrics['scores_rect'], mask)  # TODO: Decide which scores to use
             conf_scores = fn(conf_scores_wa, mask)
             labels = fn(assigned_labels, mask)
             max_sem, cls = torch.max(sem_scores, dim=-1)
@@ -346,7 +355,7 @@ class AdaMatch(Metric):
 
     def rectify_sem_scores(self, sem_scores_ulb):
         sem_scores_ulb = sem_scores_ulb * self.ratio['AdaMatch']
-        sem_scores_ulb /= sem_scores_ulb.sum(dim=-1, keepdims=True)
+        sem_scores_ulb /= sem_scores_ulb.sum(dim=-1, keepdims=True) + 1e-6
         return sem_scores_ulb
 
     def _update_ema(self, p_name, probs, tag, momentum=None):
@@ -375,7 +384,7 @@ class AdaMatch(Metric):
                 scores = scores * conf_scores.unsqueeze(-1)
             scores = self.rectify_sem_scores(scores)
             max_scores, labels = torch.max(scores, dim=-1)
-            thresh = self._get_threshold('sem_scores_wa')
+            thresh = self._get_threshold('scores_rect')
             thresh = thresh.view(1, 3).repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
             return max_scores > thresh, scores
 
@@ -397,6 +406,7 @@ class AdaMatch(Metric):
             thresh = self._get_threshold()
             thresh = thresh.repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
             return max_scores > thresh, scores  # these scores will be discarded
+
         elif self.thresh_method == 'LabelMatch':
             scores = torch.softmax(sem_logits / self.temperature, dim=-1)
             if self.joint_dist_align:
