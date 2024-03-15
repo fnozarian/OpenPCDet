@@ -6,8 +6,8 @@ from scipy.stats import kde
 import seaborn as sns
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 palettes = dict(zip(['fp', 'tn', 'tp', 'fn'], sns.color_palette("hls", 4)))
-import pandas as pd
 import warnings
+from scipy.stats import norm, truncnorm, skewnorm
 
 # TODO: can we delay the teacher/student weight updates until all the reset_state_interval number of samples are obtained?
 # TODO: Test the effect of the reset_state_interval on the performance
@@ -47,7 +47,6 @@ class AdaMatch(Metric):
 
         self.reset_state_interval = configs.get('RESET_STATE_INTERVAL', 32)
         self.thresh_method = configs.get('THRESH_METHOD', 'AdaMatch')
-        self.thresh = None  # set by the thresh method
         self.enable_plots = configs.get('ENABLE_PLOTS', False)
         self.fixed_thresh = configs.get('FIXED_THRESH', 0.9)
         self.momentum = configs.get('MOMENTUM', 0.9)
@@ -58,6 +57,7 @@ class AdaMatch(Metric):
         self.enable_ulb_cls_dist_loss = configs.get('ENABLE_ULB_CLS_DIST_LOSS', False)
         self.states_name = ['sem_scores_wa', 'scores_rect', 'conf_scores_wa', 'joint', 'pls_wa', 'gts_wa', 'gt_labels_wa']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
+        self.thresh = torch.zeros((len(self.class_names),))  # set by the thresh method
         self.iteration_count = 0
         self.min_overlaps = np.array([0.7, 0.5, 0.5])
         self.bs = configs.get('BS', 16)
@@ -70,11 +70,13 @@ class AdaMatch(Metric):
         self.mean_p_model = {s_name: None for s_name in self.states_name}
         self.mean_p_max_model = {s_name: None for s_name in self.states_name}
         self.mean_p_max_model_classwise = {s_name: None for s_name in self.states_name}
+        self.std_p_max_model_classwise = {s_name: None for s_name in self.states_name}
         self.labels_hist = {s_name: None for s_name in self.states_name}
 
         self.mean_p_model_shadow = {s_name: None for s_name in self.states_name}
         self.mean_p_max_model_shadow = {s_name: None for s_name in self.states_name}
         self.mean_p_max_model_classwise_shadow = {s_name: None for s_name in self.states_name}
+        self.std_p_max_model_classwise_shadow = {s_name: None for s_name in self.states_name}
         self.labels_hist_shadow = {s_name: None for s_name in self.states_name}
 
         self.ratio = {'AdaMatch': None}
@@ -107,7 +109,7 @@ class AdaMatch(Metric):
                 mstate = torch.cat(mstate, dim=0)
             accumulated_metrics[mname] = self._arrange_tensor(mstate)
         return accumulated_metrics
-    def _get_mean_p_max_model_and_label_hist(self, max_scores, labels, mask, hist_minlength=3, split=None, type='micro'):
+    def _get_p_max_stats(self, max_scores, labels, mask, hist_minlength=3, split=None, type='micro'):
         if split is None:
             split = ['lbl', 'ulb']
         if isinstance(split, str) and split in ['lbl', 'ulb']:
@@ -117,18 +119,18 @@ class AdaMatch(Metric):
             labels_hist = torch.bincount(labels, minlength=hist_minlength)
             p_max_model = labels.new_zeros(hist_minlength, dtype=max_scores.dtype).scatter_add_(0, labels, max_scores)
             mean_p_max_classwise = p_max_model / (labels_hist + 1e-6)
-
+            std_p_max_classwise = torch.cat([max_scores[labels == i].std().view(1) for i in range(hist_minlength)], dim=0)
             if type == 'micro':
                 p_max_model = p_max_model.sum() / labels_hist.sum()
             elif type == 'macro':
                 p_max_model = mean_p_max_classwise.mean()
 
             labels_hist = labels_hist / labels_hist.sum()
-            return p_max_model, labels_hist, mean_p_max_classwise
+            return p_max_model, labels_hist, mean_p_max_classwise, std_p_max_classwise
         elif isinstance(split, list) and len(split) == 2:
-            p_s0, h_s0, pc_s0 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, mask, hist_minlength=hist_minlength, split=split[0], type=type)
-            p_s1, h_s1, pc_s1 = self._get_mean_p_max_model_and_label_hist(max_scores, labels, mask, hist_minlength=hist_minlength, split=split[1], type=type)
-            return torch.vstack([p_s0, p_s1]).squeeze(), torch.vstack([h_s0, h_s1]), torch.vstack([pc_s0, pc_s1])
+            p_s0, h_s0, pc_s0, std0 = self._get_p_max_stats(max_scores, labels, mask, hist_minlength=hist_minlength, split=split[0], type=type)
+            p_s1, h_s1, pc_s1, std1 = self._get_p_max_stats(max_scores, labels, mask, hist_minlength=hist_minlength, split=split[1], type=type)
+            return torch.vstack([p_s0, p_s1]).squeeze(), torch.vstack([h_s0, h_s1]), torch.vstack([pc_s0, pc_s1]), torch.vstack([std0, std1])
         else:
             raise ValueError(f"Invalid split type: {split}")
 
@@ -174,37 +176,48 @@ class AdaMatch(Metric):
         acc_metrics = self._accumulate_metrics()
 
         padding_mask = torch.logical_not(torch.all(acc_metrics['sem_scores_wa'] == 0, dim=-1))
-        for sname in ['sem_scores_wa', 'conf_scores_wa', 'joint', 'scores_rect']:
+        # , 'sem_scores_wa', 'scores_rect'
+        for sname in ['joint', 'conf_scores_wa']:
             if sname == 'joint':
                 scores = acc_metrics['sem_scores_wa']
                 conf_scores = acc_metrics['conf_scores_wa']
                 scores = torch.softmax(scores / self.temperature, dim=-1)
                 scores *= conf_scores
+                max_scores, labels = torch.max(scores, dim=-1)
+                pre_filtering_mask = max_scores > 0.1
+                padding_mask = padding_mask & pre_filtering_mask
             else:
                 scores = acc_metrics[sname]
 
+            if sname == 'conf_scores_wa':
+                sem_scores = acc_metrics['sem_scores_wa']
+                _, labels = torch.max(sem_scores, dim=-1)
+                max_scores, _ = torch.max(scores, dim=-1)
+
             if sname == 'sem_scores_wa':
                 scores = torch.softmax(scores / (self.temperature_sa if '_sa' in sname else self.temperature), dim=-1)
-            max_scores, labels = torch.max(scores, dim=-1)
+                max_scores, labels = torch.max(scores, dim=-1)
+
             if sname == 'joint':
                 self.max_scores[sname] = max_scores
                 self.labels[sname] = labels
 
-            hist_minlength = scores.shape[-1]
-            mean_p_max_model, labels_hist, mean_p_max_model_classwise = self._get_mean_p_max_model_and_label_hist(max_scores, labels, padding_mask, hist_minlength)
+            # hist_minlength = scores.shape[-1]
+            mean_p_max, labels_hist, mean_p_max_classwise, std_p_max_classwise = self._get_p_max_stats(max_scores, labels, padding_mask, 3)
             mean_p_model_lbl = _lbl(scores, padding_mask).mean(dim=0)
             mean_p_model_ulb = _ulb(scores, padding_mask).mean(dim=0)
             mean_p_model = torch.vstack([mean_p_model_lbl, mean_p_model_ulb])
 
-            self._update_ema('mean_p_max_model', mean_p_max_model, sname)
-            self._update_ema('mean_p_max_model_classwise', mean_p_max_model_classwise, sname)
+            self._update_ema('mean_p_max_model', mean_p_max, sname)
+            self._update_ema('mean_p_max_model_classwise', mean_p_max_classwise, sname)
+            self._update_ema('std_p_max_model_classwise', std_p_max_classwise, sname)
             self._update_ema('labels_hist', labels_hist, sname)
             self._update_ema('mean_p_model', mean_p_model, sname)
 
             self.log_results(results, sname=sname)
 
-            if self.enable_plots and self.iteration_count % 10 == 0:
-                fig = self.draw_dist_plots(max_scores, labels, padding_mask, sname)
+            if self.enable_plots and self.iteration_count % 1 == 0 and sname == 'joint':
+                fig = self.draw_dist_plots(padding_mask)
                 results[f'dist_plots_{sname}'] = fig
 
         # self.draw_joint_dist_plots(acc_metrics['sem_scores_wa'], acc_metrics['conf_scores_wa'], prev_pad_mask,
@@ -214,6 +227,7 @@ class AdaMatch(Metric):
         results['labels_hist_ulb/gts_wa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_wa'].view(-1))))
 
         if self.thresh_method == 'AdaMatch':
+            assert self.joint_dist_align == True, "AdaMatch requires joint scores currently."
             sem_scores_wa_ulb = _ulb(self.mean_p_model['joint'])
             self.ratio['AdaMatch'] = self.mean_p_model['gt'].to(sem_scores_wa_ulb.device) / sem_scores_wa_ulb
             results[f'ratio/AdaMatch'] = self._arr2dict(self.ratio['AdaMatch'])
@@ -222,14 +236,14 @@ class AdaMatch(Metric):
         elif self.thresh_method == 'FreeMatch':
             results[f'threshold/FreeMatch'] = self._arr2dict(self._get_threshold())
         elif self.thresh_method == 'LabelMatch':
+            assert self.joint_dist_align == True, "LabelMatch requires joint scores currently."
             ulb_bs = int(self.bs * self.ulb_ratio)
             exp_num_fgs = self.mean_p_model['gt'].to(scores.device) * self.num_fgs_per_sample * ulb_bs * self.reset_state_interval
             exp_num_fgs = exp_num_fgs.ceil().int()
-            # Is LabelMatch agnostic to the scores?! I.e., can we use any scores, e.g., sem, conf, or joint?
             max_scores_ulb = _ulb(self.max_scores['joint'], padding_mask)
             labels_ulb = _ulb(self.labels['joint'], padding_mask)
-            max_num_labels = torch.bincount(labels_ulb, minlength=3).max()
-            classwise_max_scores = torch.zeros((3, max_num_labels), device=scores.device)
+            num_scores = max(exp_num_fgs.max() + 1, len(max_scores_ulb))
+            classwise_max_scores = torch.zeros((3, num_scores), device=scores.device)
             for cls in range(3):
                 mask = labels_ulb == cls
                 classwise_max_scores[cls, :mask.sum()] = max_scores_ulb[mask]
@@ -322,36 +336,45 @@ class AdaMatch(Metric):
 
         return results
 
-    def draw_dist_plots(self, max_scores, labels, fg_mask, tag, meta_info=''):
+    def draw_dist_plots(self, mask, lower_bound=0.1, upper_bound=1.0, bins=20):
+        assert self.joint_dist_align == True, "Dist plots require joint scores currently."
+        ulb_mean_p_max, ulb_std_p_max = _ulb(self.mean_p_max_model_classwise['joint']), _ulb(self.std_p_max_model_classwise['joint'])
+        ulb_max_scores, ulb_labels = _ulb(self.max_scores['joint'], mask), _ulb(self.labels['joint'], mask)
+        colors = plt.cm.tab10.colors
+        for i in range(3):
+            scores = ulb_max_scores[ulb_labels == i].cpu().numpy()
+            mu = ulb_mean_p_max[i].item()
+            std = ulb_std_p_max[i].item()
+            # Calculate the parameters for the truncated distribution
+            a = (lower_bound - mu) / std
+            b = (upper_bound - mu) / std
 
-        max_scores_lbl = _lbl(max_scores, fg_mask)
-        labels_lbl = _lbl(labels, fg_mask)
+            # truncated_mu, truncated_std = truncnorm.stats(a, b, moments='mv')
+            # Plot histogram of exam scores and fitted distributions for each class
+            plt.hist(scores, bins=bins, density=True, alpha=0.6, color=colors[i], label=self.class_names[i])
+            xmin, xmax = plt.xlim()
+            x = np.linspace(xmin, xmax, 100)
 
-        max_scores_ulb = _ulb(max_scores, fg_mask)
-        labels_ulb = _ulb(labels, fg_mask)
+            p = norm.pdf(x, mu, std)
+            plt.plot(x, p, linewidth=1, color=colors[i])
 
-        BS = len(self.sem_scores_wa[0])
-        WS = self.reset_state_interval * BS
-        info = (f"Iter: {self.iteration_count}    Interval: {self.reset_state_interval}    " +
-                f"BS: {BS}    W: {(self.iteration_count - 1) * WS} - {self.iteration_count * WS}    M: {meta_info}")
-        fig, axes = plt.subplots(1, 2, figsize=(12, 6), sharex='col', sharey='row', layout="compressed")
+            # Plot the truncated Gaussian distribution
+            x_trunc = np.linspace(lower_bound, upper_bound, 100)
+            p_trunc = truncnorm.pdf(x_trunc, a, b, loc=mu, scale=std)
+            plt.plot(x_trunc, p_trunc, '--', linewidth=1, color=colors[i])
+
+            plt.axvline(x=self.thresh[i].item(), linestyle='--', color=colors[i], linewidth=2)
+
+        plt.xlabel('Max Scores')
+        plt.ylabel('Probability Density')
+        plt.title('Classwise Max Scores Distribution')
+        plt.legend()
+        plt.tight_layout()
+        bs = len(self.sem_scores_wa[0])
+        info = f"Iter: {self.iteration_count}    Interval: {self.reset_state_interval}    Batch Size: {bs}"
         plt.suptitle(info, fontsize='small')
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            fg_scores_labels_lbl_df = pd.DataFrame(
-                torch.cat([max_scores_lbl.view(-1, 1), labels_lbl.view(-1, 1)], dim=-1).cpu().numpy(),
-                columns=['scores', 'labels'])
-            fg_scores_labels_ulb_df = pd.DataFrame(
-                torch.cat([max_scores_ulb.view(-1, 1), labels_ulb.view(-1, 1)], dim=-1).cpu().numpy(),
-                columns=['scores', 'labels'])
-            sns.histplot(data=fg_scores_labels_lbl_df, ax=axes[0], x='scores', binrange=(0.5, 1.0), bins=20, kde_kws={'bw_adjust': 1.5, 'cut':1}, hue='labels', kde=True).set(
-                title=f"max-scores dist of WA LBL input {tag} ({len(labels_lbl)})")
-            sns.histplot(data=fg_scores_labels_ulb_df, ax=axes[1], x='scores', binrange=(0.5, 1.0), bins=20, kde_kws={'bw_adjust': 1.5, 'cut':1}, hue='labels', kde=True).set(
-                title=f"max-scores dist of WA ULB input {tag} ({len(labels_ulb)})")
-            plt.tight_layout()
         # plt.show()
-
-        return fig.get_figure()
+        return plt.gcf()
 
     def rectify_sem_scores(self, sem_scores_ulb):
         sem_scores_ulb = sem_scores_ulb * self.ratio['AdaMatch']

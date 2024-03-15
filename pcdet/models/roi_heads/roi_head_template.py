@@ -32,6 +32,7 @@ def get_roi_metrics_input(targets_dict, mask_type='cls'):
         roi_labeled_boxes = torch.cat([rois, roi_labels], dim=-1)
         metrics_input['rois'].append(roi_labeled_boxes)
         metrics_input['roi_scores'].append(roi_scores_multiclass)
+        metrics_input['roi_weights'].append(torch.ones_like(roi_labels))
         # metrics_input['roi_sim_scores'].append(roi_sim_scores_multiclass)
         # gt_iou_of_rois = targets_dict['gt_iou_of_rois'][uind][mask].unsqueeze(-1).detach().clone()
         # metrics_input['roi_iou_wrt_pl'].append(gt_iou_of_rois)

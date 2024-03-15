@@ -216,7 +216,7 @@ MODEL:
 
         LOSS_CONFIG:
             UL_RCNN_CLS_WEIGHT_TYPE: 'rev_uc-bg'
-            CLS_LOSS: UnbiasedCrossEntropy
+            CLS_LOSS: BinaryCrossEntropy
             REG_LOSS: smooth-l1
             CORNER_LOSS_REGULARIZATION: True
             LOSS_WEIGHTS: {
@@ -291,8 +291,8 @@ MODEL:
         ENABLE: True
         THRESH_METHOD: LabelMatch # AdaMatch, FreeMatch, DebiasedPL, LabelMatch
         JOINT_DIST_ALIGN: True  # LabelMatch: True (Tested)
-        TEMPERATURE: 4.0
-        TEMPERATURE_SA: 4.0
+        TEMPERATURE: 2.0
+        TEMPERATURE_SA: 2.0
         FIXED_THRESH: 1.0
         MOMENTUM: 0.99
         RESET_STATE_INTERVAL: 16  # LabelMatch: 16, AdaMatch: 4
