@@ -186,23 +186,42 @@ class PVRCNN_SSL(Detector3DTemplate):
         # batch_dict = self._get_fixed_batch_dict()
         lbl_inds, ulb_inds = self._prep_batch_dict(batch_dict)
         batch_dict_ema = self._split_batch(batch_dict, tag='ema')
-        self._gen_pseudo_labels(batch_dict_ema)
-        pls_teacher_wa, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
-        pl_boxes, pl_scores, pl_sem_scores, pl_sem_logits = self._filter_pls_conf_scores(pls_teacher_wa, ulb_inds)
-        ulb_pred_labels = torch.cat([pb[:, -1] for pb in pl_boxes]).int().detach()
-        pl_cls_count_pre_filter = torch.bincount(ulb_pred_labels, minlength=4)[1:]
-        pl_scores = self._calc_true_ious(pl_boxes, batch_dict_ema['gt_boxes'][ulb_inds])
-        # Semantic Filtering
-        filtering_masks, pl_sem_scores_rect = self._filter_pls_sem_scores(pl_scores, pl_sem_logits)
 
-        # TODO(farzad): Set the scores of pseudo-labels that their argmax is changed after rectification to zero.
-        # pl_weights = [scores_rect.max(-1, keepdim=True)[0] for scores_rect in pl_sem_scores_rect]
-        pl_weights = [scores.new_ones(scores.shape[0], 1) for scores in pl_sem_scores_rect]
+        if self.supervise_mode == 1:
+            pl_boxes = []
+            pl_sem_scores_rect = []
+            pl_weights = []
+            filtering_masks = []
+            pl_sem_logits = []
+            for i in ulb_inds:
+                pboxes = batch_dict_ema['gt_boxes'][i]
+                pboxes = pboxes[pboxes[:, -1] != 0]
+                pl_boxes.append(pboxes)
+                sem_scores = torch.zeros((pboxes.shape[0], 3), device=pboxes.device).scatter_(1, pboxes[:, -1].long().view(-1, 1) - 1, 1)
+                sem_logits = torch.zeros((pboxes.shape[0], 3), device=pboxes.device).scatter_(1, pboxes[:, -1].long().view(-1, 1) - 1, 1)
+                pl_sem_logits.append(sem_logits)
+                pl_sem_scores_rect.append(sem_scores)
+                pl_weights.append(torch.ones((pboxes.shape[0], 1), device=pboxes.device))
+                filtering_masks.append(torch.ones((pboxes.shape[0],), dtype=torch.bool, device=pboxes.device))
+            pl_cls_count_pre_filter = torch.bincount(batch_dict_ema['gt_boxes'][ulb_inds, :, -1].view(-1).int(), minlength=4)[1:]
+        else:
+            self._gen_pseudo_labels(batch_dict_ema)
+            pls_teacher_wa, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
+            pl_boxes, pl_scores, pl_sem_scores, pl_sem_logits = self._filter_pls_conf_scores(pls_teacher_wa, ulb_inds)
+            ulb_pred_labels = torch.cat([pb[:, -1] for pb in pl_boxes]).int().detach()
+            pl_cls_count_pre_filter = torch.bincount(ulb_pred_labels, minlength=4)[1:]
+            # pl_scores = self._calc_true_ious(pl_boxes, batch_dict_ema['gt_boxes'][ulb_inds])
+            # Semantic Filtering
+            filtering_masks, pl_sem_scores_rect = self._filter_pls_sem_scores(pl_scores, pl_sem_logits)
+
+            # TODO(farzad): Set the scores of pseudo-labels that their argmax is changed after rectification to zero.
+            # pl_weights = [scores_rect.max(-1, keepdim=True)[0] for scores_rect in pl_sem_scores_rect]
+            pl_weights = [scores.new_ones(scores.shape[0], 1) for scores in pl_sem_scores_rect]
         if 'pl_metrics' in metrics_registry.tags():
             metrics_input = self.get_pl_metrics_input(pl_boxes, pl_sem_scores_rect, pl_weights, filtering_masks, batch_dict_ema['gt_boxes'][ulb_inds])
             metrics_registry.get('pl_metrics').update(**metrics_input)
 
-        pl_boxes = [torch.hstack([boxes[mask], weights[mask]]) for boxes, weights, mask in zip(pl_boxes, pl_weights, filtering_masks)]
+        pl_boxes = [boxes[mask] for boxes, mask in zip(pl_boxes, filtering_masks)]
 
         # Comment the following line to use gt boxes for unlabeled data!
         self._fill_with_pseudo_labels(batch_dict, pl_boxes, ulb_inds, lbl_inds)
@@ -601,12 +620,12 @@ class PVRCNN_SSL(Detector3DTemplate):
         key = 'gt_boxes' if key is None else key
         max_box_num = batch_dict['gt_boxes'].shape[1]
 
-        # Expand the gt_boxes to have the same shape as the pseudo_boxes
-        gt_scores = torch.zeros((batch_dict['gt_boxes'].shape[0], max_box_num, 1), device=batch_dict['gt_boxes'].device)
-        batch_dict['gt_boxes'] = torch.cat([batch_dict['gt_boxes'], gt_scores], dim=-1)
-        # Make sure that scores of labeled boxes are always 1, except for the padding rows which should remain zero.
-        valid_inds_lbl = torch.logical_not(torch.eq(batch_dict['gt_boxes'][labeled_inds], 0).all(dim=-1)).nonzero().long()
-        batch_dict['gt_boxes'][valid_inds_lbl[:, 0], valid_inds_lbl[:, 1], 8] = 1
+        # # Expand the gt_boxes to have the same shape as the pseudo_boxes
+        # gt_scores = torch.zeros((batch_dict['gt_boxes'].shape[0], max_box_num, 1), device=batch_dict['gt_boxes'].device)
+        # batch_dict['gt_boxes'] = torch.cat([batch_dict['gt_boxes'], gt_scores], dim=-1)
+        # # Make sure that scores of labeled boxes are always 1, except for the padding rows which should remain zero.
+        # valid_inds_lbl = torch.logical_not(torch.eq(batch_dict['gt_boxes'][labeled_inds], 0).all(dim=-1)).nonzero().long()
+        # batch_dict['gt_boxes'][valid_inds_lbl[:, 0], valid_inds_lbl[:, 1], 8] = 1
 
         # Ignore the count of pseudo boxes if filled with default values(zeros) when no preds are made
         max_pseudo_box_num = max(

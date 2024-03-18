@@ -34,8 +34,8 @@ class PointHeadSimple(PointHeadTemplate):
         """
         point_coords = input_dict['point_coords']
         gt_boxes = input_dict['gt_boxes']
-        # TODO(farzad): This is a temporary fix for the issue that the last column of gt_boxes_with_classes is the pl scores
-        gt_boxes = gt_boxes[:, :, 0:8]
+        # # TODO(farzad): This is a temporary fix for the issue that the last column of gt_boxes_with_classes is the pl scores
+        # gt_boxes = gt_boxes[:, :, 0:8]
         assert gt_boxes.shape.__len__() == 3, 'gt_boxes.shape=%s' % str(gt_boxes.shape)
         assert point_coords.shape.__len__() in [2], 'points.shape=%s' % str(point_coords.shape)
 

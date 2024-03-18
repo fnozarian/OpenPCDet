@@ -51,8 +51,9 @@ class ProposalTargetLayer(nn.Module):
         batch_roi_scores = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
         batch_roi_scores_logits = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, 3)
         batch_roi_labels = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
-        # TODO(farzad): make sure to revert `code_size + 2` to `code_size + 1` if weights are not appended to gts.
-        batch_gt_of_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size + 2)
+        # # TODO(farzad): make sure to revert `code_size + 2` to `code_size + 1` if weights are not appended to gts.
+        # batch_gt_of_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size + 2)
+        batch_gt_of_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size + 1)
         batch_roi_ious = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
         batch_reg_valid_mask = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
         batch_cls_labels = -rois.new_ones(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
@@ -203,11 +204,10 @@ class ProposalTargetLayer(nn.Module):
 
         return sampled_inds, reg_valid_mask, cls_labels, roi_ious, gt_assignment, interval_mask
 
-    # TODO(farzad) Our previous method for unlabeled samples. Test it for the new implementation.
     def subsample_labeled_rois(self, batch_dict, index):
         cur_roi = batch_dict['rois'][index]
         cur_gt_boxes = batch_dict['gt_boxes'][index]
-        cur_gt_boxes = cur_gt_boxes[:, 0:8]
+        # cur_gt_boxes = cur_gt_boxes[:, 0:8]
         cur_roi_labels = batch_dict['roi_labels'][index]
 
         if self.roi_sampler_cfg.get('SAMPLE_ROI_BY_EACH_CLASS', False):

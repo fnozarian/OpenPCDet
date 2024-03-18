@@ -41,8 +41,8 @@ class AxisAlignedTargetAssigner(object):
         Returns:
 
         """
-        # TODO(farzad): This is a temporary fix for the issue that the last column of gt_boxes_with_classes is the pl scores
-        gt_boxes_with_classes = gt_boxes_with_classes[:, :, :8]
+        # # TODO(farzad): This is a temporary fix for the issue that the last column of gt_boxes_with_classes is the pl scores
+        # gt_boxes_with_classes = gt_boxes_with_classes[:, :, :8]
         bbox_targets = []
         cls_labels = []
         reg_weights = []

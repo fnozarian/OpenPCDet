@@ -73,7 +73,7 @@ class RoIHeadTemplate(nn.Module):
         self.avg_num_fgs_per_sample = 4.5
         self.iteration_count = 0
         self.target_dist = torch.tensor([0.82, 0.13, 0.05])
-        self.momentum = 0.9
+        self.momentum = 0.99
         self.predict_boxes_when_training = predict_boxes_when_training
 
     def build_losses(self, losses_cfg):
@@ -249,7 +249,7 @@ class RoIHeadTemplate(nn.Module):
         reg_valid_mask = forward_ret_dict['reg_valid_mask'].view(-1)
         gt_boxes3d_ct = forward_ret_dict['gt_of_rois'][..., 0:code_size]
         gt_of_rois_src = forward_ret_dict['gt_of_rois_src'][..., 0:code_size].view(-1, code_size)
-        gt_of_rois_loss_weight = forward_ret_dict['gt_of_rois'][..., -1].view(-1)
+        # gt_of_rois_loss_weight = forward_ret_dict['gt_of_rois'][..., -1].view(-1)
         rcnn_reg = forward_ret_dict['rcnn_reg']  # (rcnn_batch_size, C)
         roi_boxes3d = forward_ret_dict['rois']
         rcnn_batch_size = gt_boxes3d_ct.view(-1, code_size).shape[0]
@@ -274,9 +274,9 @@ class RoIHeadTemplate(nn.Module):
             )  # [B, M, 7]
 
             fg_sum_ = fg_mask.reshape(batch_size, -1).long().sum(-1)
-            assert gt_of_rois_loss_weight[:rcnn_batch_size // 2].sum() == rcnn_batch_size // 2
+            # assert gt_of_rois_loss_weight[:rcnn_batch_size // 2].sum() == rcnn_batch_size // 2
             rcnn_loss_reg = (rcnn_loss_reg.view(rcnn_batch_size, -1) *
-                             gt_of_rois_loss_weight.view(rcnn_batch_size, -1) *
+                             # gt_of_rois_loss_weight.view(rcnn_batch_size, -1) *
                              fg_mask.unsqueeze(dim=-1).float()
                              ).reshape(batch_size, -1).sum(-1) / torch.clamp(fg_sum_.float(), min=1.0)
             rcnn_loss_reg = rcnn_loss_reg * loss_cfgs.LOSS_WEIGHTS['rcnn_reg_weight']
@@ -351,11 +351,10 @@ class RoIHeadTemplate(nn.Module):
             self.iteration_count += 1
             tau = self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS.get('unbiased_ce_tau', 1.0)
             batch_size = forward_ret_dict['rcnn_cls_labels'].shape[0]
-            ulb_bs = batch_size // 2
             roi_labels = forward_ret_dict['roi_labels']
 
             rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels']
-            rcnn_cls_logits = forward_ret_dict['rcnn_cls'].reshape(batch_size, -1)
+            rcnn_cls_logits = forward_ret_dict['rcnn_cls'].view(batch_size, -1)
             cls_valid_mask = (rcnn_cls_labels >= 0).float()
             assert cls_valid_mask.sum() == cls_valid_mask.numel(), "All the labels should be valid if valid mask is not used"
 
@@ -383,20 +382,34 @@ class RoIHeadTemplate(nn.Module):
 
             # torch.log(1 - self.target_dist)
             # tensor([-1.7148, -0.1393, -0.0513])
-            log_target = torch.log(1 - self.target_dist)
 
-            ulb_roi_labels = roi_labels.split(ulb_bs)[1] - 1
-            ulb_logit_offsets = log_target.unsqueeze(0).repeat(ulb_bs, 1).to(ulb_roi_labels.device).gather(1, ulb_roi_labels)
+            roi_labels = forward_ret_dict['roi_labels']
+            ulb_roi_labels = roi_labels.chunk(2)[1].long() - 1
+            ulb_label_hist = torch.bincount(ulb_roi_labels.view(-1), minlength=3)
+            ulb_rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'].chunk(2)[1]
+            ulb_sum_cls_labels = roi_labels.new_zeros((3,), dtype=torch.float).scatter_add_(0, ulb_roi_labels.view(-1), ulb_rcnn_cls_labels.view(-1))
+            ulb_rcnn_cls_dist = ulb_sum_cls_labels / torch.clamp(ulb_label_hist, min=1.0)
+
+            self._ema_update_p('mean_p_cls', ulb_rcnn_cls_dist)
+
+            # average values when using fully supervised setting: torch.log(torch.tensor([0.2, 0.1, 0.1]))
+            # tensor([-1.6094, -2.3026, -2.3026])
+            # torch.log(torch.tensor([0.2, 0.1, 1e-6])) with epsilon 1e-6 if the value is 0
+            # tensor([ -1.6094,  -2.3026, -13.8155])
+            log_target = torch.log(torch.clamp(self.mean_p_cls, min=1e-6)).to(ulb_roi_labels.device)
+            ulb_logit_offsets = log_target.unsqueeze(0).repeat(ulb_roi_labels.shape[0], 1).gather(1, ulb_roi_labels)
+            ulb_logit_offsets = ulb_logit_offsets * ulb_rcnn_cls_labels
             logit_offsets = torch.cat([torch.zeros_like(ulb_logit_offsets), ulb_logit_offsets])
-            unbiased_logits = rcnn_cls_logits - tau * logit_offsets
-            batch_loss_cls = F.binary_cross_entropy_with_logits(unbiased_logits, rcnn_cls_labels, reduction='none')
-            rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
+            unbiased_logits = rcnn_cls_logits + tau * logit_offsets
+            batch_loss_cls = F.binary_cross_entropy(torch.sigmoid(unbiased_logits).view(-1), rcnn_cls_labels.view(-1), reduction='none')
+            rcnn_loss_cls = (batch_loss_cls.unsqueeze(-1).view_as(cls_valid_mask) * cls_valid_mask).sum(-1) / torch.clamp(cls_valid_mask.sum(-1), min=1.0)
         else:
             raise NotImplementedError
 
         rcnn_loss_cls = rcnn_loss_cls * loss_cfgs.LOSS_WEIGHTS['rcnn_cls_weight']
         tb_dict = {
-            'rcnn_loss_cls': rcnn_loss_cls
+            'rcnn_loss_cls': rcnn_loss_cls,
+            'rcnn_cls_dist_unlabeled': self._arr2dict(self.mean_p_cls.detach().cpu().numpy()) if 'ulb_rcnn_cls_dist' in locals() else None,
         }
         return rcnn_loss_cls, tb_dict
 
@@ -492,9 +505,7 @@ class RoIHeadTemplate(nn.Module):
     def get_loss(self, tb_dict=None):
         tb_dict = {} if tb_dict is None else tb_dict
 
-        if not self.model_cfg.ENABLE_SOFT_TEACHER or self.model_cfg.TARGET_CONFIG.DISABLE_ST_WEIGHTS:
-            self.forward_ret_dict['rcnn_cls_weights'] = torch.ones_like(self.forward_ret_dict['rcnn_cls_labels'])
-        else:
+        if self.model_cfg.ENABLE_SOFT_TEACHER and not self.model_cfg.TARGET_CONFIG.DISABLE_ST_WEIGHTS:
             # Get reliability weights for unlabeled samples
             unlabeled_inds = self.forward_ret_dict['unlabeled_inds']
             self.forward_ret_dict['rcnn_cls_weights'][unlabeled_inds] = self._get_reliability_weight(unlabeled_inds)
