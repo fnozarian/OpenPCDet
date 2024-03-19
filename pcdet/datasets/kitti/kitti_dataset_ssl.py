@@ -72,7 +72,7 @@ class KittiDatasetSSL(DatasetTemplate):
 
     def include_kitti_data(self, mode):
         if self.logger is not None:
-            self.logger.info('Loading KITTI SSL dataset')
+            self.logger.info('Loading KITTI ssl dataset')
         kitti_infos = []
 
         for info_path in self.dataset_cfg.INFO_PATH[mode]:

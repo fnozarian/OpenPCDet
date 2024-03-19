@@ -286,8 +286,7 @@ MODEL:
           ENABLE: True
           RESET_STATE_INTERVAL: 32
           BG_THRESH: 0.25
-    ADAPTIVE_THRESH_CONFIG:
-      AdaMatch:
+    ADAPTIVE_THRESHOLDING:
         ENABLE: False
         THRESH_METHOD: LabelMatch # AdaMatch, FreeMatch, DebiasedPL, LabelMatch
         JOINT_DIST_ALIGN: True  # LabelMatch: True (Tested)

@@ -3,12 +3,8 @@ from torchmetrics import Metric
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import kde
-import seaborn as sns
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
-
-palettes = dict(zip(['fp', 'tn', 'tp', 'fn'], sns.color_palette("hls", 4)))
-import warnings
-from scipy.stats import norm, truncnorm, skewnorm
+from scipy.stats import norm, truncnorm
 
 
 def _lbl(tensor, mask=None):
@@ -24,7 +20,7 @@ def _get_cls_dist(labels):
     return cls_counts / cls_counts.sum()
 
 
-class AdaMatch(Metric):
+class AdaptiveThresholding(Metric):
     full_state_update: bool = False
 
     def __init__(self, **configs):
@@ -40,7 +36,7 @@ class AdaMatch(Metric):
         self.ulb_ratio = configs.get('ULB_RATIO', 0.5)
         self.joint_dist_align = configs.get('JOINT_DIST_ALIGN', True)
         self.enable_ulb_cls_dist_loss = configs.get('ENABLE_ULB_CLS_DIST_LOSS', False)
-        self.states_name = ['sem_scores_wa', 'scores_rect', 'conf_scores_wa', 'joint', 'pls_wa', 'gts_wa',
+        self.states_name = ['sem_scores_wa', 'conf_scores_wa', 'joint', 'pls_wa', 'gts_wa',
                             'gt_labels_wa']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
         self.thresh = torch.zeros((len(self.class_names),))  # set by the thresh method
@@ -412,19 +408,15 @@ class AdaMatch(Metric):
             max_scores, labels = torch.max(scores, dim=-1)
             thresh = self._get_threshold()
             thresh = thresh.repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
-            return max_scores > thresh, scores  # these scores will be discarded
+            return max_scores > thresh, scores
 
         elif self.thresh_method == 'DebiasedPL':
-            # TODO can we use the same logic for conf score rectification?
-            # I guess the rect_logits can be equivalently implemented as:
-            # rect_logits = logits - lambda * torch.log(_ulb(self.mean_p_model['sem_scores_wa']))
-            # where lambda is a hyperparameter proportional to the temperature.
             rect_logits = sem_logits / self.temperature - torch.log(_ulb(self.mean_p_model['sem_scores_wa']))
             scores = torch.softmax(rect_logits, dim=-1)
             max_scores, labels = torch.max(scores, dim=-1)
             thresh = self._get_threshold()
             thresh = thresh.repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
-            return max_scores > thresh, scores  # these scores will be discarded
+            return max_scores > thresh, scores
 
         elif self.thresh_method == 'LabelMatch':
             scores = torch.softmax(sem_logits / self.temperature, dim=-1)

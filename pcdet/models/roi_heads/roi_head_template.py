@@ -26,7 +26,7 @@ def get_roi_metrics_input(targets_dict, mask_type='cls'):
         # (Proposals) ROI info
         rois = targets_dict['rois'][uind][mask].detach().clone()
         roi_labels = targets_dict['roi_labels'][uind][mask].unsqueeze(-1).detach().clone()
-        temperature = cfg.MODEL.ADAPTIVE_THRESH_CONFIG.AdaMatch.TEMPERATURE_SA
+        temperature = cfg.MODEL.ADAPTIVE_THRESHOLDING.TEMPERATURE_SA
         roi_scores_multiclass = torch.softmax(targets_dict['roi_scores_logits'][uind][mask].detach().clone() / temperature, dim=-1)
         # roi_sim_scores_multiclass = targets_dict['roi_sim_scores'][uind][mask].detach().clone()
         roi_labeled_boxes = torch.cat([rois, roi_labels], dim=-1)
