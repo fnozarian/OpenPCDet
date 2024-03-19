@@ -5,41 +5,26 @@ import matplotlib.pyplot as plt
 from scipy.stats import kde
 import seaborn as sns
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
+
 palettes = dict(zip(['fp', 'tn', 'tp', 'fn'], sns.color_palette("hls", 4)))
 import warnings
 from scipy.stats import norm, truncnorm, skewnorm
 
-# TODO: can we delay the teacher/student weight updates until all the reset_state_interval number of samples are obtained?
-# TODO: Test the effect of the reset_state_interval on the performance
-# TODO: Set the FG of lbl data based on GTs
 
 def _lbl(tensor, mask=None):
     return _lbl(tensor)[_lbl(mask)] if mask is not None else tensor.chunk(2)[0].squeeze(0)
 
+
 def _ulb(tensor, mask=None):
     return _ulb(tensor)[_ulb(mask)] if mask is not None else tensor.chunk(2)[1].squeeze(0)
+
 
 def _get_cls_dist(labels):
     cls_counts = labels.int().bincount(minlength=4)[1:]
     return cls_counts / cls_counts.sum()
 
+
 class AdaMatch(Metric):
-    """
-        Adamatch based relative Thresholding
-        mean conf. of the top-1 prediction on the weakly aug source data multiplied by a user provided threshold
-
-        Adamatch based Dist. Alignment
-        Rectify the target unlabeled pseudo-labels by multiplying them by the ratio of the expected
-        value of the weakly aug source labels E[YcapSL;w] to the expected
-        value of the target labels E[YcapTU;w], obtaining the final pseudo-labels YtildaTU;w
-
-        REF: UPS FRAMEWORK DA
-        probs_x_ulb_w = accumulated_metrics['pl_scores_wa_unlab'].view(-1)
-        probs_x_lb_s = accumulated_metrics['pl_scores_wa_lab'].view(-1)
-        self.p_model = self.momentum  * self.p_model + (1 - self.momentum) * torch.mean(probs_x_ulb_w)
-        self.p_target = self.momentum  * self.p_target + (1 - self.momentum) * torch.mean(probs_x_lb_s)
-        probs_x_ulb_aligned = probs_x_ulb_w * (self.p_target + 1e-6) / (self.p_model + 1e-6)
-    """
     full_state_update: bool = False
 
     def __init__(self, **configs):
@@ -55,7 +40,8 @@ class AdaMatch(Metric):
         self.ulb_ratio = configs.get('ULB_RATIO', 0.5)
         self.joint_dist_align = configs.get('JOINT_DIST_ALIGN', True)
         self.enable_ulb_cls_dist_loss = configs.get('ENABLE_ULB_CLS_DIST_LOSS', False)
-        self.states_name = ['sem_scores_wa', 'scores_rect', 'conf_scores_wa', 'joint', 'pls_wa', 'gts_wa', 'gt_labels_wa']
+        self.states_name = ['sem_scores_wa', 'scores_rect', 'conf_scores_wa', 'joint', 'pls_wa', 'gts_wa',
+                            'gt_labels_wa']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
         self.thresh = torch.zeros((len(self.class_names),))  # set by the thresh method
         self.iteration_count = 0
@@ -91,6 +77,7 @@ class AdaMatch(Metric):
             value = kwargs.get(state_name)
             if value is not None:
                 getattr(self, state_name).append(value)
+
     def _arrange_tensor(self, tensor):
         splits = torch.split(tensor, int(self.ulb_ratio * self.bs), dim=0)
         lbl = torch.cat(splits[::2], dim=0)
@@ -109,6 +96,7 @@ class AdaMatch(Metric):
                 mstate = torch.cat(mstate, dim=0)
             accumulated_metrics[mname] = self._arrange_tensor(mstate)
         return accumulated_metrics
+
     def _get_p_max_stats(self, max_scores, labels, mask, hist_minlength=3, split=None, type='micro'):
         if split is None:
             split = ['lbl', 'ulb']
@@ -119,7 +107,8 @@ class AdaMatch(Metric):
             labels_hist = torch.bincount(labels, minlength=hist_minlength)
             p_max_model = labels.new_zeros(hist_minlength, dtype=max_scores.dtype).scatter_add_(0, labels, max_scores)
             mean_p_max_classwise = p_max_model / (labels_hist + 1e-6)
-            std_p_max_classwise = torch.cat([max_scores[labels == i].std().view(1) for i in range(hist_minlength)], dim=0)
+            std_p_max_classwise = torch.cat([max_scores[labels == i].std().view(1) for i in range(hist_minlength)],
+                                            dim=0)
             if type == 'micro':
                 p_max_model = p_max_model.sum() / labels_hist.sum()
             elif type == 'macro':
@@ -128,9 +117,12 @@ class AdaMatch(Metric):
             labels_hist = labels_hist / labels_hist.sum()
             return p_max_model, labels_hist, mean_p_max_classwise, std_p_max_classwise
         elif isinstance(split, list) and len(split) == 2:
-            p_s0, h_s0, pc_s0, std0 = self._get_p_max_stats(max_scores, labels, mask, hist_minlength=hist_minlength, split=split[0], type=type)
-            p_s1, h_s1, pc_s1, std1 = self._get_p_max_stats(max_scores, labels, mask, hist_minlength=hist_minlength, split=split[1], type=type)
-            return torch.vstack([p_s0, p_s1]).squeeze(), torch.vstack([h_s0, h_s1]), torch.vstack([pc_s0, pc_s1]), torch.vstack([std0, std1])
+            p_s0, h_s0, pc_s0, std0 = self._get_p_max_stats(max_scores, labels, mask, hist_minlength=hist_minlength,
+                                                            split=split[0], type=type)
+            p_s1, h_s1, pc_s1, std1 = self._get_p_max_stats(max_scores, labels, mask, hist_minlength=hist_minlength,
+                                                            split=split[1], type=type)
+            return torch.vstack([p_s0, p_s1]).squeeze(), torch.vstack([h_s0, h_s1]), torch.vstack(
+                [pc_s0, pc_s1]), torch.vstack([std0, std1])
         else:
             raise ValueError(f"Invalid split type: {split}")
 
@@ -186,6 +178,8 @@ class AdaMatch(Metric):
                 max_scores, labels = torch.max(scores, dim=-1)
                 pre_filtering_mask = max_scores > 0.1
                 padding_mask = padding_mask & pre_filtering_mask
+                self.max_scores[sname] = max_scores
+                self.labels[sname] = labels
             else:
                 scores = acc_metrics[sname]
 
@@ -198,12 +192,10 @@ class AdaMatch(Metric):
                 scores = torch.softmax(scores / (self.temperature_sa if '_sa' in sname else self.temperature), dim=-1)
                 max_scores, labels = torch.max(scores, dim=-1)
 
-            if sname == 'joint':
-                self.max_scores[sname] = max_scores
-                self.labels[sname] = labels
-
             # hist_minlength = scores.shape[-1]
-            mean_p_max, labels_hist, mean_p_max_classwise, std_p_max_classwise = self._get_p_max_stats(max_scores, labels, padding_mask, 3)
+            mean_p_max, labels_hist, mean_p_max_classwise, std_p_max_classwise = self._get_p_max_stats(max_scores,
+                                                                                                       labels,
+                                                                                                       padding_mask, 3)
             mean_p_model_lbl = _lbl(scores, padding_mask).mean(dim=0)
             mean_p_model_ulb = _ulb(scores, padding_mask).mean(dim=0)
             mean_p_model = torch.vstack([mean_p_model_lbl, mean_p_model_ulb])
@@ -216,7 +208,7 @@ class AdaMatch(Metric):
 
             self.log_results(results, sname=sname)
 
-            if self.enable_plots and self.iteration_count % 1 == 0 and sname == 'joint':
+            if self.enable_plots and self.iteration_count % 20 == 0 and sname == 'joint':
                 fig = self.draw_dist_plots(padding_mask)
                 results[f'dist_plots_{sname}'] = fig
 
@@ -238,7 +230,8 @@ class AdaMatch(Metric):
         elif self.thresh_method == 'LabelMatch':
             assert self.joint_dist_align == True, "LabelMatch requires joint scores currently."
             ulb_bs = int(self.bs * self.ulb_ratio)
-            exp_num_fgs = self.mean_p_model['gt'].to(scores.device) * self.num_fgs_per_sample * ulb_bs * self.reset_state_interval
+            exp_num_fgs = self.mean_p_model['gt'].to(
+                scores.device) * self.num_fgs_per_sample * ulb_bs * self.reset_state_interval
             exp_num_fgs = exp_num_fgs.ceil().int()
             max_scores_ulb = _ulb(self.max_scores['joint'], padding_mask)
             labels_ulb = _ulb(self.labels['joint'], padding_mask)
@@ -256,12 +249,16 @@ class AdaMatch(Metric):
     def log_results(self, results, sname):
         results[f'mean_p_max_model_lbl/{sname}'] = _lbl(self.mean_p_max_model[sname])
         results[f'mean_p_max_model_ulb/{sname}'] = _ulb(self.mean_p_max_model[sname])
+        results[f'std_p_max_model_lbl/{sname}'] = _lbl(self.std_p_max_model[sname])
+        results[f'std_p_max_model_ulb/{sname}'] = _ulb(self.std_p_max_model[sname])
         results[f'labels_hist_lbl/{sname}'] = self._arr2dict(_lbl(self.labels_hist[sname]))
         results[f'labels_hist_ulb/{sname}'] = self._arr2dict(_ulb(self.labels_hist[sname]))
         results[f'mean_p_model_lbl/{sname}'] = self._arr2dict(_lbl(self.mean_p_model[sname]))
         results[f'mean_p_model_ulb/{sname}'] = self._arr2dict(_ulb(self.mean_p_model[sname]))
-        results[f'mean_p_max_model_classwise_lbl/{sname}'] = self._arr2dict(_lbl(self.mean_p_max_model_classwise[sname]), ignore_zeros=True)
-        results[f'mean_p_max_model_classwise_ulb/{sname}'] = self._arr2dict(_ulb(self.mean_p_max_model_classwise[sname]), ignore_zeros=True)
+        results[f'mean_p_max_model_classwise_lbl/{sname}'] = self._arr2dict(
+            _lbl(self.mean_p_max_model_classwise[sname]), ignore_zeros=True)
+        results[f'mean_p_max_model_classwise_ulb/{sname}'] = self._arr2dict(
+            _ulb(self.mean_p_max_model_classwise[sname]), ignore_zeros=True)
         # unbiased_p_model = self.mean_p_model[sname] / self.labels_hist[sname]
         # unbiased_p_model = unbiased_p_model / unbiased_p_model.sum(dim=-1, keepdim=True)
         # results[f'unbiased_p_model_lbl/{sname}'] = self._arr2dict(_lbl(unbiased_p_model))
@@ -273,8 +270,7 @@ class AdaMatch(Metric):
         batch_pls = torch.cat(pls)
         assigned_labels = torch.ones((batch_pls.shape[0], batch_pls.shape[1], 1), dtype=torch.int64,
                                      device=batch_pls.device) * -1
-        ious = torch.ones((batch_pls.shape[0], batch_pls.shape[1], 1), dtype=torch.float,
-                                     device=batch_pls.device)
+        ious = torch.ones((batch_pls.shape[0], batch_pls.shape[1], 1), dtype=torch.float, device=batch_pls.device)
         for batch_idx in range(len(batch_gts)):
             gts = batch_gts[batch_idx]
             pls = batch_pls[batch_idx]
@@ -287,13 +283,12 @@ class AdaMatch(Metric):
             if len(valid_gts) > 0 and len(valid_pls) > 0:
                 valid_gts_labels = valid_gts[:, -1].long() - 1
                 valid_pls_labels = valid_pls[:, -1].long() - 1
-                matched_threshold = torch.tensor(self.min_overlaps, dtype=torch.float, device=valid_pls_labels.device)[valid_pls_labels]
+                matched_threshold = torch.tensor(self.min_overlaps, dtype=torch.float, device=valid_pls_labels.device)[
+                    valid_pls_labels]
                 valid_pls_iou_wrt_gt, assigned_label, gt_to_pls_max_iou = self.get_max_iou(valid_pls[:, 0:7],
                                                                                            valid_gts[:, 0:7],
                                                                                            valid_gts_labels,
                                                                                            matched_threshold=matched_threshold)
-                # TODO: Verify the new implementation where mask_pl is used to index the assigned_labels.
-                # assigned_labels[batch_idx, :len(assigned_label), 0] = assigned_label
                 assigned_labels[batch_idx, mask_pl, 0] = assigned_label
                 ious[batch_idx, mask_pl, 0] = valid_pls_iou_wrt_gt
         assigned_labels = self._arrange_tensor(assigned_labels)
@@ -338,7 +333,8 @@ class AdaMatch(Metric):
 
     def draw_dist_plots(self, mask, lower_bound=0.1, upper_bound=1.0, bins=20):
         assert self.joint_dist_align == True, "Dist plots require joint scores currently."
-        ulb_mean_p_max, ulb_std_p_max = _ulb(self.mean_p_max_model_classwise['joint']), _ulb(self.std_p_max_model_classwise['joint'])
+        ulb_mean_p_max, ulb_std_p_max = _ulb(self.mean_p_max_model_classwise['joint']), _ulb(
+            self.std_p_max_model_classwise['joint'])
         ulb_max_scores, ulb_labels = _ulb(self.max_scores['joint'], mask), _ulb(self.labels['joint'], mask)
         colors = plt.cm.tab10.colors
         for i in range(3):
@@ -391,7 +387,7 @@ class AdaMatch(Metric):
         prob[tag] = prob_shadow[tag] / (1 - momentum ** self.iteration_count)
 
     def get_mask(self, conf_scores, sem_logits):
-        assert self.thresh_method in ['AdaMatch', 'FreeMatch', 'DebiasedPL', 'LabelMatch'],\
+        assert self.thresh_method in ['AdaMatch', 'FreeMatch', 'DebiasedPL', 'LabelMatch'], \
             f'{self.thresh_method} not in list [AdaMatch, FreeMatch, SoftMatch, DebiasedPL]'
 
         if self.iteration_count == 0:
@@ -416,7 +412,7 @@ class AdaMatch(Metric):
             max_scores, labels = torch.max(scores, dim=-1)
             thresh = self._get_threshold()
             thresh = thresh.repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
-            return max_scores > thresh, scores # these scores will be discarded
+            return max_scores > thresh, scores  # these scores will be discarded
 
         elif self.thresh_method == 'DebiasedPL':
             # TODO can we use the same logic for conf score rectification?
@@ -458,6 +454,7 @@ class AdaMatch(Metric):
         if array.shape[-1] == 1:
             return array.item()
         elif array.shape[-1] == len(self.class_names):
-            return {cls: array[cind] for cind, cls in enumerate(self.class_names) if array[cind] > 0 or not ignore_zeros}
+            return {cls: array[cind] for cind, cls in enumerate(self.class_names) if
+                    array[cind] > 0 or not ignore_zeros}
         else:
             raise ValueError(f"Invalid array shape: {array.shape}")
