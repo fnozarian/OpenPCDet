@@ -245,8 +245,8 @@ class AdaptiveThresholding(Metric):
     def log_results(self, results, sname):
         results[f'mean_p_max_model_lbl/{sname}'] = _lbl(self.mean_p_max_model[sname])
         results[f'mean_p_max_model_ulb/{sname}'] = _ulb(self.mean_p_max_model[sname])
-        results[f'std_p_max_model_lbl/{sname}'] = _lbl(self.std_p_max_model[sname])
-        results[f'std_p_max_model_ulb/{sname}'] = _ulb(self.std_p_max_model[sname])
+        results[f'std_p_max_model_lbl/{sname}'] = self._arr2dict(_lbl(self.std_p_max_model_classwise[sname]), ignore_zeros=True)
+        results[f'std_p_max_model_ulb/{sname}'] = self._arr2dict(_ulb(self.std_p_max_model_classwise[sname]), ignore_zeros=True)
         results[f'labels_hist_lbl/{sname}'] = self._arr2dict(_lbl(self.labels_hist[sname]))
         results[f'labels_hist_ulb/{sname}'] = self._arr2dict(_ulb(self.labels_hist[sname]))
         results[f'mean_p_model_lbl/{sname}'] = self._arr2dict(_lbl(self.mean_p_model[sname]))
