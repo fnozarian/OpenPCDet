@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import kde
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
-from scipy.stats import norm, truncnorm
+from scipy.stats import norm, truncnorm, beta
 
 
 def _lbl(tensor, mask=None):
@@ -162,30 +162,31 @@ class AdaptiveThresholding(Metric):
 
         self.iteration_count += 1
         acc_metrics = self._accumulate_metrics()
-
+        fig, axis = plt.subplots(1, 3, figsize=(12, 4), sharex=True, tight_layout=True, facecolor='w', edgecolor='k', frameon=True, subplot_kw={'aspect': 'auto'}, constrained_layout=True, gridspec_kw={'hspace': 0.0, 'wspace': 0.1})
         padding_mask = torch.logical_not(torch.all(acc_metrics['sem_scores_wa'] == 0, dim=-1))
-        # , 'sem_scores_wa', 'scores_rect'
-        for sname in ['joint', 'conf_scores_wa']:
+        for sidx, sname in enumerate(['sem_scores_wa', 'conf_scores_wa', 'joint']):
             if sname == 'joint':
                 scores = acc_metrics['sem_scores_wa']
                 conf_scores = acc_metrics['conf_scores_wa']
-                scores = torch.softmax(scores / self.temperature, dim=-1)
+                # scores = torch.softmax(scores / self.temperature, dim=-1)
+                scores = torch.sigmoid(scores)
                 scores *= conf_scores
                 max_scores, labels = torch.max(scores, dim=-1)
-                pre_filtering_mask = max_scores > 0.1
-                padding_mask = padding_mask & pre_filtering_mask
+                # pre_filtering_mask = max_scores > 0.1
+                # padding_mask = padding_mask & pre_filtering_mask
                 self.max_scores[sname] = max_scores
                 self.labels[sname] = labels
-            else:
-                scores = acc_metrics[sname]
 
             if sname == 'conf_scores_wa':
+                scores = acc_metrics['conf_scores_wa']
                 sem_scores = acc_metrics['sem_scores_wa']
                 _, labels = torch.max(sem_scores, dim=-1)
                 max_scores, _ = torch.max(scores, dim=-1)
 
             if sname == 'sem_scores_wa':
-                scores = torch.softmax(scores / (self.temperature_sa if '_sa' in sname else self.temperature), dim=-1)
+                scores = acc_metrics['sem_scores_wa']
+                # scores = torch.softmax(scores / self.temperature, dim=-1)
+                scores = torch.sigmoid(scores)
                 max_scores, labels = torch.max(scores, dim=-1)
 
             # hist_minlength = scores.shape[-1]
@@ -204,9 +205,12 @@ class AdaptiveThresholding(Metric):
 
             self.log_results(results, sname=sname)
 
-            if self.enable_plots and self.iteration_count % 20 == 0 and sname == 'joint':
-                fig = self.draw_dist_plots(padding_mask)
-                results[f'dist_plots_{sname}'] = fig
+            if self.enable_plots:
+                fit_params = self.draw_dist_plots(max_scores, labels, padding_mask, sname, axis, sidx)
+                results[f'dist_plots'] = fig
+                if fit_params is not None:
+                    for j in range(fit_params.shape[1]):
+                        results[f'fit_param_{j}'] = self._arr2dict(fit_params[:, j])
 
         # self.draw_joint_dist_plots(acc_metrics['sem_scores_wa'], acc_metrics['conf_scores_wa'], prev_pad_mask,
         #                            self.pls_wa, self.gts_wa)
@@ -327,46 +331,54 @@ class AdaptiveThresholding(Metric):
 
         return results
 
-    def draw_dist_plots(self, mask, lower_bound=0.1, upper_bound=1.0, bins=20):
-        assert self.joint_dist_align == True, "Dist plots require joint scores currently."
-        ulb_mean_p_max, ulb_std_p_max = _ulb(self.mean_p_max_model_classwise['joint']), _ulb(
-            self.std_p_max_model_classwise['joint'])
-        ulb_max_scores, ulb_labels = _ulb(self.max_scores['joint'], mask), _ulb(self.labels['joint'], mask)
+    def draw_dist_plots(self, max_scores, labels, mask, sname, axis, sidx, bins=20):
+        # ulb_mean_p_max = _ulb(self.mean_p_max_model_classwise['joint'])
+        # ulb_std_p_max = _ulb(self.std_p_max_model_classwise['joint'])
+        ulb_max_scores, ulb_labels = _ulb(max_scores, mask), _ulb(labels, mask)
+
         colors = plt.cm.tab10.colors
+        fit_params = []
+        ax = axis[sidx]
         for i in range(3):
             scores = ulb_max_scores[ulb_labels == i].cpu().numpy()
-            mu = ulb_mean_p_max[i].item()
-            std = ulb_std_p_max[i].item()
+            ax.hist(scores, bins=bins, density=True, alpha=0.6, color=colors[i], label=self.class_names[i])
+            ax.axvline(x=self.thresh[i].item(), linestyle='--', color=colors[i], linewidth=2)
+
+            if sname == 'joint':
+                alpha, beta_val, _, _ = beta.fit(scores, loc=0, scale=1)
+                x = np.linspace(0, 1, 100)
+                p = beta.pdf(x, alpha, beta_val, loc=0, scale=1)
+                ax.plot(x, p, linewidth=1, color=colors[i])
+                fit_params.append(np.array([alpha, beta_val]).reshape(1, -1))
+            # mu = ulb_mean_p_max[i].item()
+            # std = ulb_std_p_max[i].item()
             # Calculate the parameters for the truncated distribution
-            a = (lower_bound - mu) / std
-            b = (upper_bound - mu) / std
+            # a = (lower_bound - mu) / std
+            # b = (upper_bound - mu) / std
 
             # truncated_mu, truncated_std = truncnorm.stats(a, b, moments='mv')
-            # Plot histogram of exam scores and fitted distributions for each class
-            plt.hist(scores, bins=bins, density=True, alpha=0.6, color=colors[i], label=self.class_names[i])
-            xmin, xmax = plt.xlim()
-            x = np.linspace(xmin, xmax, 100)
 
-            p = norm.pdf(x, mu, std)
-            plt.plot(x, p, linewidth=1, color=colors[i])
+            # xmin, xmax = ax.xlim()
+
+            # p = norm.pdf(x, mu, std)
 
             # Plot the truncated Gaussian distribution
-            x_trunc = np.linspace(lower_bound, upper_bound, 100)
-            p_trunc = truncnorm.pdf(x_trunc, a, b, loc=mu, scale=std)
-            plt.plot(x_trunc, p_trunc, '--', linewidth=1, color=colors[i])
+            # x_trunc = np.linspace(lower_bound, upper_bound, 100)
+            # p_trunc = truncnorm.pdf(x_trunc, a, b, loc=mu, scale=std)
+            # plt.plot(x_trunc, p_trunc, '--', linewidth=1, color=colors[i])
 
-            plt.axvline(x=self.thresh[i].item(), linestyle='--', color=colors[i], linewidth=2)
-
-        plt.xlabel('Max Scores')
-        plt.ylabel('Probability Density')
-        plt.title('Classwise Max Scores Distribution')
-        plt.legend()
-        plt.tight_layout()
-        bs = len(self.sem_scores_wa[0])
-        info = f"Iter: {self.iteration_count}    Interval: {self.reset_state_interval}    Batch Size: {bs}"
-        plt.suptitle(info, fontsize='small')
+        fit_params = np.concatenate(fit_params) if len(fit_params) > 0 else None
+        ax.set_xlabel(f'Max {sname} Scores')
+        if sidx == 0:
+            ax.set_ylabel('Probability Density')
+            ax.legend()
+        # bs = len(self.sem_scores_wa[0])
+        # info = f"Iter: {self.iteration_count}    Interval: {self.reset_state_interval}    Batch Size: {bs}"
+        # plt.suptitle(info, fontsize='small')
+        # plt.tight_layout()
         # plt.show()
-        return plt.gcf()
+        # return plt.gcf(), fit_params
+        return fit_params
 
     def rectify_sem_scores(self, sem_scores_ulb):
         sem_scores_ulb = sem_scores_ulb * self.ratio['AdaMatch']
@@ -387,14 +399,16 @@ class AdaptiveThresholding(Metric):
             f'{self.thresh_method} not in list [AdaMatch, FreeMatch, SoftMatch, DebiasedPL]'
 
         if self.iteration_count == 0:
-            scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            # scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            scores = torch.sigmoid(sem_logits)
             if self.joint_dist_align:
                 scores = scores * conf_scores.unsqueeze(-1)
             max_scores, labels = torch.max(scores, dim=-1)
             return max_scores > torch.ones_like(max_scores) / len(self.class_names), scores
 
         if self.thresh_method == 'AdaMatch':
-            scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            # scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            scores = torch.sigmoid(sem_logits)
             if self.joint_dist_align:
                 scores = scores * conf_scores.unsqueeze(-1)
             scores = self.rectify_sem_scores(scores)
@@ -404,22 +418,26 @@ class AdaptiveThresholding(Metric):
             return max_scores > thresh, scores
 
         elif self.thresh_method == 'FreeMatch':
-            scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            # scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            scores = torch.sigmoid(sem_logits)
             max_scores, labels = torch.max(scores, dim=-1)
             thresh = self._get_threshold()
             thresh = thresh.repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
             return max_scores > thresh, scores
 
         elif self.thresh_method == 'DebiasedPL':
-            rect_logits = sem_logits / self.temperature - torch.log(_ulb(self.mean_p_model['sem_scores_wa']))
-            scores = torch.softmax(rect_logits, dim=-1)
+            # rect_logits = sem_logits / self.temperature - torch.log(_ulb(self.mean_p_model['sem_scores_wa']))
+            rect_logits = sem_logits - torch.log(_ulb(self.mean_p_model['sem_scores_wa']))
+            # scores = torch.softmax(rect_logits, dim=-1)
+            scores = torch.sigmoid(rect_logits)
             max_scores, labels = torch.max(scores, dim=-1)
             thresh = self._get_threshold()
             thresh = thresh.repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
             return max_scores > thresh, scores
 
         elif self.thresh_method == 'LabelMatch':
-            scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            # scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            scores = torch.sigmoid(sem_logits)
             if self.joint_dist_align:
                 scores = scores * conf_scores.unsqueeze(-1)
             max_scores, labels = torch.max(scores, dim=-1)

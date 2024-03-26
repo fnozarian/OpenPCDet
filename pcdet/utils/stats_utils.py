@@ -31,7 +31,7 @@ def _assert_inputs_are_valid(rois: [torch.Tensor], roi_scores: [torch.Tensor], g
     )
     num_gts = torch.stack([torch.logical_not(torch.all(sample_gts == 0, dim=-1)).sum() for sample_gts in ground_truths])
     if num_gts.eq(0).any():
-        print(f"WARNING! Unlabeled sample (index {torch.nonzero(num_gts.eq(0))}) has no ground truths!")
+        print(f"\nWARNING! Unlabeled sample has no ground truths!")
 
 def get_max_iou_with_same_class(rois, roi_labels, gt_boxes, gt_labels):
     """

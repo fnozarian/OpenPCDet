@@ -408,9 +408,12 @@ class RoIHeadTemplate(nn.Module):
 
         rcnn_loss_cls = rcnn_loss_cls * loss_cfgs.LOSS_WEIGHTS['rcnn_cls_weight']
         tb_dict = {
-            'rcnn_loss_cls': rcnn_loss_cls,
-            'rcnn_cls_dist_unlabeled': self._arr2dict(self.mean_p_cls.detach().cpu().numpy()) if 'ulb_rcnn_cls_dist' in locals() else None,
+            'rcnn_loss_cls': rcnn_loss_cls
         }
+
+        if loss_cfgs.CLS_LOSS == 'UnbiasedCrossEntropy':
+          tb_dict.update({'rcnn_cls_dist_unlabeled': self._arr2dict(self.mean_p_cls.detach().cpu().numpy())})
+
         return rcnn_loss_cls, tb_dict
 
     def _ema_update_p(self, prob_name, probs):
