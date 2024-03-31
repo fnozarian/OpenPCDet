@@ -358,31 +358,6 @@ class RoIHeadTemplate(nn.Module):
             cls_valid_mask = (rcnn_cls_labels >= 0).float()
             assert cls_valid_mask.sum() == cls_valid_mask.numel(), "All the labels should be valid if valid mask is not used"
 
-            # conf_scores = torch.sigmoid(rcnn_cls_logits.detach())
-            # car_mask = roi_labels.split(ulb_bs)[1] == 1
-            # ped_mask = roi_labels.split(ulb_bs)[1] == 2
-            # cycl_mask = roi_labels.split(ulb_bs)[1] == 3
-            # from matplotlib import pyplot as plt
-            # car_logits = rcnn_cls_logits.split(ulb_bs)[1][car_mask]
-            # ped_logits = rcnn_cls_logits.split(ulb_bs)[1][ped_mask]
-            # cycl_logits = rcnn_cls_logits.split(ulb_bs)[1][cycl_mask]
-            # plt.hist(car_logits.view(-1).detach().cpu().numpy())
-            # plt.hist(ped_logits.view(-1).detach().cpu().numpy())
-            # plt.hist(cycl_logits.view(-1).detach().cpu().numpy())
-            # plt.hist(rcnn_cls_labels.split(8)[1][car_mask].view(-1).detach().cpu().numpy())
-            # plt.show()
-
-            # mean_conf_scores = conf_scores.reshape(2, -1).mean(keepdim=True, dim=-1)
-            # mean_cls_labels = rcnn_cls_labels.reshape(2, -1).mean(keepdim=True, dim=-1)
-            # self._ema_update_p('mean_p_cls', mean_conf_scores)
-            # self._ema_update_p('mean_cls_labels', mean_cls_labels)
-            # mean_p_cls_lbl = self.mean_p_cls.split(1)[0].repeat(batch_size//2, num_rois)
-            # mean_p_cls_ulb = self.mean_p_cls.split(1)[1].repeat(batch_size//2, num_rois)
-            # mean_p_cls = torch.cat([mean_p_cls_lbl, mean_p_cls_ulb], dim=0)
-
-            # torch.log(1 - self.target_dist)
-            # tensor([-1.7148, -0.1393, -0.0513])
-
             roi_labels = forward_ret_dict['roi_labels']
             ulb_roi_labels = roi_labels.chunk(2)[1].long() - 1
             ulb_label_hist = torch.bincount(ulb_roi_labels.view(-1), minlength=3)

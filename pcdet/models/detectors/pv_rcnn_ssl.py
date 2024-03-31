@@ -198,6 +198,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             pl_cls_count_pre_filter = torch.bincount(ulb_pred_labels, minlength=4)[1:]
             pl_boxes, pl_conf_scores, pl_sem_scores, pl_sem_logits, pl_rect_scores, masks = self._filter_pls(pls_teacher_wa, ulb_inds)
             pl_weights = [scores.new_ones(scores.shape[0], 1) for scores in pl_conf_scores]  # No weights for now
+            # pl_weights = [scores for scores in pl_conf_scores]  # No weights for now
+            # pl_weights = [scores.max(dim=-1)[0] for scores in pl_rect_scores]  # No weights for now
 
         if 'pl_metrics' in metrics_registry.tags():
             self._update_pl_metrics(pl_boxes, pl_rect_scores, pl_weights, masks, batch_dict_ema['gt_boxes'][ulb_inds])
@@ -220,7 +222,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict = cur_module(batch_dict)
 
         if self.thresh_alg is not None:
-            self._update_thresh_alg(batch_dict, pl_conf_scores, pl_sem_logits, pls_teacher_wa, lbl_inds)
+            self._update_thresh_alg(batch_dict_ema, pl_conf_scores, pl_sem_logits, pls_teacher_wa, pl_rect_scores, lbl_inds)
 
         if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTOTYPING', False):
             # Update the bank with student's features from augmented labeled data
@@ -436,7 +438,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         box_labels = box_labels.cpu().numpy()
         V.draw_scenes(points=points, gt_boxes=boxes, gt_labels=box_labels)
 
-    def _update_thresh_alg(self, batch_dict_ema, pl_conf_scores, pl_sem_logits, pls_teacher_wa, lbl_inds):
+    def _update_thresh_alg(self, batch_dict_ema, pl_conf_scores, pl_sem_logits, pls_teacher_wa, pl_rect_scores, lbl_inds):
         thresh_inputs = dict()
         pl_scores_lbl = [pls_teacher_wa[i]['pred_scores'] for i in lbl_inds]
         pl_sem_logits_lbl = [pls_teacher_wa[i]['pred_sem_logits'] for i in lbl_inds]
@@ -449,9 +451,9 @@ class PVRCNN_SSL(Detector3DTemplate):
         pls_ws = [torch.cat([pl['pred_boxes'], pl['pred_labels'].view(-1, 1)], dim=-1) for pl in pls_teacher_wa]
         thresh_inputs['pls_wa'] = torch.cat([self.pad_tensor(pl.unsqueeze(0), max_len=100) for pl in pls_ws]).detach().clone()
         # TODO: Note that the following sem_scores rect are not filtered (since adamatch is dependent on them)
-        # ulb_rect_scores = torch.cat([self.pad_tensor(scores.unsqueeze(0), max_len=100) for scores in pl_rect_scores]).detach().clone()
-        # lb_rect_scores = torch.softmax(sem_scores_wa_lbl / 4, dim=-1)  # note that the lbl data sem scores are not rectified
-        # thresh_inputs['scores_rect'] = torch.cat([lb_rect_scores, ulb_rect_scores])
+        ulb_rect_scores = torch.cat([self.pad_tensor(scores.unsqueeze(0), max_len=100) for scores in pl_rect_scores]).detach().clone()
+        lb_rect_scores = torch.ones_like(ulb_rect_scores)
+        thresh_inputs['scores_rect'] = torch.cat([lb_rect_scores, ulb_rect_scores])
         self.thresh_alg.update(**thresh_inputs)
 
     @staticmethod

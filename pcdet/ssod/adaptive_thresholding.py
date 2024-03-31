@@ -37,7 +37,7 @@ class AdaptiveThresholding(Metric):
         self.joint_dist_align = configs.get('JOINT_DIST_ALIGN', True)
         self.enable_ulb_cls_dist_loss = configs.get('ENABLE_ULB_CLS_DIST_LOSS', False)
         self.states_name = ['sem_scores_wa', 'conf_scores_wa', 'joint', 'pls_wa', 'gts_wa',
-                            'gt_labels_wa']
+                            'gt_labels_wa', 'scores_rect']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
         self.thresh = torch.zeros((len(self.class_names),))  # set by the thresh method
         self.iteration_count = 0
@@ -103,8 +103,7 @@ class AdaptiveThresholding(Metric):
             labels_hist = torch.bincount(labels, minlength=hist_minlength)
             p_max_model = labels.new_zeros(hist_minlength, dtype=max_scores.dtype).scatter_add_(0, labels, max_scores)
             mean_p_max_classwise = p_max_model / (labels_hist + 1e-6)
-            std_p_max_classwise = torch.cat([max_scores[labels == i].std().view(1) for i in range(hist_minlength)],
-                                            dim=0)
+            std_p_max_classwise = torch.cat([max_scores[labels == i].std().view(1) for i in range(hist_minlength)], dim=0)
             if type == 'micro':
                 p_max_model = p_max_model.sum() / labels_hist.sum()
             elif type == 'macro':
@@ -162,14 +161,18 @@ class AdaptiveThresholding(Metric):
 
         self.iteration_count += 1
         acc_metrics = self._accumulate_metrics()
-        fig, axis = plt.subplots(1, 3, figsize=(12, 4), sharex=True, tight_layout=True, facecolor='w', edgecolor='k', frameon=True, subplot_kw={'aspect': 'auto'}, constrained_layout=True, gridspec_kw={'hspace': 0.0, 'wspace': 0.1})
+        fig, axis = plt.subplots(1, 3, figsize=(12, 4), sharex=True, tight_layout=True, facecolor='w', edgecolor='k',
+                                 frameon=True, constrained_layout=True)
         padding_mask = torch.logical_not(torch.all(acc_metrics['sem_scores_wa'] == 0, dim=-1))
-        for sidx, sname in enumerate(['sem_scores_wa', 'conf_scores_wa', 'joint']):
+        # sem_mask = torch.logical_not(acc_metrics['sem_scores_wa'].sigmoid().max(dim=-1)[0] <= 0.1)
+        # padding_mask = padding_mask & sem_mask
+        for sidx, sname in enumerate(['sem_scores_wa', 'conf_scores_wa', 'joint', 'scores_rect']):
             if sname == 'joint':
                 scores = acc_metrics['sem_scores_wa']
                 conf_scores = acc_metrics['conf_scores_wa']
-                # scores = torch.softmax(scores / self.temperature, dim=-1)
-                scores = torch.sigmoid(scores)
+                scores = torch.softmax(scores / self.temperature, dim=-1)
+                # scores = torch.sigmoid(scores)
+                # scores /= scores.sum(dim=-1, keepdim=True)
                 scores *= conf_scores
                 max_scores, labels = torch.max(scores, dim=-1)
                 # pre_filtering_mask = max_scores > 0.1
@@ -185,8 +188,13 @@ class AdaptiveThresholding(Metric):
 
             if sname == 'sem_scores_wa':
                 scores = acc_metrics['sem_scores_wa']
-                # scores = torch.softmax(scores / self.temperature, dim=-1)
-                scores = torch.sigmoid(scores)
+                scores = torch.softmax(scores / self.temperature, dim=-1)
+                # scores = torch.sigmoid(scores)
+                # scores /= scores.sum(dim=-1, keepdim=True)
+                max_scores, labels = torch.max(scores, dim=-1)
+
+            if sname == 'scores_rect':
+                scores = acc_metrics['scores_rect']
                 max_scores, labels = torch.max(scores, dim=-1)
 
             # hist_minlength = scores.shape[-1]
@@ -249,7 +257,7 @@ class AdaptiveThresholding(Metric):
     def log_results(self, results, sname):
         results[f'mean_p_max_model_lbl/{sname}'] = _lbl(self.mean_p_max_model[sname])
         results[f'mean_p_max_model_ulb/{sname}'] = _ulb(self.mean_p_max_model[sname])
-        results[f'std_p_max_model_lbl/{sname}'] = self._arr2dict(_lbl(self.std_p_max_model_classwise[sname]), ignore_zeros=True)
+        # results[f'std_p_max_model_lbl/{sname}'] = self._arr2dict(_lbl(self.std_p_max_model_classwise[sname]), ignore_zeros=True)
         results[f'std_p_max_model_ulb/{sname}'] = self._arr2dict(_ulb(self.std_p_max_model_classwise[sname]), ignore_zeros=True)
         results[f'labels_hist_lbl/{sname}'] = self._arr2dict(_lbl(self.labels_hist[sname]))
         results[f'labels_hist_ulb/{sname}'] = self._arr2dict(_ulb(self.labels_hist[sname]))
@@ -341,15 +349,16 @@ class AdaptiveThresholding(Metric):
         ax = axis[sidx]
         for i in range(3):
             scores = ulb_max_scores[ulb_labels == i].cpu().numpy()
-            ax.hist(scores, bins=bins, density=True, alpha=0.6, color=colors[i], label=self.class_names[i])
+            ax.hist(scores, bins=bins, alpha=0.6, color=colors[i], label=self.class_names[i])
             ax.axvline(x=self.thresh[i].item(), linestyle='--', color=colors[i], linewidth=2)
 
-            if sname == 'joint':
-                alpha, beta_val, _, _ = beta.fit(scores, loc=0, scale=1)
-                x = np.linspace(0, 1, 100)
-                p = beta.pdf(x, alpha, beta_val, loc=0, scale=1)
-                ax.plot(x, p, linewidth=1, color=colors[i])
-                fit_params.append(np.array([alpha, beta_val]).reshape(1, -1))
+            # if sname == 'joint':
+            #     alpha, beta_val, _, _ = beta.fit(scores, loc=0, scale=1)
+            #     x = np.linspace(0, 1, 100)
+            #     p = beta.pdf(x, alpha, beta_val, loc=0, scale=1)
+            #     ax.plot(x, p, linewidth=1, color=colors[i])
+            #     fit_params.append(np.array([alpha, beta_val]).reshape(1, -1))
+
             # mu = ulb_mean_p_max[i].item()
             # std = ulb_std_p_max[i].item()
             # Calculate the parameters for the truncated distribution
@@ -399,16 +408,18 @@ class AdaptiveThresholding(Metric):
             f'{self.thresh_method} not in list [AdaMatch, FreeMatch, SoftMatch, DebiasedPL]'
 
         if self.iteration_count == 0:
-            # scores = torch.softmax(sem_logits / self.temperature, dim=-1)
-            scores = torch.sigmoid(sem_logits)
+            scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            # scores = torch.sigmoid(sem_logits)
+            # scores /= scores.sum(dim=-1, keepdim=True)
             if self.joint_dist_align:
                 scores = scores * conf_scores.unsqueeze(-1)
             max_scores, labels = torch.max(scores, dim=-1)
             return max_scores > torch.ones_like(max_scores) / len(self.class_names), scores
 
         if self.thresh_method == 'AdaMatch':
-            # scores = torch.softmax(sem_logits / self.temperature, dim=-1)
-            scores = torch.sigmoid(sem_logits)
+            scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            # scores = torch.sigmoid(sem_logits)
+            # scores /= scores.sum(dim=-1, keepdim=True)
             if self.joint_dist_align:
                 scores = scores * conf_scores.unsqueeze(-1)
             scores = self.rectify_sem_scores(scores)
@@ -438,6 +449,7 @@ class AdaptiveThresholding(Metric):
         elif self.thresh_method == 'LabelMatch':
             # scores = torch.softmax(sem_logits / self.temperature, dim=-1)
             scores = torch.sigmoid(sem_logits)
+            # scores /= scores.sum(dim=-1, keepdim=True)
             if self.joint_dist_align:
                 scores = scores * conf_scores.unsqueeze(-1)
             max_scores, labels = torch.max(scores, dim=-1)
