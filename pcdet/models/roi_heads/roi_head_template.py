@@ -67,8 +67,10 @@ class RoIHeadTemplate(nn.Module):
         self.forward_ret_dict = None
         self.mean_p_model_sa = None
         self.mean_p_cls = None
+        self.ulb_cls_dist = None
         self.mean_cls_labels = None
         self.mean_p_cls_shadow = None
+        self.ulb_cls_dist_shadow = None
         self.mean_cls_labels_shadow = None
         self.avg_num_fgs_per_sample = 4.5
         self.iteration_count = 0
@@ -367,6 +369,13 @@ class RoIHeadTemplate(nn.Module):
 
             self._ema_update_p('mean_p_cls', ulb_rcnn_cls_dist)
 
+            # ulb_cls_dist = ulb_sum_cls_labels / ulb_sum_cls_labels.sum()
+            # self._ema_update_p('ulb_cls_dist', ulb_cls_dist)
+            # self.target_dist = self.target_dist.to(ulb_cls_dist.device)
+            # divergence_offsets = self.target_dist * torch.log(ulb_cls_dist / self.target_dist)
+            # ulb_logit_offsets = divergence_offsets.unsqueeze(0).repeat(ulb_roi_labels.shape[0], 1).gather(1, ulb_roi_labels)
+            # ulb_logit_offsets = ulb_logit_offsets * (1 - ulb_rcnn_cls_labels)
+
             # average values when using fully supervised setting: torch.log(torch.tensor([0.2, 0.1, 0.1]))
             # tensor([-1.6094, -2.3026, -2.3026])
             # torch.log(torch.tensor([0.2, 0.1, 1e-6])) with epsilon 1e-6 if the value is 0
@@ -387,7 +396,8 @@ class RoIHeadTemplate(nn.Module):
         }
 
         if loss_cfgs.CLS_LOSS == 'UnbiasedCrossEntropy':
-          tb_dict.update({'rcnn_cls_dist_unlabeled': self._arr2dict(self.mean_p_cls.detach().cpu().numpy())})
+          tb_dict.update({'rcnn_fg_dist_unlabeled': self._arr2dict(self.mean_p_cls.detach().cpu().numpy())})
+          tb_dict.update({'rcnn_cls_dist_unlabeled': self._arr2dict(self.ulb_cls_dist.detach().cpu().numpy())})
 
         return rcnn_loss_cls, tb_dict
 

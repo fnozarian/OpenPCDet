@@ -216,7 +216,7 @@ MODEL:
 
         LOSS_CONFIG:
             UL_RCNN_CLS_WEIGHT_TYPE: 'rev_uc-bg'
-            CLS_LOSS: UnbiasedCrossEntropy
+            CLS_LOSS: BinaryCrossEntropy
             REG_LOSS: smooth-l1
             CORNER_LOSS_REGULARIZATION: True
             LOSS_WEIGHTS: {
@@ -292,7 +292,9 @@ MODEL:
         JOINT_DIST_ALIGN: True  # LabelMatch: True (Tested)
         TEMPERATURE: 2.0
         TEMPERATURE_SA: 2.0
-        FIXED_THRESH: 1.0
+        # TODO: Experiment: This adjusts the precision/recall trade-off.
+        # TODO: Improve by making it dynamic.
+        FIXED_THRESH: 0.3
         MOMENTUM: 0.99
         RESET_STATE_INTERVAL: 16  # LabelMatch: 16, AdaMatch: 4
         ENABLE_PLOTS: False

@@ -244,15 +244,15 @@ class PredQualityMetrics(Metric):
 
         y_labels = y_labels.cpu().numpy()
         pred_labels = pred_labels.cpu().numpy()
-        weights = weights.cpu().numpy()
-        label_hist = torch.bincount(argmax_scores, minlength=3)
-        classwise_metrics['mean_p_max_model'] = scores.max(dim=-1)[0].mean().item()
-        mean_p_max_model_classwise = scores.new_zeros((3,)).scatter_add_(0, argmax_scores, max_scores)
-        mean_p_max_model_classwise /= label_hist
+        classwise_metrics['mean_p_max_model'] = (max_scores * weights).mean().item()
+        mean_p_max_model_classwise = scores.new_zeros((3,)).scatter_add_(0, argmax_scores, max_scores * weights)
+        mean_p_max_model_classwise /= torch.bincount(argmax_scores, weights=weights, minlength=3)
         classwise_metrics['mean_p_max_model_classwise'] = _arr2dict(mean_p_max_model_classwise.cpu().numpy(), ignore_nan=True)
-        classwise_metrics['mean_p_model'] = _arr2dict(scores.mean(dim=0).cpu().numpy())
+        mean_p_model = (scores * weights.unsqueeze(-1)).sum(dim=0) / weights.sum()
+        classwise_metrics['mean_p_model'] = _arr2dict(mean_p_model.cpu().numpy())
+        label_hist = torch.bincount(argmax_scores, minlength=3)
         classwise_metrics['label_hist'] = _arr2dict(label_hist.cpu().numpy(), ignore_zeros=True)
-        precision = precision_score(y_labels, pred_labels, sample_weight=weights, average=None, labels=range(3), zero_division=np.nan)
+        precision = precision_score(y_labels, pred_labels, sample_weight=weights.cpu().numpy(), average=None, labels=range(3), zero_division=np.nan)
         classwise_metrics['avg_precision_sem_score'] = _arr2dict(precision[:3], ignore_nan=True)
 
         # sim_scores = accumulated_metrics["roi_sim_scores"]
