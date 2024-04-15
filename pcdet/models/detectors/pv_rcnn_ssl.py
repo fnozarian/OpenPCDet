@@ -483,7 +483,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             masks.append(labels.new_ones((1,), dtype=torch.bool))
 
         for ind in ulb_inds:
-            # scores = pls_dict[ind]['pred_scores']  # Using gt scores for now
+            scores = pls_dict[ind]['pred_scores']  # Using gt scores for now
             boxs = pls_dict[ind]['pred_boxes']
             labels = pls_dict[ind]['pred_labels']
             sem_scores = pls_dict[ind]['pred_sem_scores']
@@ -495,8 +495,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             else:
                 if self.thresh_alg:
                     # Uncomment the following two lines to use the true ious as conf scores for the adaptive thresholding
-                    pl_bboxes = torch.cat([boxs, labels.view(-1, 1).float()], dim=1)
-                    scores = self._calc_true_ious([pl_bboxes], [batch_dict_ema['gt_boxes'][ind]])[0]
+                    # pl_bboxes = torch.cat([boxs, labels.view(-1, 1).float()], dim=1)
+                    # scores = self._calc_true_ious([pl_bboxes], [batch_dict_ema['gt_boxes'][ind]])[0]
                     mask, rect_scores, weights = self.thresh_alg.get_mask(scores, sem_logits)
                 else:  # 3dioumatch baseline
                     conf_thresh = torch.tensor(self.thresh, device=labels.device).expand_as(

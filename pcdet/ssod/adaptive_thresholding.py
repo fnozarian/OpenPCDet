@@ -190,11 +190,12 @@ class AdaptiveThresholding(Metric):
             if sname == 'joint' or sname == 'scores_rect':
                 sem_logits = acc_metrics['sem_scores_wa']
                 sem_scores = torch.softmax(sem_logits / self.temperature, dim=-1)
-                conf_scores = acc_metrics['conf_scores_wa'].repeat(1, 3)
+                conf_scores = acc_metrics['conf_scores_wa']
 
                 if sname == 'scores_rect':
                     _, labels = torch.max(sem_scores, dim=-1)
                     rect = self.ratio['AdaMatch'] if self.ratio['AdaMatch'] is not None else conf_scores.new_ones(3)
+                    rect = torch.gather(rect, 0, labels.long()).unsqueeze(-1)
                     conf_scores_new = conf_scores * rect
                     # conf_scores_new = conf_scores_new / _ulb(conf_scores_new, padding_mask).sum()
                     # conf_scores_new *= _ulb(conf_scores, padding_mask).sum()
@@ -208,16 +209,16 @@ class AdaptiveThresholding(Metric):
                 max_scores = torch.clamp(max_scores, max=1)
 
             # TODO: Experiment with pre-filtering the scores
-            pre_filtering_mask = max_scores > 0.1
-            padding_mask = padding_mask & pre_filtering_mask
+            # pre_filtering_mask = max_scores > 0.1
+            # padding_mask = padding_mask & pre_filtering_mask
 
             # self.max_scores[sname] = max_scores
             # self.labels[sname] = labels
 
             mean_p_max, labels_hist, mean_p_max_classwise, std_p_max_classwise = self._get_p_max_stats(max_scores, labels, padding_mask)
             if sname == 'joint' or sname == 'scores_rect':
-                mean_p_model_lbl = _lbl(scores, padding_mask).sum(dim=0) / _lbl(conf_scores, padding_mask).sum(dim=0)
-                mean_p_model_ulb = _ulb(scores, padding_mask).sum(dim=0) / _ulb(conf_scores, padding_mask).sum(dim=0)
+                mean_p_model_lbl = _lbl(scores, padding_mask).sum(dim=0) / _lbl(conf_scores, padding_mask).sum()
+                mean_p_model_ulb = _ulb(scores, padding_mask).sum(dim=0) / _ulb(conf_scores, padding_mask).sum()
             else:
                 mean_p_model_lbl = _lbl(scores, padding_mask).mean(dim=0)
                 mean_p_model_ulb = _ulb(scores, padding_mask).mean(dim=0)
@@ -436,11 +437,12 @@ class AdaptiveThresholding(Metric):
             _, labels = torch.max(sem_scores, dim=-1)
             rect = self.ratio['AdaMatch'] if self.ratio['AdaMatch'] is not None else conf_scores.new_ones(3)
             conf_weights = torch.gather(rect, 0, labels.long())
-            weights = torch.clamp(conf_scores * conf_weights, max=1)
-            rect_scores = sem_scores * conf_scores.unsqueeze(-1) * rect
+            # weights = torch.clamp(conf_scores * conf_weights, max=1)
+            weights = conf_scores * conf_weights
+            max_scores, _ = torch.max(sem_scores * weights.unsqueeze(-1), dim=-1)
+            max_scores = torch.clamp(max_scores, max=1)
+            rect_scores = sem_scores * rect.view(1, 3)
             rect_scores /= rect_scores.sum(dim=-1, keepdim=True)
-            max_scores, _ = torch.max(rect_scores, dim=-1)
-
             # conf_scores_new = conf_scores_new / conf_scores_new.sum()
             # conf_scores_new *= conf_scores.sum()
             # rect_scores = sem_scores * conf_scores_new.unsqueeze(-1)
@@ -448,7 +450,7 @@ class AdaptiveThresholding(Metric):
             # max_scores, labels = torch.max(rect_scores, dim=-1)
             # thresh = self._get_threshold('scores_rect')
             thresh = self.thresh.to(max_scores.device).view(1, 3).repeat(max_scores.size(0), 1).gather(dim=1, index=labels.unsqueeze(-1)).squeeze()
-            return weights > thresh, rect_scores, weights
+            return max_scores > 0.6, rect_scores, weights
 
         elif self.thresh_method == 'FreeMatch':
             # scores = torch.softmax(sem_logits / self.temperature, dim=-1)
