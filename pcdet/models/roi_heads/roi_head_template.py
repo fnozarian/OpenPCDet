@@ -353,7 +353,6 @@ class RoIHeadTemplate(nn.Module):
             self.iteration_count += 1
             tau = self.model_cfg.LOSS_CONFIG.LOSS_WEIGHTS.get('unbiased_ce_tau', 1.0)
             batch_size = forward_ret_dict['rcnn_cls_labels'].shape[0]
-            roi_labels = forward_ret_dict['roi_labels']
 
             rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels']
             rcnn_cls_logits = forward_ret_dict['rcnn_cls'].view(batch_size, -1)
@@ -362,15 +361,14 @@ class RoIHeadTemplate(nn.Module):
 
             roi_labels = forward_ret_dict['roi_labels']
             ulb_roi_labels = roi_labels.chunk(2)[1].long() - 1
-            ulb_label_hist = torch.bincount(ulb_roi_labels.view(-1), minlength=3)
             ulb_rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'].chunk(2)[1]
             ulb_sum_cls_labels = roi_labels.new_zeros((3,), dtype=torch.float).scatter_add_(0, ulb_roi_labels.view(-1), ulb_rcnn_cls_labels.view(-1))
-            ulb_rcnn_cls_dist = ulb_sum_cls_labels / torch.clamp(ulb_label_hist, min=1.0)
+            # ulb_label_hist = torch.bincount(ulb_roi_labels.view(-1), minlength=3)
+            # ulb_rcnn_cls_dist = ulb_sum_cls_labels / torch.clamp(ulb_label_hist, min=1.0)
+            # self._ema_update_p('mean_p_cls', ulb_rcnn_cls_dist)
 
-            self._ema_update_p('mean_p_cls', ulb_rcnn_cls_dist)
-
-            # ulb_cls_dist = ulb_sum_cls_labels / ulb_sum_cls_labels.sum()
-            # self._ema_update_p('ulb_cls_dist', ulb_cls_dist)
+            ulb_cls_dist = ulb_sum_cls_labels / ulb_sum_cls_labels.sum()
+            self._ema_update_p('ulb_cls_dist', ulb_cls_dist)
             # self.target_dist = self.target_dist.to(ulb_cls_dist.device)
             # divergence_offsets = self.target_dist * torch.log(ulb_cls_dist / self.target_dist)
             # ulb_logit_offsets = divergence_offsets.unsqueeze(0).repeat(ulb_roi_labels.shape[0], 1).gather(1, ulb_roi_labels)
@@ -380,7 +378,8 @@ class RoIHeadTemplate(nn.Module):
             # tensor([-1.6094, -2.3026, -2.3026])
             # torch.log(torch.tensor([0.2, 0.1, 1e-6])) with epsilon 1e-6 if the value is 0
             # tensor([ -1.6094,  -2.3026, -13.8155])
-            log_target = torch.log(torch.clamp(self.mean_p_cls, min=1e-6)).to(ulb_roi_labels.device)
+            # log_target = torch.log(torch.clamp(self.mean_p_cls, min=1e-6)).to(ulb_roi_labels.device)
+            log_target = torch.log(torch.clamp(self.ulb_cls_dist, min=1e-3)).to(ulb_roi_labels.device)
             ulb_logit_offsets = log_target.unsqueeze(0).repeat(ulb_roi_labels.shape[0], 1).gather(1, ulb_roi_labels)
             ulb_logit_offsets = ulb_logit_offsets * ulb_rcnn_cls_labels
             logit_offsets = torch.cat([torch.zeros_like(ulb_logit_offsets), ulb_logit_offsets])
@@ -396,7 +395,7 @@ class RoIHeadTemplate(nn.Module):
         }
 
         if loss_cfgs.CLS_LOSS == 'UnbiasedCrossEntropy':
-          tb_dict.update({'rcnn_fg_dist_unlabeled': self._arr2dict(self.mean_p_cls.detach().cpu().numpy())})
+          # tb_dict.update({'rcnn_fg_dist_unlabeled': self._arr2dict(self.mean_p_cls.detach().cpu().numpy())})
           tb_dict.update({'rcnn_cls_dist_unlabeled': self._arr2dict(self.ulb_cls_dist.detach().cpu().numpy())})
 
         return rcnn_loss_cls, tb_dict

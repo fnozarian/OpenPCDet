@@ -225,7 +225,7 @@ MODEL:
                 'rcnn_corner_weight': 1.0,
                 'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
                 'ulb_cls_dist_weight': 10.0,
-                'ulb_fg_mse_loss_weight': 0.01,
+                'ulb_fg_mse_loss_weight': 0.0,
                 'unbiased_ce_tau': 2.0,
             }
         
@@ -294,7 +294,7 @@ MODEL:
         TEMPERATURE_SA: 2.0
         # TODO: Experiment: This adjusts the precision/recall trade-off.
         # TODO: Improve by making it dynamic.
-        FIXED_THRESH: 0.3
+        FIXED_THRESH: 0.95
         MOMENTUM: 0.99
         RESET_STATE_INTERVAL: 16  # LabelMatch: 16, AdaMatch: 4
         ENABLE_PLOTS: False

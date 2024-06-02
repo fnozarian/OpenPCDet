@@ -198,7 +198,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             pl_cls_count_pre_filter = torch.bincount(ulb_pred_labels, minlength=4)[1:]
             (pl_boxes, pl_conf_scores, pl_sem_scores, pl_sem_logits,
              pl_rect_scores, masks, pl_weights) = self._filter_pls(pls_teacher_wa, batch_dict_ema, ulb_inds)
-            pl_weights = [scores.new_ones(scores.shape[0], 1) for scores in pl_conf_scores]  # No weights for now
+            # pl_weights = [scores.new_ones(scores.shape[0], 1) for scores in pl_conf_scores]  # No weights for now
 
             if self.thresh_alg is not None:
                 self._update_thresh_alg(pl_conf_scores, pl_sem_logits, pl_rect_scores, batch_dict_ema, pls_teacher_wa, lbl_inds)

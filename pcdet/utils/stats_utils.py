@@ -234,24 +234,29 @@ class PredQualityMetrics(Metric):
         iou_wrt_gt = accumulated_metrics["roi_iou_wrt_gt"].view(-1)
         pred_labels = accumulated_metrics["roi_labels"].view(-1)
         assigned_labels = accumulated_metrics["roi_assigned_labels"].view(-1)
-        max_scores, argmax_scores = scores.max(dim=-1)
         weights = accumulated_metrics["roi_weights"].view(-1)
+        scores *= weights.unsqueeze(-1)
+        max_scores, argmax_scores = scores.max(dim=-1)
+
+        mean_p_model = scores.sum(dim=0) / weights.sum()
+        mean_p_max_model = max_scores.mean()
+
+        mean_p_max_model_classwise = scores.new_zeros((3,)).scatter_add_(0, argmax_scores, max_scores)
+        label_hist = torch.bincount(argmax_scores, minlength=3).float()
+        mean_p_max_model_classwise /= torch.clamp(label_hist, min=1e-6)
+        label_hist /= label_hist.sum()
+
+        classwise_metrics['mean_p_model'] = _arr2dict(mean_p_model.cpu().numpy())
+        classwise_metrics['mean_p_max_model'] = mean_p_max_model.cpu().item()
+        classwise_metrics['mean_p_max_model_classwise'] = _arr2dict(mean_p_max_model_classwise.cpu().numpy(), ignore_nan=True)
+        classwise_metrics['label_hist'] = _arr2dict(label_hist.cpu().numpy(), ignore_zeros=True)
 
         # Multiclass classification average precision score based on different scores.
         y_labels = torch.where(assigned_labels == -1, 3, assigned_labels)
-        # one_hot_labels = argmax_scores.new_zeros(len(y_labels), 4, dtype=torch.long, device=scores.device)
-        # one_hot_labels.scatter_(-1, y_labels.unsqueeze(dim=-1).long(), 1.0).cpu().numpy()
-
         y_labels = y_labels.cpu().numpy()
         pred_labels = pred_labels.cpu().numpy()
-        classwise_metrics['mean_p_max_model'] = (max_scores * weights).mean().item()
-        mean_p_max_model_classwise = scores.new_zeros((3,)).scatter_add_(0, argmax_scores, max_scores * weights)
-        mean_p_max_model_classwise /= torch.bincount(argmax_scores, weights=weights, minlength=3)
-        classwise_metrics['mean_p_max_model_classwise'] = _arr2dict(mean_p_max_model_classwise.cpu().numpy(), ignore_nan=True)
-        mean_p_model = (scores * weights.unsqueeze(-1)).sum(dim=0) / weights.sum()
-        classwise_metrics['mean_p_model'] = _arr2dict(mean_p_model.cpu().numpy())
-        label_hist = torch.bincount(argmax_scores, minlength=3)
-        classwise_metrics['label_hist'] = _arr2dict(label_hist.cpu().numpy(), ignore_zeros=True)
+        # one_hot_labels = argmax_scores.new_zeros(len(y_labels), 4, dtype=torch.long, device=scores.device)
+        # one_hot_labels.scatter_(-1, y_labels.unsqueeze(dim=-1).long(), 1.0).cpu().numpy()
         precision = precision_score(y_labels, pred_labels, sample_weight=weights.cpu().numpy(), average=None, labels=range(3), zero_division=np.nan)
         classwise_metrics['avg_precision_sem_score'] = _arr2dict(precision[:3], ignore_nan=True)
 
