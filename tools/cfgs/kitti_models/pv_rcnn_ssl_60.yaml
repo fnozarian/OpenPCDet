@@ -287,7 +287,7 @@ MODEL:
           RESET_STATE_INTERVAL: 32
           BG_THRESH: 0.25
     ADAPTIVE_THRESHOLDING:
-        ENABLE: True
+        ENABLE: False
         THRESH_METHOD: AdaMatch # AdaMatch, FreeMatch, DebiasedPL, LabelMatch
         JOINT_DIST_ALIGN: True  # LabelMatch: True (Tested)
         TEMPERATURE: 2.0

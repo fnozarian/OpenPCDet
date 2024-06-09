@@ -197,11 +197,11 @@ class PVRCNN_SSL(Detector3DTemplate):
             ulb_pred_labels = torch.cat([pl['pred_labels'] for pl in pls_teacher_wa]).int().detach()
             pl_cls_count_pre_filter = torch.bincount(ulb_pred_labels, minlength=4)[1:]
             (pl_boxes, pl_conf_scores, pl_sem_scores, pl_sem_logits,
-             pl_rect_scores, masks, pl_weights) = self._filter_pls(pls_teacher_wa, batch_dict_ema, ulb_inds)
+             pl_rect_scores, masks, pl_weights, pl_rcnn_sem_scores) = self._filter_pls(pls_teacher_wa, batch_dict_ema, ulb_inds)
             # pl_weights = [scores.new_ones(scores.shape[0], 1) for scores in pl_conf_scores]  # No weights for now
 
             if self.thresh_alg is not None:
-                self._update_thresh_alg(pl_conf_scores, pl_sem_logits, pl_rect_scores, batch_dict_ema, pls_teacher_wa, lbl_inds)
+                self._update_thresh_alg(pl_conf_scores, pl_sem_logits, pl_rcnn_sem_scores, batch_dict_ema, pls_teacher_wa, lbl_inds)
 
         if 'pl_metrics' in metrics_registry.tags():
             self._update_pl_metrics(pl_boxes, pl_rect_scores, pl_weights, masks, batch_dict_ema['gt_boxes'][ulb_inds])
@@ -240,7 +240,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         disp_dict = {}
         loss_rpn_cls, loss_rpn_box, tb_dict = self.pv_rcnn.dense_head.get_loss()
         loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict)
-        loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict)
+        loss_rcnn_cls, loss_rcnn_box, rcnn_loss_sem_cls, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict)
 
         loss = 0
         # Use the same reduction method as the baseline model (3diou) by the default
@@ -250,6 +250,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         loss += reduce_loss_fn(loss_point[lbl_inds, ...])
         loss += reduce_loss_fn(loss_rcnn_cls[lbl_inds, ...])
         loss += reduce_loss_fn(loss_rcnn_box[lbl_inds, ...])
+        loss += reduce_loss_fn(rcnn_loss_sem_cls[lbl_inds, ...])
 
         if self.unlabeled_supervise_cls:
             loss += reduce_loss_fn(loss_rpn_cls[ulb_inds, ...]) * self.unlabeled_weight
@@ -437,7 +438,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         box_labels = box_labels.cpu().numpy()
         V.draw_scenes(points=points, gt_boxes=boxes, gt_labels=box_labels)
 
-    def _update_thresh_alg(self, pl_conf_scores, pl_sem_logits, pl_rect_scores, batch_dict_ema, pls_teacher_wa, lbl_inds):
+    def _update_thresh_alg(self, pl_conf_scores, pl_sem_logits, pl_rcnn_sem_scores, batch_dict_ema, pls_teacher_wa, lbl_inds):
         thresh_inputs = dict()
         pl_scores_lbl = [pls_teacher_wa[i]['pred_scores'] for i in lbl_inds]
         pl_sem_logits_lbl = [pls_teacher_wa[i]['pred_sem_logits'] for i in lbl_inds]
@@ -449,10 +450,10 @@ class PVRCNN_SSL(Detector3DTemplate):
         thresh_inputs['gts_wa'] = self.pad_tensor(batch_dict_ema['gt_boxes'], max_len=100).detach().clone()
         pls_ws = [torch.cat([pl['pred_boxes'], pl['pred_labels'].view(-1, 1)], dim=-1) for pl in pls_teacher_wa]
         thresh_inputs['pls_wa'] = torch.cat([self.pad_tensor(pl.unsqueeze(0), max_len=100) for pl in pls_ws]).detach().clone()
-        # TODO: Note that the following sem_scores rect are not filtered (since adamatch is dependent on them)
-        ulb_rect_scores = torch.cat([self.pad_tensor(scores.unsqueeze(0), max_len=100) for scores in pl_rect_scores]).detach().clone()
-        lb_rect_scores = torch.ones_like(ulb_rect_scores)
-        thresh_inputs['scores_rect'] = torch.cat([lb_rect_scores, ulb_rect_scores])
+
+        ulb_rcnn_sem_scores = torch.cat([self.pad_tensor(scores.unsqueeze(0), max_len=100) for scores in pl_rcnn_sem_scores]).detach().clone()
+        lb_rect_scores = torch.ones_like(ulb_rcnn_sem_scores)
+        thresh_inputs['rcnn_sem_scores'] = torch.cat([lb_rect_scores, ulb_rcnn_sem_scores])
         self.thresh_alg.update(**thresh_inputs)
 
     @staticmethod
@@ -469,6 +470,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         pl_scores = []
         pl_sem_scores = []
         pl_sem_logits = []
+        pl_rcnn_sem_logits = []
         pl_rect_scores = []
         pl_weights = []
         masks = []
@@ -478,6 +480,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             pl_scores.append(labels.new_zeros((1,)).float())
             pl_sem_scores.append(labels.new_zeros((1,)).float())
             pl_sem_logits.append(labels.new_zeros((1, 3)).float())
+            pl_rcnn_sem_logits.append(labels.new_zeros((1, 3)).float())
             pl_rect_scores.append(labels.new_zeros((1, 3)).float())
             pl_weights.append(labels.new_ones((1,)))
             masks.append(labels.new_ones((1,), dtype=torch.bool))
@@ -488,7 +491,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             labels = pls_dict[ind]['pred_labels']
             sem_scores = pls_dict[ind]['pred_sem_scores']
             sem_logits = pls_dict[ind]['pred_sem_logits']
-
+            rcnn_sem_logits = pls_dict[ind]['pred_rcnn_sem_logits']
             if len(labels) == 0:
                 _fill_with_zeros()
                 continue
@@ -497,7 +500,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                     # Uncomment the following two lines to use the true ious as conf scores for the adaptive thresholding
                     # pl_bboxes = torch.cat([boxs, labels.view(-1, 1).float()], dim=1)
                     # scores = self._calc_true_ious([pl_bboxes], [batch_dict_ema['gt_boxes'][ind]])[0]
-                    mask, rect_scores, weights = self.thresh_alg.get_mask(scores, sem_logits)
+                    mask, rect_scores, weights, rcnn_sem_scores = self.thresh_alg.get_mask(scores, sem_logits, rcnn_sem_logits)
                 else:  # 3dioumatch baseline
                     conf_thresh = torch.tensor(self.thresh, device=labels.device).expand_as(
                         sem_logits).gather(dim=1, index=(labels - 1).unsqueeze(-1)).squeeze()
@@ -507,6 +510,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                     mask_sem = sem_scores > sem_thresh
                     mask = mask_conf & mask_sem
                     rect_scores = torch.sigmoid(sem_logits)  # in the baseline we don't rectify the scores
+                    rcnn_sem_scores = torch.softmax(rcnn_sem_logits, dim=1)
                     weights = torch.ones_like(scores)
                 if mask.sum() == 0:
                     _fill_with_zeros()
@@ -516,11 +520,12 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pl_scores.append(scores)
                 pl_sem_scores.append(sem_scores)
                 pl_sem_logits.append(sem_logits)
+                pl_rcnn_sem_logits.append(rcnn_sem_scores)
                 pl_rect_scores.append(rect_scores)
                 pl_weights.append(weights)
                 masks.append(mask)
 
-        return pl_boxes, pl_scores, pl_sem_scores, pl_sem_logits, pl_rect_scores, masks, pl_weights
+        return pl_boxes, pl_scores, pl_sem_scores, pl_sem_logits, pl_rect_scores, masks, pl_weights, pl_rcnn_sem_logits
 
     @staticmethod
     def _fill_with_pls(batch_dict, pseudo_boxes, masks, ulb_inds, lb_inds, key=None):

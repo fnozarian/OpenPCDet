@@ -37,7 +37,7 @@ class AdaptiveThresholding(Metric):
         self.joint_dist_align = configs.get('JOINT_DIST_ALIGN', True)
         self.enable_ulb_cls_dist_loss = configs.get('ENABLE_ULB_CLS_DIST_LOSS', False)
         self.states_name = ['sem_scores_wa', 'conf_scores_wa', 'joint', 'pls_wa', 'gts_wa',
-                            'gt_labels_wa', 'scores_rect']
+                            'gt_labels_wa', 'rcnn_sem_scores']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
         self.thresh = torch.ones(1) / len(self.class_names) # set by the thresh method
         self.iteration_count = 0
@@ -168,7 +168,7 @@ class AdaptiveThresholding(Metric):
         padding_mask = torch.logical_not(torch.all(acc_metrics['sem_scores_wa'] == 0, dim=-1))
         # sem_mask = torch.logical_not(acc_metrics['sem_scores_wa'].sigmoid().max(dim=-1)[0] <= 0.1)
         # padding_mask = padding_mask & sem_mask
-        for sidx, sname in enumerate(['sem_scores_wa', 'conf_scores_wa', 'joint']):
+        for sidx, sname in enumerate(['sem_scores_wa', 'conf_scores_wa', 'joint', 'rcnn_sem_scores']):
 
             if sname == 'conf_scores_wa':
                 scores = acc_metrics['conf_scores_wa']
@@ -181,6 +181,10 @@ class AdaptiveThresholding(Metric):
                 scores = torch.softmax(scores / self.temperature, dim=-1)
                 # scores = torch.sigmoid(scores)
                 # scores /= scores.sum(dim=-1, keepdim=True)
+                max_scores, labels = torch.max(scores, dim=-1)
+            if sname == 'rcnn_sem_scores':
+                scores = acc_metrics['rcnn_sem_scores']
+                scores = torch.softmax(scores, dim=-1)
                 max_scores, labels = torch.max(scores, dim=-1)
 
             if sname == 'joint':
@@ -411,12 +415,13 @@ class AdaptiveThresholding(Metric):
         prob = getattr(self, p_name)
         prob[tag] = prob_shadow[tag] / (1 - momentum ** self.iteration_count)
 
-    def get_mask(self, conf_scores, sem_logits):
+    def get_mask(self, conf_scores, sem_logits, rcnn_sem_logits):
         assert self.thresh_method in ['AdaMatch', 'FreeMatch', 'DebiasedPL', 'LabelMatch'], \
             f'{self.thresh_method} not in list [AdaMatch, FreeMatch, SoftMatch, DebiasedPL]'
 
         if self.thresh_method == 'AdaMatch':
             sem_scores = torch.softmax(sem_logits / self.temperature, dim=-1)
+            rcnn_sem_scores = torch.softmax(rcnn_sem_logits, dim=-1)
             # scores = torch.sigmoid(sem_logits)
             # scores /= scores.sum(dim=-1, keepdim=True)
             _, labels = torch.max(sem_scores, dim=-1)
@@ -425,7 +430,7 @@ class AdaptiveThresholding(Metric):
             rect_scores /= rect_scores.sum(dim=-1, keepdim=True)
             max_scores, _ = torch.max(rect_scores * conf_scores.unsqueeze(-1), dim=-1)
             max_scores = torch.clamp(max_scores, max=1)
-            return max_scores > self.thresh.to(max_scores.device), rect_scores, conf_scores
+            return max_scores > self.thresh.to(max_scores.device), rect_scores, conf_scores, rcnn_sem_scores
 
         elif self.thresh_method == 'FreeMatch':
             # scores = torch.softmax(sem_logits / self.temperature, dim=-1)
