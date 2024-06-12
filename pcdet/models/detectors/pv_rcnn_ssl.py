@@ -194,7 +194,6 @@ class PVRCNN_SSL(Detector3DTemplate):
     def _forward_training(self, batch_dict):
         lbl_inds, ulb_inds = self._prep_batch_dict(batch_dict)
         batch_dict_ema = self._split_ema_batch(batch_dict)
-        batch_dict_wa = copy.deepcopy(batch_dict_ema)
 
         batch_dict_ema, pseudo_labels = self._gen_pseudo_labels(batch_dict_ema, ulb_inds,lbl_inds)
         pseudo_boxes, pseudo_scores, pseudo_sem_scores = self._filter_pseudo_labels(pseudo_labels, ulb_inds)
@@ -206,19 +205,7 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         for cur_module in self.pv_rcnn.module_list:
             batch_dict = cur_module(batch_dict)
-        
-        if self.model_cfg['ROI_HEAD'].get('ENABLE_INSTANCE_SUP_LOSS', False):
 
-            #1. @Student - Get shared_features over strongly aug GTs
-            batch_dict = self.pv_rcnn.roi_head.forward(batch_dict, test_only=True,use_gtboxes=True)
-
-            #2. @Student - Get shared_features over Weakly aug GTs
-            with torch.no_grad():
-                for cur_module in self.pv_rcnn.module_list:
-                    try:
-                        batch_dict_wa = cur_module(batch_dict_wa, test_only=True,use_gtboxes=True)
-                    except TypeError as e:
-                        batch_dict_wa = cur_module(batch_dict_wa)        
 
         if self.model_cfg.ROI_HEAD.ADAPTIVE_THRESH_CONFIG.get('ENABLE', False):
             pred_strong_aug_before_nms_org = torch.sigmoid(batch_dict['batch_cls_preds']).detach().clone()
@@ -274,7 +261,9 @@ class PVRCNN_SSL(Detector3DTemplate):
                 loss += proto_cont_loss * self.model_cfg['ROI_HEAD']['PROTO_CONTRASTIVE_LOSS_WEIGHT']
                 tb_dict['proto_cont_loss'] = proto_cont_loss.item()
         if self.model_cfg['ROI_HEAD'].get('ENABLE_INSTANCE_SUP_LOSS', False):
-            lbl_inst_cont_loss, tb_dict = self._get_instance_contrastive_loss(tb_dict,batch_dict,batch_dict_wa,lbl_inds,ulb_inds)
+            assert 'projected_features_gt' in batch_dict.keys()
+            assert 'projected_features_gt' in batch_dict_ema.keys()
+            lbl_inst_cont_loss, tb_dict = self._get_instance_contrastive_loss(tb_dict,batch_dict,batch_dict_ema,lbl_inds,ulb_inds)
             if lbl_inst_cont_loss is not None:
                 loss +=  lbl_inst_cont_loss * self.model_cfg['ROI_HEAD']['INSTANCE_CONTRASTIVE_LOSS_WEIGHT']
         tb_dict_ = self._prep_tb_dict(tb_dict, lbl_inds, lbl_inds, reduce_loss_fn)
@@ -318,94 +307,55 @@ class PVRCNN_SSL(Detector3DTemplate):
         return proto_cont_loss.view(B, N)[ulb_inds][ulb_nonzero_mask].mean()
 
 
-    def _align_instance_pairs(self, batch_dict,batch_dict_pair,indices):
+    def _sort_instance_pairs(self, batch_dict, batch_dict_wa, indices):
         
-        embed_size = 256 if not self.model_cfg['ROI_HEAD']['PROJECTOR'] else 256 # if possible, 128
-        shared_ft_sa = batch_dict['shared_features_gt'].view(batch_dict['batch_size'],-1,embed_size)[indices]
-        shared_ft_wa = batch_dict_pair['shared_features_gt'].view(batch_dict['batch_size'],-1,embed_size)[indices]
-        device = shared_ft_sa.device
-        labels_sa = batch_dict['gt_boxes'][:,:,7][indices].view(-1)
-        labels_wa = batch_dict_pair['gt_boxes'][:,:,7][indices].view(-1)
+        embed_size = batch_dict['shared_features_gt'].squeeze().shape[-1]
+        shared_ft_sa = batch_dict['shared_features_gt'].view(batch_dict['batch_size'],-1,embed_size)         # shared_ft_sa = batch_dict['projected_features_gt'].view(batch_dict['batch_size'],-1,embed_size)[indices]
+
+        shared_ft_sa = shared_ft_sa[indices].view(-1,256)
+        shared_ft_wa = batch_dict_wa['shared_features_gt'].view(batch_dict['batch_size'],-1,embed_size)         # shared_ft_wa = batch_dict_wa['projected_features_gt'].view(batch_dict['batch_size'],-1,embed_size)[indices]
+        shared_ft_wa = shared_ft_wa[indices].view(-1,256)
+        labels_sa = batch_dict['gt_boxes'][indices][:,:,-1].view(-1)
+        labels_wa = batch_dict_wa['gt_boxes'][indices][:,:,-1].view(-1)
         instance_idx_sa = batch_dict['instance_idx'][indices].view(-1)
-        instance_idx_wa = batch_dict_pair['instance_idx'][indices].view(-1)
+        instance_idx_wa = batch_dict_wa['instance_idx'][indices].view(-1)
+        nonzero_mask_sa = torch.logical_not(torch.eq(instance_idx_sa, 0))
+        nonzero_mask_wa = torch.logical_not(torch.eq(instance_idx_wa, 0))
+
+        # Strip off zero masking
+        instance_idx_sa = instance_idx_sa.masked_select(nonzero_mask_sa)
+        labels_sa = labels_sa.masked_select(nonzero_mask_sa)
+        assert instance_idx_sa.size(0)==labels_sa.size(0)
+        instance_idx_wa = instance_idx_wa.masked_select(nonzero_mask_wa)
+        labels_wa = labels_wa.masked_select(nonzero_mask_wa)
+        assert instance_idx_wa.size(0)==labels_wa.size(0)
+        shared_ft_sa = shared_ft_sa.masked_select(nonzero_mask_sa.unsqueeze(-1).expand(-1,embed_size))
         shared_ft_sa = shared_ft_sa.view(-1,embed_size)
+        shared_ft_wa = shared_ft_wa.masked_select(nonzero_mask_wa.unsqueeze(-1).expand(-1,embed_size))
         shared_ft_wa = shared_ft_wa.view(-1,embed_size)
-        
-        # strip off the extra GTs
-        prefinal_mask_sa = labels_sa!=0
-        prefinal_mask_wa = labels_wa!=0
 
-        instance_idx_sa = instance_idx_sa[prefinal_mask_sa]
-        instance_idx_wa = instance_idx_wa[prefinal_mask_wa]
+        # Finds correspondences of common instances between SA and WA, return corresponding labels and features
 
-        meta_data = {'to_mask':''}
-        valid_instances = np.intersect1d(instance_idx_sa.cpu().numpy(),instance_idx_wa.cpu().numpy()) #
-        valid_instances = torch.tensor(valid_instances,device=device)
-       
-        '''intersect_mask, to remove instances from A which are not in B and VICE VERSA '''
-        # intersect_mask = torch.isin(instance_idx,valid_instances) #small
-        # intersect_mask_pair = torch.isin(instance_idx_pair,valid_instances)
-        intersect_mask_sa = torch.tensor([idx in valid_instances for idx in instance_idx_sa], device=device, dtype=torch.bool)
-        intersect_mask_wa = torch.tensor([idx in valid_instances for idx in instance_idx_wa], device=device, dtype=torch.bool)
+        common_instnaces, ids_sa_common, ids_wa_common = np.intersect1d(instance_idx_sa.cpu().numpy(),instance_idx_wa.cpu().numpy(), return_indices = True) 
+        valid_instances = torch.from_numpy(common_instnaces).to(labels_sa.device)
+        ids_sa_common = torch.from_numpy(ids_sa_common).to(labels_sa.device)
+        ids_wa_common = torch.from_numpy(ids_wa_common).to(labels_sa.device)
 
-        instance_idx_sa = instance_idx_sa[intersect_mask_sa]
-        instance_idx_wa = instance_idx_wa[intersect_mask_wa]
+        instance_idx_sa_common = valid_instances.clone()
+        instance_idx_wa_common = valid_instances.clone()
 
-        labels_sa = (labels_sa[prefinal_mask_sa])[intersect_mask_sa]
-        labels_wa =(labels_wa[prefinal_mask_wa])[intersect_mask_wa]
+        labels_sa_common = torch.index_select(labels_sa, 0,ids_sa_common)
+        labels_wa_common = torch.index_select(labels_wa, 0, ids_wa_common)
+        assert torch.equal(labels_sa_common, labels_wa_common)
 
-        shared_ft_sa = (shared_ft_sa[prefinal_mask_sa])[intersect_mask_sa]
-        shared_ft_wa = (shared_ft_wa[prefinal_mask_wa])[intersect_mask_wa]
+        shared_ft_sa_common = shared_ft_sa[ids_sa_common]
+        shared_ft_wa_common = shared_ft_wa[ids_wa_common]
+        assert shared_ft_sa_common.size(0) == labels_wa_common.size(0)
 
-        # remove duplicates
-        if len(labels_sa) <= len(labels_wa):
-            tmp = copy.deepcopy(instance_idx_sa) #small
-            tmp_big = instance_idx_wa #big
-            meta_data['to_mask'] = 'ft_pair'
-        else:
-            tmp = instance_idx_wa
-            tmp_big = instance_idx_sa
-            meta_data['to_mask'] = 'ft'
-
-        '''Edge case - Handle more labeled indices in batch_dict_pair's dataloader batch than batch_dict's dataloader(or vice-versa)'''        
-        # final_mask = torch.zeros_like(tmp_big)
-        final_mask = []
-        # args2 =[]
-        for idx, item in enumerate(tmp_big,0):
-            if item in tmp:
-                final_mask.append(idx)
-                tmp[torch.where(tmp==item)[0][0]] = -1
-                
-
-        final_mask = torch.tensor(final_mask, device=device)
-
-        final_mask = final_mask.long()
-        if meta_data['to_mask'] == 'ft':
-            instance_idx_sa = tmp_big[final_mask]   
-            labels_sa = labels_sa[final_mask]
-            shared_ft_sa = shared_ft_sa[final_mask]
-        
-        elif meta_data['to_mask'] == 'ft_pair':
-            instance_idx_wa = tmp_big[final_mask]   
-            labels_wa = labels_wa[final_mask]
-            shared_ft_wa = shared_ft_wa[final_mask]
-        
-        ## sort the GTs
-        sorted_sa = instance_idx_sa.sort()[-1].long()
-        sorted_wa = instance_idx_wa.sort()[-1].long()
-
-        instance_idx_sa = instance_idx_sa[sorted_sa]
-        instance_idx_wa = instance_idx_wa[sorted_wa]
-
-        labels_sa = labels_sa[sorted_sa]
-        labels_wa =labels_wa[sorted_wa]
-        shared_ft_sa = shared_ft_sa[sorted_sa]
-        shared_ft_wa = shared_ft_wa[sorted_wa]
-
-        return labels_sa,labels_wa,instance_idx_sa,instance_idx_wa,shared_ft_sa, shared_ft_wa
+        return  (labels_sa_common, labels_wa_common, shared_ft_sa_common, shared_ft_wa_common)
 
 
-    def _get_instance_contrastive_loss(self, tb_dict,batch_dict,batch_dict_pair,lbl_inds,ulb_inds,temperature=1.0,base_temperature=1.0):
+    def _get_instance_contrastive_loss(self, tb_dict, batch_dict, batch_dict_wa, lbl_inds, temperature=1.0, base_temperature=1.0):
         '''
         Args:
             features: hidden vector of shape [bsz, n_views, ...].
@@ -413,33 +363,31 @@ class PVRCNN_SSL(Detector3DTemplate):
             mask: contrastive mask of shape [bsz, bsz], mask_{i,j}=1 if sample j
                 has the same class as sample i. Can be asymmetric.
         '''
-        start_epoch = self.model_cfg['ROI_HEAD'].get(
-            'INSTANCE_CONTRASTIVE_LOSS_START_EPOCH', 0)
-        stop_epoch = self.model_cfg['ROI_HEAD'].get(
-            'INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH', 60)
+        start_epoch = self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_START_EPOCH', 0)
+        stop_epoch = self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH', 60)
         tb_dict = {} if tb_dict is None else tb_dict
         # To examine effects of stopping supervised contrastive loss
         if not start_epoch<=batch_dict['cur_epoch']<stop_epoch:
-            return
+            return None, None
         temperature = self.model_cfg['ROI_HEAD'].get('TEMPERATURE', 1.0)
+        instance_idx_sa = batch_dict['instance_idx'].view(-1)
+        instance_idx_wa = batch_dict_wa['instance_idx'].view(-1)
         
-        if  self.model_cfg['ROI_HEAD'].get('INSTANCE_IDX',None)=="Labeled": # Apply SupConLoss over labeled indices
-            indices = lbl_inds
-        else:
-            indices = ulb_inds
-        labels_sa, labels_wa, instance_idx_sa, instance_idx_wa, embed_ft_sa, embed_ft_wa = \
-            self._align_instance_pairs(batch_dict, batch_dict_pair,indices)
+        sorted_pairs = self._sort_instance_pairs(batch_dict, batch_dict_wa, lbl_inds)
+        
+        if sorted_pairs is None:
+            return None, tb_dict
+
+        labels_sa, labels_wa, embed_ft_sa, embed_ft_wa = sorted_pairs
         batch_size_labeled = labels_sa.shape[0]
         device = embed_ft_sa.device
-        labels = torch.cat((labels_sa,labels_sa), dim=0)
+        labels = torch.cat((labels_sa,labels_wa), dim=0)
 
-        assert torch.equal(instance_idx_sa, instance_idx_wa)
-        assert torch.equal(labels_sa, labels_wa)   # Problem : Fails for Ulb! Same instance id , diff label for strong and weak aug ulb 
-        # Record stats
-        batch_dict['lbl_inst_freq'] =  torch.bincount(labels_sa.view(-1).int().detach(),minlength = 4).tolist()[1:]       #Record freq of each class in batch
-        batch_dict['positive_pairs_duped'] = [(2*n-1) * 2*n for n in batch_dict['lbl_inst_freq']]
-        batch_dict['negative_pairs_duped'] = [sum(batch_dict['lbl_inst_freq']) - k  for k in batch_dict['lbl_inst_freq']]
-        batch_dict['negative_pairs_duped'] = [4*k*i for k,i in zip(batch_dict['negative_pairs_duped'],batch_dict['lbl_inst_freq'])]
+        '''# Record stats of num_pairs per batch'''
+        # batch_dict['lbl_inst_freq'] =  torch.bincount(labels_sa.view(-1).int().detach(),minlength = 4).tolist()[1:]       #Record freq of each class in batch
+        # batch_dict['positive_pairs_duped'] = [(2*n-1) * 2*n for n in batch_dict['lbl_inst_freq']]
+        # batch_dict['negative_pairs_duped'] = [sum(batch_dict['lbl_inst_freq']) - k  for k in batch_dict['lbl_inst_freq']]
+        # batch_dict['negative_pairs_duped'] = [4*k*i for k,i in zip(batch_dict['negative_pairs_duped'],batch_dict['lbl_inst_freq'])]
 
 
         combined_embed_features = torch.cat([embed_ft_sa.unsqueeze(1), embed_ft_wa.unsqueeze(1)], dim=1) # B*N,num_pairs,channel_dim
@@ -453,61 +401,43 @@ class PVRCNN_SSL(Detector3DTemplate):
         logits_mask = torch.scatter(torch.ones_like(mask),1,torch.arange(batch_size_labeled * num_pairs).view(-1, 1).to(device),0)    # mask-out self-contrast cases
         mask = mask * logits_mask
 
-        '''
-        plt.imshow(mask.cpu().numpy(), cmap='viridis')
-        plt.colorbar()
-        plt.savefig("mask.png")
-        plt.clf()
-        '''
-        contrast_feature = torch.cat(torch.unbind(combined_embed_features, dim=1), dim=0) 
-        contrast_feature = F.normalize(contrast_feature.view(-1,combined_embed_features.shape[-1])) # normalized features before masking. original code does it earlier : https://github.com/HobbitLong/SupContrast/blob/ae5da977b0abd4bdc1a6fd4ec4ba2c3655a1879f/networks/resnet_big.py#L185C51-L185C51
-        # compute logits
-        anchor_dot_contrast = torch.div(torch.matmul(contrast_feature, contrast_feature.T),temperature)
-        # for numerical stability
-        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
-        logits = anchor_dot_contrast - logits_max.detach()
-
-        exp_logits = torch.exp(logits) * logits_mask # compute log_prob
-        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
-        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)         # compute mean of log-likelihood over positive
-        # Do ema update of mean_log_prob_pos?
+        ''' Visualize mask'''
+        # plt.imshow(mask.cpu().numpy(), cmap='viridis')
+        # plt.colorbar()
+        # plt.savefig("mask.png")
+        # plt.clf()
         
-        #unscaled_loss
-        unscaled_instloss_car = mean_log_prob_pos[[labels==1]].mean()
-        unscaled_instloss_ped = mean_log_prob_pos[[labels==2]].mean()
-        unscaled_instloss_cyc = mean_log_prob_pos[[labels==3]].mean()
+        contrast_feature = torch.cat(torch.unbind(combined_embed_features, dim=1), dim=0)   # B,2,256 -> Tuple(B,256) with len(2) -> (2*B,256)
+        contrast_feature = F.normalize(contrast_feature.view(-1,combined_embed_features.shape[-1]),dim=-1) # normalized features for cosine similarity
+        sim_supcon_matrix = torch.div(torch.matmul(contrast_feature, contrast_feature.T),temperature)  # compute similarity matrix
 
-        # batch_dict['unscaled_instloss_car'] = unscaled_instloss_car.unsqueeze(-1)
-        # batch_dict['unscaled_instloss_ped'] = unscaled_instloss_ped.unsqueeze(-1)
-        # batch_dict['unscaled_instloss_cyc'] = unscaled_instloss_cyc.unsqueeze(-1)
+        # for numerical stability
+        logits_max, _ = torch.max(sim_supcon_matrix, dim=1, keepdim=True)
+        logits = sim_supcon_matrix - logits_max.detach()
 
-        #Role of temperature scaling in SupConLoss ... rescaling instance_loss by 0.1 to see results
-        instance_loss = - ( temperature/ base_temperature) * mean_log_prob_pos # base_temperature only scales the loss, temperature sharpens / smoothes the loss
-        #scaled_loss
+        exp_logits = torch.exp(logits) * logits_mask # (NOTE:exponent over mostly negative values)
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
+        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)         # compute mean of log-likelihood over positive        
+        
+        instance_loss = - ( temperature / base_temperature) * mean_log_prob_pos 
+        
+        if instance_loss is None:
+            return
+
         instloss_car = instance_loss[labels==1].mean()
         instloss_ped = instance_loss[labels==2].mean()
         instloss_cyc = instance_loss[labels==3].mean()
         instloss_all = instance_loss.mean()
 
-        # batch_dict['instloss_car'] = instloss_car.unsqueeze(-1).tolist()
-        # batch_dict['instloss_ped'] = instloss_ped.unsqueeze(-1).tolist()
-        # batch_dict['instloss_cyc'] = instloss_cyc.unsqueeze(-1).tolist()
 
         inst_tb_dict = {
-            'unscaled_instloss_car': unscaled_instloss_car.unsqueeze(-1),
-            'unscaled_instloss_ped': unscaled_instloss_ped.unsqueeze(-1),
-            'unscaled_instloss_cyc': unscaled_instloss_cyc.unsqueeze(-1),
             'instloss_car': instloss_car.unsqueeze(-1),
             'instloss_cyc': instloss_cyc.unsqueeze(-1),
             'instloss_ped': instloss_ped.unsqueeze(-1),
             'instloss_all' : instloss_all.unsqueeze(-1),
         }
         tb_dict.update(inst_tb_dict)
-
-        if instance_loss is None:
-            return
-        instance_loss = instance_loss.mean()
-        return instance_loss, tb_dict
+        return instloss_all, tb_dict
 
 
     @staticmethod
@@ -634,22 +564,24 @@ class PVRCNN_SSL(Detector3DTemplate):
 
                 cur_iteration = torch.ones_like(preds_iou_max) * (batch_dict['cur_iteration'])
                 self.val_dict['iteration'].extend(cur_iteration.tolist())
-                start_epoch = self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_START_EPOCH', 0)
-                stop_epoch = self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH', 60)
-                if self.model_cfg['ROI_HEAD']['ENABLE_INSTANCE_SUP_LOSS'] and start_epoch<=batch_dict['cur_epoch']<stop_epoch:
-                    bincount_values = batch_dict['lbl_inst_freq']
-                    # cumu_values = [a + b for a, b in zip(self.val_dict['lbl_inst_freq'][-3:], bincount_values)]
-                    self.val_dict['lbl_inst_freq'].extend(bincount_values)
-                    self.val_dict['positive_pairs_duped'].extend(batch_dict['positive_pairs_duped'])
-                    self.val_dict['negative_pairs_duped'].extend(batch_dict['negative_pairs_duped'])
 
-                    # self.val_dict['unscaled_instloss_car'].extend(batch_dict['unscaled_instloss_car'])
-                    # self.val_dict['unscaled_instloss_ped'].extend(batch_dict['unscaled_instloss_ped'])
-                    # self.val_dict['unscaled_instloss_cyc'].extend(batch_dict['unscaled_instloss_cyc'])
+                '''Stats for instance_contrastive_loss'''
+                # start_epoch = self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_START_EPOCH', 0)
+                # stop_epoch = self.model_cfg['ROI_HEAD'].get('INSTANCE_CONTRASTIVE_LOSS_STOP_EPOCH', 60)
+                # if self.model_cfg['ROI_HEAD']['ENABLE_INSTANCE_SUP_LOSS'] and start_epoch<=batch_dict['cur_epoch']<stop_epoch:
+                #     bincount_values = batch_dict['lbl_inst_freq']
+                #     # cumu_values = [a + b for a, b in zip(self.val_dict['lbl_inst_freq'][-3:], bincount_values)]
+                #     self.val_dict['lbl_inst_freq'].extend(bincount_values)
+                #     self.val_dict['positive_pairs_duped'].extend(batch_dict['positive_pairs_duped'])
+                #     self.val_dict['negative_pairs_duped'].extend(batch_dict['negative_pairs_duped'])
 
-                    # self.val_dict['instloss_car'].extend(batch_dict['instloss_car'])
-                    # self.val_dict['instloss_ped'].extend(batch_dict['instloss_ped'])
-                    # self.val_dict['instloss_cyc'].extend(batch_dict['instloss_cyc'])
+                #     # self.val_dict['unscaled_instloss_car'].extend(batch_dict['unscaled_instloss_car'])
+                #     # self.val_dict['unscaled_instloss_ped'].extend(batch_dict['unscaled_instloss_ped'])
+                #     # self.val_dict['unscaled_instloss_cyc'].extend(batch_dict['unscaled_instloss_cyc'])
+
+                #     # self.val_dict['instloss_car'].extend(batch_dict['instloss_car'])
+                #     # self.val_dict['instloss_ped'].extend(batch_dict['instloss_ped'])
+                #     # self.val_dict['instloss_cyc'].extend(batch_dict['instloss_cyc'])
 
         # replace old pickle data (if exists) with updated one
         output_dir = os.path.split(os.path.abspath(batch_dict['ckpt_save_dir']))[0]
@@ -892,21 +824,3 @@ class PVRCNN_SSL(Detector3DTemplate):
                 metrics_input['pseudo_sem_score'].append(pseudo_sem_score)
         self.thresh_registry.get(tag).update(**metrics_input)
 
-
-
-#gt_cls_count = torch.bincount(batch_dict['ori_unlabeled_boxes'][...,-1].view(-1).int().detach()).tolist()[1:]
-#labels
-#
-
-
-        # pl_count_dict = {
-        #     f'pl_iter_count_{cls}': {
-        #         'gt': gt_cls_count[cind],
-        #         'pl_pre_filter': pl_cls_count_pre_filter[cind],
-        #         'pl_post_filter': pl_cls_count_post_filter[cind],
-        #     }
-        #     for cind, cls in enumerate(self.class_names)
-        # }
-
-        # tb_dict_ = self._prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn)
-        # tb_dict_.update(**pl_count_dict)
