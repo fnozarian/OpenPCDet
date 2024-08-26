@@ -55,7 +55,6 @@ class ProposalTargetLayer(nn.Module):
         # batch_gt_of_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size + 2)
         batch_gt_of_rois = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, code_size + 1)
         batch_roi_ious = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
-        batch_roi_ious_org = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
         batch_reg_valid_mask = rois.new_zeros((batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE), dtype=torch.long)
         batch_cls_labels = -rois.new_ones(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE)
         interval_mask = rois.new_zeros(batch_size, self.roi_sampler_cfg.ROI_PER_IMAGE, dtype=torch.bool)
@@ -72,15 +71,14 @@ class ProposalTargetLayer(nn.Module):
             if index in batch_dict['unlabeled_inds']:
                 subsample_unlabeled_rois = getattr(self, self.roi_sampler_cfg.UNLABELED_SAMPLER_TYPE, None)
                 if self.roi_sampler_cfg.UNLABELED_SAMPLER_TYPE is None:
-                    sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask, roi_ious_org = self.subsample_labeled_rois(batch_dict, index)
+                    sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = self.subsample_labeled_rois(batch_dict, index)
                 else:
-                    sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask, roi_ious_org = subsample_unlabeled_rois(batch_dict, index)
+                    sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = subsample_unlabeled_rois(batch_dict, index)
             else:
-                sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask, roi_ious_org = self.subsample_labeled_rois(batch_dict, index)
+                sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = self.subsample_labeled_rois(batch_dict, index)
             batch_rois[index] = batch_dict['rois'][index][sampled_inds]
             batch_gt_of_rois[index] = cur_gt_boxes[gt_assignment[sampled_inds]]
             batch_roi_ious[index] = roi_ious
-            batch_roi_ious_org[index] = roi_ious_org
             batch_roi_scores[index] = batch_dict['roi_scores'][index][sampled_inds]
             batch_roi_scores_logits[index] = batch_dict['roi_scores_logits'][index][sampled_inds]
             batch_roi_labels[index] = batch_dict['roi_labels'][index][sampled_inds]
@@ -91,7 +89,7 @@ class ProposalTargetLayer(nn.Module):
         return {'rois': batch_rois, 'gt_of_rois': batch_gt_of_rois, 'gt_iou_of_rois': batch_roi_ious,
                 'roi_scores': batch_roi_scores, 'roi_scores_logits': batch_roi_scores_logits,
                 'roi_labels': batch_roi_labels, 'reg_valid_mask': batch_reg_valid_mask,
-                'rcnn_cls_labels': batch_cls_labels, 'interval_mask': interval_mask, 'roi_ious_org': batch_roi_ious_org}
+                'rcnn_cls_labels': batch_cls_labels, 'interval_mask': interval_mask}
 
     def subsample_unlabeled_rois_default(self, batch_dict, index):
         cur_roi = batch_dict['rois'][index]
@@ -217,22 +215,12 @@ class ProposalTargetLayer(nn.Module):
                 rois=cur_roi, roi_labels=cur_roi_labels,
                 gt_boxes=cur_gt_boxes[:, 0:7], gt_labels=cur_gt_boxes[:, -1].long()
             )
-            if index > 7:
-                cur_org_gt_boxes = batch_dict['ori_unlabeled_boxes'][index - 8]
-                max_overlaps_org, _ = self.get_max_iou_with_same_class(
-                    rois=cur_roi, roi_labels=cur_roi_labels,
-                    gt_boxes=cur_org_gt_boxes[:, 0:7], gt_labels=cur_org_gt_boxes[:, -1].long()
-                )
         else:
             iou3d = iou3d_nms_utils.boxes_iou3d_gpu(cur_roi, cur_gt_boxes[:, 0:7])  # (M, N)
             max_overlaps, gt_assignment = torch.max(iou3d, dim=1)
 
         sampled_inds = self.subsample_rois(max_overlaps=max_overlaps)
         roi_ious = max_overlaps[sampled_inds]
-        if index > 7:
-            roi_ious_org = max_overlaps_org[sampled_inds]
-        else:
-            roi_ious_org = -1
         # regression valid mask
         reg_valid_mask = (roi_ious > self.roi_sampler_cfg.REG_FG_THRESH).long()
 
@@ -254,7 +242,7 @@ class ProposalTargetLayer(nn.Module):
         cls_labels[interval_mask] = \
             (roi_ious[interval_mask] - iou_bg_thresh) / (iou_fg_thresh - iou_bg_thresh)
 
-        return sampled_inds, reg_valid_mask, cls_labels, roi_ious, gt_assignment, interval_mask, roi_ious_org
+        return sampled_inds, reg_valid_mask, cls_labels, roi_ious, gt_assignment, interval_mask
 
     def subsample_rois(self, max_overlaps, reg_fg_thresh=None, cls_fg_thresh=None):
         if reg_fg_thresh is None:

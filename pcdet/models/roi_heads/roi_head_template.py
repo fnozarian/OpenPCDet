@@ -338,7 +338,7 @@ class RoIHeadTemplate(nn.Module):
         sem_cls_targets = forward_ret_dict['roi_labels'] - 1
         # obj_cls_targets = forward_ret_dict['rcnn_cls_labels'].view(-1)
         weights_lbl = forward_ret_dict['gt_iou_of_rois'].chunk(2)[0].view(-1)
-        weights_ulb = forward_ret_dict['roi_ious_org'].chunk(2)[1].view(-1)
+        weights_ulb = torch.zeros_like(weights_lbl)
         weights = torch.cat([weights_lbl, weights_ulb])
         weights = (weights >= 0.55).float()
         sem_cls_targets_gt = forward_ret_dict['gt_of_rois'][..., -1].view(-1) - 1
