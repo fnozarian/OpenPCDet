@@ -154,20 +154,19 @@ class PVRCNN_SSL(Detector3DTemplate):
         return labeled_inds, unlabeled_inds
 
     @staticmethod
-    def pad_tensor(tensor_in, max_len=50):
-        assert tensor_in.dim() == 3, "Input tensor should be of shape (N, M, C), input shape is {}".format(tensor_in.shape)
-        diff_ = max_len - tensor_in.shape[1]
-        if diff_>0:
-            tensor_in = torch.cat([tensor_in, torch.zeros((tensor_in.shape[0], diff_, tensor_in.shape[-1]), device=tensor_in.device)], dim=1)
-        return tensor_in
-
-    def _get_thresh_alg_inputs(self, scores, logits):
-        scores_pad = [self.pad_tensor(s.unsqueeze(0).unsqueeze(2), max_len=100) for s in scores]
-        logits_pad = [self.pad_tensor(s.unsqueeze(0), max_len=100) for s in logits]
-        scores_pad = torch.cat(scores_pad).clone().detach()
-        logits_pad = torch.cat(logits_pad).clone().detach()
-
-        return scores_pad, logits_pad
+    def pad_tensor_dim2(tensor_in, max_len=100):
+        if tensor_in.dim() == 1:
+            tensor_in = tensor_in.unsqueeze(0).unsqueeze(2)
+        if tensor_in.dim() == 2:
+            tensor_in = tensor_in.unsqueeze(0)
+        if tensor_in.dim() == 3:
+            diff = max_len - tensor_in.shape[1]
+            if diff > 0:
+                zero_pad = torch.zeros((tensor_in.shape[0], diff, tensor_in.shape[-1]), device=tensor_in.device)
+                tensor_out = torch.cat([tensor_in, zero_pad], dim=1)
+                return tensor_out
+        else:
+            raise ValueError(f"tensor_in has wrong shape {tensor_in.shape}")
 
     # This is being used for debugging the loss functions, specially the new ones,
     # to see if they can be minimized to zero or converged to their lowest expected value or not.
@@ -438,22 +437,29 @@ class PVRCNN_SSL(Detector3DTemplate):
         box_labels = box_labels.cpu().numpy()
         V.draw_scenes(points=points, gt_boxes=boxes, gt_labels=box_labels)
 
-    def _update_thresh_alg(self, pl_conf_scores, pl_sem_logits, pl_rcnn_sem_scores, batch_dict_ema, pls_teacher_wa, lbl_inds):
+    def _update_thresh_alg(self, pl_conf_scores, pl_sem_logits, rcnn_sem_scores_wa_ulb, batch_dict_ema, batch_dict_wa, lbl_inds):
         thresh_inputs = dict()
-        pl_scores_lbl = [pls_teacher_wa[i]['pred_scores'] for i in lbl_inds]
-        pl_sem_logits_lbl = [pls_teacher_wa[i]['pred_sem_logits'] for i in lbl_inds]
-        conf_scores_wa_lbl, sem_scores_wa_lbl = self._get_thresh_alg_inputs(pl_scores_lbl, pl_sem_logits_lbl)
-        conf_scores_wa_ulb, sem_scores_wa_ulb = self._get_thresh_alg_inputs(pl_conf_scores, pl_sem_logits)
+
+        conf_scores_wa_lbl = [self.pad_tensor_dim2(batch_dict_wa[i]['pred_scores']) for i in lbl_inds]
+        sem_logits_wa_lbl = [self.pad_tensor_dim2(batch_dict_wa[i]['pred_sem_logits']) for i in lbl_inds]
+        rcnn_sem_scores_wa_lbl = [self.pad_tensor_dim2(batch_dict_wa[i]['pred_rcnn_sem_scores']) for i in lbl_inds]
+        conf_scores_wa_lbl = torch.cat(conf_scores_wa_lbl).detach().clone()
+        sem_scores_wa_lbl = torch.cat(sem_logits_wa_lbl).sigmoid().detach().clone()
+        rcnn_sem_scores_lbl = torch.cat(rcnn_sem_scores_wa_lbl).detach().clone()
+
+        conf_scores_wa_ulb = torch.cat([self.pad_tensor_dim2(score) for score in pl_conf_scores]).detach().clone()
+        sem_scores_wa_ulb = torch.cat([self.pad_tensor_dim2(score) for score in pl_sem_logits]).detach().clone()
+        rcnn_sem_scores_wa_ulb = torch.cat([self.pad_tensor_dim2(scores) for scores in rcnn_sem_scores_wa_ulb]).detach().clone()
+
         thresh_inputs['conf_scores_wa'] = torch.cat([conf_scores_wa_lbl, conf_scores_wa_ulb])
         thresh_inputs['sem_scores_wa'] = torch.cat([sem_scores_wa_lbl, sem_scores_wa_ulb])
-        thresh_inputs['gt_labels_wa'] = self.pad_tensor(batch_dict_ema['gt_boxes'][..., 7:8], max_len=100).detach().clone()
-        thresh_inputs['gts_wa'] = self.pad_tensor(batch_dict_ema['gt_boxes'], max_len=100).detach().clone()
-        pls_ws = [torch.cat([pl['pred_boxes'], pl['pred_labels'].view(-1, 1)], dim=-1) for pl in pls_teacher_wa]
-        thresh_inputs['pls_wa'] = torch.cat([self.pad_tensor(pl.unsqueeze(0), max_len=100) for pl in pls_ws]).detach().clone()
+        thresh_inputs['rcnn_sem_scores'] = torch.cat([rcnn_sem_scores_lbl, rcnn_sem_scores_wa_ulb])
 
-        ulb_rcnn_sem_scores = torch.cat([self.pad_tensor(scores.unsqueeze(0), max_len=100) for scores in pl_rcnn_sem_scores]).detach().clone()
-        lb_rect_scores = torch.ones_like(ulb_rcnn_sem_scores)
-        thresh_inputs['rcnn_sem_scores'] = torch.cat([lb_rect_scores, ulb_rcnn_sem_scores])
+        thresh_inputs['gt_labels_wa'] = self.pad_tensor_dim2(batch_dict_ema['gt_boxes'][..., 7:8]).detach().clone()
+        thresh_inputs['gts_wa'] = self.pad_tensor_dim2(batch_dict_ema['gt_boxes']).detach().clone()
+        pls_ws = [torch.cat([pl['pred_boxes'], pl['pred_labels'].view(-1, 1)], dim=-1) for pl in batch_dict_wa]
+        thresh_inputs['pls_wa'] = torch.cat([self.pad_tensor_dim2(pl) for pl in pls_ws]).detach().clone()
+
         self.thresh_alg.update(**thresh_inputs)
 
     @staticmethod
@@ -470,7 +476,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         pl_scores = []
         pl_sem_scores = []
         pl_sem_logits = []
-        pl_rcnn_sem_logits = []
+        pl_rcnn_sem_scores = []
         pl_rect_scores = []
         pl_weights = []
         masks = []
@@ -480,7 +486,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             pl_scores.append(labels.new_zeros((1,)).float())
             pl_sem_scores.append(labels.new_zeros((1,)).float())
             pl_sem_logits.append(labels.new_zeros((1, 3)).float())
-            pl_rcnn_sem_logits.append(labels.new_zeros((1, 3)).float())
+            pl_rcnn_sem_scores.append(labels.new_zeros((1, 3)).float())
             pl_rect_scores.append(labels.new_zeros((1, 3)).float())
             pl_weights.append(labels.new_ones((1,)))
             masks.append(labels.new_ones((1,), dtype=torch.bool))
@@ -520,12 +526,12 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pl_scores.append(scores)
                 pl_sem_scores.append(sem_scores)
                 pl_sem_logits.append(sem_logits)
-                pl_rcnn_sem_logits.append(rcnn_sem_scores)
+                pl_rcnn_sem_scores.append(rcnn_sem_scores)
                 pl_rect_scores.append(rect_scores)
                 pl_weights.append(weights)
                 masks.append(mask)
 
-        return pl_boxes, pl_scores, pl_sem_scores, pl_sem_logits, pl_rect_scores, masks, pl_weights, pl_rcnn_sem_logits
+        return pl_boxes, pl_scores, pl_sem_scores, pl_sem_logits, pl_rect_scores, masks, pl_weights, pl_rcnn_sem_scores
 
     @staticmethod
     def _fill_with_pls(batch_dict, pseudo_boxes, masks, ulb_inds, lb_inds, key=None):
