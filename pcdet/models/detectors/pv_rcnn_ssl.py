@@ -442,17 +442,18 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         conf_scores_wa_lbl = [self.pad_tensor_dim2(batch_dict_wa[i]['pred_scores']) for i in lbl_inds]
         sem_logits_wa_lbl = [self.pad_tensor_dim2(batch_dict_wa[i]['pred_sem_logits']) for i in lbl_inds]
-        rcnn_sem_scores_wa_lbl = [self.pad_tensor_dim2(batch_dict_wa[i]['pred_rcnn_sem_scores']) for i in lbl_inds]
+        rcnn_sem_scores_wa_lbl = [self.pad_tensor_dim2(batch_dict_wa[i]['pred_rcnn_sem_logits']).softmax(-1) for i in lbl_inds]
         conf_scores_wa_lbl = torch.cat(conf_scores_wa_lbl).detach().clone()
-        sem_scores_wa_lbl = torch.cat(sem_logits_wa_lbl).sigmoid().detach().clone()
+        sem_logits_wa_lbl = torch.cat(sem_logits_wa_lbl).detach().clone()
         rcnn_sem_scores_lbl = torch.cat(rcnn_sem_scores_wa_lbl).detach().clone()
 
         conf_scores_wa_ulb = torch.cat([self.pad_tensor_dim2(score) for score in pl_conf_scores]).detach().clone()
-        sem_scores_wa_ulb = torch.cat([self.pad_tensor_dim2(score) for score in pl_sem_logits]).detach().clone()
+        sem_logits_wa_ulb = torch.cat([self.pad_tensor_dim2(score) for score in pl_sem_logits]).detach().clone()
         rcnn_sem_scores_wa_ulb = torch.cat([self.pad_tensor_dim2(scores) for scores in rcnn_sem_scores_wa_ulb]).detach().clone()
 
         thresh_inputs['conf_scores_wa'] = torch.cat([conf_scores_wa_lbl, conf_scores_wa_ulb])
-        thresh_inputs['sem_scores_wa'] = torch.cat([sem_scores_wa_lbl, sem_scores_wa_ulb])
+        # Note: sem_scores_wa is actually sem_logits_wa
+        thresh_inputs['sem_scores_wa'] = torch.cat([sem_logits_wa_lbl, sem_logits_wa_ulb])
         thresh_inputs['rcnn_sem_scores'] = torch.cat([rcnn_sem_scores_lbl, rcnn_sem_scores_wa_ulb])
 
         thresh_inputs['gt_labels_wa'] = self.pad_tensor_dim2(batch_dict_ema['gt_boxes'][..., 7:8]).detach().clone()

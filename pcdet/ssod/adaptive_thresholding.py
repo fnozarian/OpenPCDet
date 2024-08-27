@@ -93,6 +93,35 @@ class AdaptiveThresholding(Metric):
             accumulated_metrics[mname] = self._arrange_tensor(mstate)
         return accumulated_metrics
 
+    def _get_label_dist(self, labels, mask, normalized=False, num_classes=3):
+        labels_lbl = _lbl(labels, mask)
+        labels_ulb = _ulb(labels, mask)
+        labels_hist_lbl = torch.bincount(labels_lbl, minlength=num_classes)
+        labels_hist_ulb = torch.bincount(labels_ulb, minlength=num_classes)
+        hist = torch.vstack([labels_hist_lbl, labels_hist_ulb])
+        if normalized:
+            hist = hist / hist.sum(dim=-1, keepdim=True)
+        return hist
+
+    def _get_classwise_max_scores(self, max_sem_scores, conf_scores, labels, mask, num_classes=3):
+        joint_scores = max_sem_scores * conf_scores
+        max_joint_scores_lbl = _lbl(joint_scores, mask)
+        max_joint_scores_ulb = _ulb(joint_scores, mask)
+        labels_lbl = _lbl(labels, mask)
+        labels_ulb = _ulb(labels, mask)
+        conf_scores_lbl = _lbl(conf_scores, mask)
+        conf_scores_ulb = _ulb(conf_scores, mask)
+
+        classwise_conf_scores_lbl = torch.bincount(labels_lbl.squeeze(), minlength=num_classes, weights=conf_scores_lbl.squeeze())
+        classwise_conf_scores_ulb = torch.bincount(labels_ulb.squeeze(), minlength=num_classes, weights=conf_scores_ulb.squeeze())
+        classwise_max_scores_lbl = torch.bincount(labels_lbl.squeeze(), minlength=num_classes, weights=max_joint_scores_lbl.squeeze())
+        classwise_max_scores_ulb = torch.bincount(labels_ulb.squeeze(), minlength=num_classes, weights=max_joint_scores_ulb.squeeze())
+
+        classwise_max_scores_lbl /= torch.clamp(classwise_conf_scores_lbl, min=1e-6)
+        classwise_max_scores_ulb /= torch.clamp(classwise_conf_scores_ulb, min=1e-6)
+
+        return torch.vstack([classwise_max_scores_lbl, classwise_max_scores_ulb])
+
     def _get_p_max_stats(self, max_scores, labels, mask, conf_scores=None, split=None, num_classes=3):
         if split is None:
             split = ['lbl', 'ulb']
@@ -108,7 +137,7 @@ class AdaptiveThresholding(Metric):
             p_max_model = max_scores_x.mean()
             labels_hist = torch.bincount(labels_x, minlength=num_classes)
             p_max_model_classwise = labels_x.new_zeros(num_classes, dtype=max_scores.dtype).scatter_add_(0, labels_x, max_scores_x)
-            p_max_model_classwise /=  torch.clamp(labels_hist, min=1e-6)
+            p_max_model_classwise /= torch.clamp(labels_hist, min=1e-6)
 
             std_p_max_classwise = torch.cat([max_scores_x[labels_x == i].std().view(1) for i in range(num_classes)], dim=0)
 
@@ -177,24 +206,35 @@ class AdaptiveThresholding(Metric):
                 max_scores, _ = torch.max(scores, dim=-1)
 
             if sname == 'sem_scores_wa':
-                scores = acc_metrics['sem_scores_wa']
+                scores = acc_metrics['sem_scores_wa']  # Note that despite the misleading name these are logits!
                 scores = torch.softmax(scores / self.temperature, dim=-1)
                 # scores = torch.sigmoid(scores)
                 # scores /= scores.sum(dim=-1, keepdim=True)
                 max_scores, labels = torch.max(scores, dim=-1)
+
             if sname == 'rcnn_sem_scores':
                 scores = acc_metrics['rcnn_sem_scores']
-                scores = torch.softmax(scores, dim=-1)
+                # scores = torch.softmax(scores, dim=-1)  # rcnn_sem_scores are already softmaxed
                 max_scores, labels = torch.max(scores, dim=-1)
 
             if sname == 'joint':
                 sem_logits = acc_metrics['sem_scores_wa']
                 scores = torch.softmax(sem_logits / self.temperature, dim=-1)
                 conf_scores = acc_metrics['conf_scores_wa']
-                weights_lbl = _lbl(conf_scores) / _lbl(conf_scores, padding_mask).sum()
-                weights_ulb = _ulb(conf_scores) / _ulb(conf_scores, padding_mask).sum()
-                weights = torch.vstack([weights_lbl, weights_ulb])
-                max_scores, labels = torch.max(scores, dim=-1)
+                max_scores, labels = torch.max(scores, dim=-1, keepdim=True)
+                joint_scores = scores * conf_scores
+                sum_conf_scores_lbl = _lbl(conf_scores, padding_mask).sum()
+                sum_conf_scores_ulb = _ulb(conf_scores, padding_mask).sum()
+                joint_scores_lbl = _lbl(joint_scores, padding_mask)
+                joint_scores_ulb = _ulb(joint_scores, padding_mask)
+                mean_p_model_lbl = joint_scores_lbl.sum(dim=0) / sum_conf_scores_lbl
+                mean_p_model_ulb = joint_scores_ulb.sum(dim=0) / sum_conf_scores_ulb
+                mean_p_model = torch.vstack([mean_p_model_lbl, mean_p_model_ulb])
+                mean_p_max_lbl = joint_scores_lbl.max(dim=-1)[0].sum() / sum_conf_scores_lbl
+                mean_p_max_ulb = joint_scores_ulb.max(dim=-1)[0].sum() / sum_conf_scores_ulb
+                mean_p_max = torch.vstack([mean_p_max_lbl, mean_p_max_ulb])
+                mean_p_max_classwise = self._get_classwise_max_scores(max_scores, conf_scores, labels, padding_mask)
+                labels_hist = self._get_label_dist(labels.squeeze(), padding_mask, normalized=True)
 
             # TODO: Experiment with pre-filtering the scores
             # pre_filtering_mask = max_scores > 0.1
@@ -202,20 +242,15 @@ class AdaptiveThresholding(Metric):
 
             # self.max_scores[sname] = max_scores
             # self.labels[sname] = labels
-            if sname == 'joint':
-                mean_p_max, labels_hist, mean_p_max_classwise, std_p_max_classwise = self._get_p_max_stats(max_scores, labels, padding_mask, conf_scores)
-                mean_p_model_lbl = _lbl(scores * weights, padding_mask).sum(dim=0)
-                mean_p_model_ulb = _ulb(scores * weights, padding_mask).sum(dim=0)
-            else:
-                mean_p_max, labels_hist, mean_p_max_classwise, std_p_max_classwise = self._get_p_max_stats(max_scores, labels, padding_mask)
+            if sname != 'joint':
+                mean_p_max, labels_hist, mean_p_max_classwise, _ = self._get_p_max_stats(max_scores, labels, padding_mask)
                 mean_p_model_lbl = _lbl(scores, padding_mask).mean(dim=0)
                 mean_p_model_ulb = _ulb(scores, padding_mask).mean(dim=0)
-
-            mean_p_model = torch.vstack([mean_p_model_lbl, mean_p_model_ulb])
+                mean_p_model = torch.vstack([mean_p_model_lbl, mean_p_model_ulb])
 
             self._update_ema('mean_p_max_model', mean_p_max, sname)
             self._update_ema('mean_p_max_model_classwise', mean_p_max_classwise, sname)
-            self._update_ema('std_p_max_model_classwise', std_p_max_classwise, sname)
+            # self._update_ema('std_p_max_model_classwise', std_p_max_classwise, sname)
             self._update_ema('labels_hist', labels_hist, sname)
             self._update_ema('mean_p_model', mean_p_model, sname)
 
@@ -235,7 +270,7 @@ class AdaptiveThresholding(Metric):
         results['labels_hist_ulb/gts_wa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_wa'].view(-1))))
 
         if self.thresh_method == 'AdaMatch':
-            assert self.joint_dist_align == True, "AdaMatch requires joint scores currently."
+            assert self.joint_dist_align, "AdaMatch requires joint scores currently."
             mean_p_model_ulb = _ulb(self.mean_p_model['joint'])
             self.ratio['AdaMatch'] = self.mean_p_model['gt'].to(mean_p_model_ulb.device) / mean_p_model_ulb
             results[f'ratio/AdaMatch'] = self._arr2dict(self.ratio['AdaMatch'])
@@ -246,7 +281,7 @@ class AdaptiveThresholding(Metric):
             results[f'threshold/FreeMatch'] = self._arr2dict(self._get_threshold())
 
         elif self.thresh_method == 'LabelMatch':
-            assert self.joint_dist_align == True, "LabelMatch requires joint scores currently."
+            assert self.joint_dist_align, "LabelMatch requires joint scores currently."
             ulb_bs = int(self.bs * self.ulb_ratio)
             exp_num_fgs = self.mean_p_model['gt'].to(
                 scores.device) * self.avg_num_fgs_per_sample * ulb_bs * self.reset_state_interval
@@ -268,7 +303,7 @@ class AdaptiveThresholding(Metric):
         results[f'mean_p_max_model_lbl/{sname}'] = _lbl(self.mean_p_max_model[sname])
         results[f'mean_p_max_model_ulb/{sname}'] = _ulb(self.mean_p_max_model[sname])
         # results[f'std_p_max_model_lbl/{sname}'] = self._arr2dict(_lbl(self.std_p_max_model_classwise[sname]), ignore_zeros=True)
-        results[f'std_p_max_model_ulb/{sname}'] = self._arr2dict(_ulb(self.std_p_max_model_classwise[sname]), ignore_zeros=True)
+        # results[f'std_p_max_model_ulb/{sname}'] = self._arr2dict(_ulb(self.std_p_max_model_classwise[sname]), ignore_zeros=True)
         results[f'labels_hist_lbl/{sname}'] = self._arr2dict(_lbl(self.labels_hist[sname]))
         results[f'labels_hist_ulb/{sname}'] = self._arr2dict(_ulb(self.labels_hist[sname]))
         results[f'mean_p_model_lbl/{sname}'] = self._arr2dict(_lbl(self.mean_p_model[sname]))
