@@ -8,14 +8,24 @@ from pcdet.ops.iou3d_nms import iou3d_nms_utils
 from pcdet.ops.roiaware_pool3d import roiaware_pool3d_utils
 from .detector3d_template import Detector3DTemplate
 from .pv_rcnn import PVRCNN
-
+from matplotlib import pyplot as plt
+import torch.nn.functional as F
 from pcdet.utils import common_utils
 from pcdet.utils.stats_utils import metrics_registry
 from pcdet.utils.prototype_utils import feature_bank_registry
 from collections import defaultdict
 from ssod import AdaptiveThresholding
 #from visual_utils import open3d_vis_utils as V
+from sklearn.metrics import precision_score
 
+
+def _arr2dict2(array, ignore_zeros=False, ignore_nan=False):
+    def should_include(value):
+        return not ((ignore_zeros and value == 0) or (ignore_nan and np.isnan(value)))
+
+    classes = ['Car', 'Pedestrian', 'Cyclist']
+    classes = classes[:len(array)]
+    return {cls: array[cind] for cind, cls in enumerate(classes) if should_include(array[cind])}
 
 class PVRCNN_SSL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -63,10 +73,42 @@ class PVRCNN_SSL(Detector3DTemplate):
         return {
             "batch_size": batch_dict['batch_size'],
             "gt_boxes": batch_dict['gt_boxes'].clone().detach(),
+            "ori_gt_boxes": batch_dict['ori_gt_boxes'].clone().detach(),
             "point_coords": batch_dict['point_coords'].clone().detach(),
             "point_features": batch_dict['point_features'].clone().detach(),
             "point_cls_scores": batch_dict['point_cls_scores'].clone().detach()
         }
+
+    def _prep_wa_bank_inputs(self, batch_dict_ema, lbl_inds, num_points_threshold=20):
+        projections_gt = batch_dict_ema['projected_features_gt']
+        projections_gt = projections_gt.view(*batch_dict_ema['gt_boxes'].shape[:2], -1)
+        projections_gt = torch.chunk(projections_gt, 2, dim=0)[0]  # Teacher's labeled projections on GT boxes
+
+        bank_inputs = defaultdict(list)
+        for ix in lbl_inds:
+            gt_boxes = batch_dict_ema['gt_boxes'][ix]
+            nonzero_mask = torch.logical_not(torch.eq(gt_boxes, 0).all(dim=-1))
+            if nonzero_mask.sum() == 0:
+                print(f"no gt instance in frame {batch_dict_ema['frame_id'][ix]}")
+                continue
+            gt_boxes = gt_boxes[nonzero_mask]
+            sample_mask = batch_dict_ema['points'][:, 0].int() == ix
+            points = batch_dict_ema['points'][sample_mask, 1:4]
+            gt_feat = projections_gt[ix][nonzero_mask] # Store labeled projections into bank
+            gt_labels = gt_boxes[:, 7].int()
+            gt_boxes = gt_boxes[:, :7]
+            ins_idxs = batch_dict_ema['instance_idx'][ix][nonzero_mask].int()
+            smpl_id = torch.from_numpy(batch_dict_ema['frame_id'].astype(np.int32))[ix].to(gt_boxes.device)
+            num_points_in_gt = roiaware_pool3d_utils.points_in_boxes_cpu(points.cpu(), gt_boxes.cpu()).sum(dim=-1)
+            valid_gts_mask = (num_points_in_gt >= num_points_threshold)
+            if valid_gts_mask.sum() == 0:
+                print(f"no valid gt instances with enough points in frame {batch_dict_ema['frame_id'][ix]}")
+                continue
+            bank_inputs['feats'].append(gt_feat[valid_gts_mask]) # NOTE: Should have no_grad. Labeled features from teacher
+            bank_inputs['labels'].append(gt_labels[valid_gts_mask])
+            bank_inputs['ins_ids'].append(ins_idxs[valid_gts_mask])
+            bank_inputs['smpl_ids'].append(smpl_id)
+        return bank_inputs
 
     def _prep_bank_inputs(self, batch_dict, inds, num_points_threshold=20):
         selected_batch_dict = self._clone_gt_boxes_and_feats(batch_dict)
@@ -109,6 +151,24 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         return bank_inputs
 
+    def get_pseudo_projections(self, batch_dict):
+        # ori_pooled_features shape: (16*max_box_num, 216*2, C//2)
+        ori_gt_proj_feats = self.pv_rcnn.roi_head.pool_features(batch_dict, use_ori_gtboxes=True, use_projector=True)
+        ori_gt_boxes_ulb = torch.chunk(batch_dict['ori_gt_boxes'], 2, dim=0)[1]  # get unlabeled inds
+        nonzero_mask = torch.logical_not(torch.eq(ori_gt_boxes_ulb, 0).all(dim=-1))
+        batch_size, num_gts = batch_dict['ori_gt_boxes'].shape[:2]
+        ori_gt_proj_feats_ulb = ori_gt_proj_feats.view(batch_size, num_gts, -1).chunk(ori_gt_proj_feats, 2, dim=0)[1]
+        ori_gt_proj_feats_ulb = ori_gt_proj_feats_ulb[nonzero_mask]
+        ori_labels_ulb = ori_gt_boxes_ulb[..., 7].int()
+        ori_labels_ulb = ori_labels_ulb[nonzero_mask]
+        ori_labels_ulb_hist = torch.bincount(ori_labels_ulb, minlength=3)
+        tb_dict = {'ori_gt_ulb_label_hist': _arr2dict2(ori_labels_ulb_hist)}
+
+        return ori_gt_proj_feats_ulb, ori_labels_ulb, tb_dict
+
+
+
+
     def forward(self, batch_dict):
         if self.training:
             return self._forward_training(batch_dict)
@@ -131,6 +191,10 @@ class PVRCNN_SSL(Detector3DTemplate):
     @staticmethod
     def _split_batch(batch_dict, tag='ema'):
         assert tag in ['ema', 'pre_gt_sample'], f'{tag} not in list [ema, pre_gt_sample]'
+        # batch_dict['instance_idx_ema'] = batch_dict['instance_idx']
+        batch_dict['frame_id_ema'] = batch_dict['frame_id']
+        batch_dict['ori_gt_boxes'] = batch_dict['gt_boxes'].clone()
+        batch_dict['ori_gt_boxes_ema'] = batch_dict['gt_boxes'].clone()
         batch_dict_out = {}
         keys = list(batch_dict.keys())
         for k in keys:
@@ -224,9 +288,13 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTOTYPING', False):
             # Update the bank with student's features from augmented labeled data
-            bank = feature_bank_registry.get('gt_aug_lbl_prototypes')
-            sa_gt_lbl_inputs = self._prep_bank_inputs(batch_dict, lbl_inds, bank.num_points_thresh)
-            bank.update(**sa_gt_lbl_inputs, iteration=batch_dict['cur_iteration'])
+            bank = feature_bank_registry.get('gt_wa_lbl_prototypes')
+            ori_lpconf_loss_enabled = self.model_cfg['ROI_HEAD'].get('ENABLE_LPCONT_LOSS', False)
+            if bank.is_initialized() and ori_lpconf_loss_enabled:
+                roi_feats_sa, roi_labels, tb_dicts = self.get_pseudo_projections(batch_dict)
+
+            wa_gt_lbl_inputs = self._prep_wa_bank_inputs(batch_dict_ema, lbl_inds, bank.num_points_thresh)
+            bank.update(**wa_gt_lbl_inputs, iteration=batch_dict['cur_iteration'])
 
         # For metrics calculation
         self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = ulb_inds
@@ -263,6 +331,13 @@ class PVRCNN_SSL(Detector3DTemplate):
                 loss += proto_cont_loss * self.model_cfg['ROI_HEAD']['PROTO_CONTRASTIVE_LOSS_WEIGHT']
                 tb_dict['proto_cont_loss'] = proto_cont_loss.item()
 
+        if self.model_cfg['ROI_HEAD'].get('ENABLE_LPCONT_LOSS', False) and bank.is_initialized():
+            lpcont_loss, sim_matrix, proto_labels = bank.get_lpcont_loss(roi_feats_sa, roi_labels)
+            loss += lpcont_loss * self.model_cfg['ROI_HEAD']['LPCONT_LOSS_WEIGHT']
+            tb_dict['lpcont_loss'] = lpcont_loss.item()
+            tb_dict['sim_matrix_info'] = (sim_matrix, roi_labels, proto_labels)
+            tb_dict['ori_gt_classes'] = tb_dicts['ori_gt_classes']
+
         tb_dict_ = self._prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn)
         tb_dict_.update(**pl_count_dict)
 
@@ -278,7 +353,12 @@ class PVRCNN_SSL(Detector3DTemplate):
         if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTOTYPING', False):
             for tag in feature_bank_registry.tags():
                 feature_bank_registry.get(tag).compute()
-
+            if feature_bank_registry._banks['gt_wa_lbl_prototypes']._computed is not None:
+                prototype_cls_features, prototype_id_features, prototype_id_labels, num_updates = bank.get_computed_protos()
+                class_proto_precision_dict= self.pv_rcnn_ema.roi_head.evaluate_class_prototype_rcnn_sem_precision(prototype_cls_features, torch.unique(prototype_id_labels), tb_dict_)
+                inst_proto_precision_dict = self.pv_rcnn_ema.roi_head.evaluate_instance_prototype_rcnn_sem_precision(prototype_id_features, prototype_id_labels, tb_dict_)
+                tb_dict_.update(**class_proto_precision_dict)
+                tb_dict_.update(**inst_proto_precision_dict)
         # update dynamic thresh alg
         if self.thresh_alg is not None and (results := self.thresh_alg.compute()):
             tb_dict_.update(results)
@@ -367,7 +447,8 @@ class PVRCNN_SSL(Detector3DTemplate):
     def _get_proto_contrastive_loss(self, batch_dict, bank, ulb_inds):
         gt_boxes = batch_dict['gt_boxes']
         B, N = gt_boxes.shape[:2]
-        sa_pl_feats = self.pv_rcnn.roi_head.pool_features(batch_dict, use_gtboxes=True).view(B * N, -1)
+        # TODO: change the prototype contrastive loss to use the projected features
+        sa_pl_feats = self.pv_rcnn.roi_head.pool_features(batch_dict, use_gtboxes=True, use_projector=True).view(B * N, -1)
         pl_labels = batch_dict['gt_boxes'][..., 7].view(-1).long() - 1
         proto_cont_loss = bank.get_proto_contrastive_loss(sa_pl_feats, pl_labels)
         if proto_cont_loss is None:
@@ -380,14 +461,37 @@ class PVRCNN_SSL(Detector3DTemplate):
         return proto_cont_loss.view(B, N)[ulb_inds][ulb_nonzero_mask].mean()
 
     @staticmethod
-    def _prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn):
+    def _get_sim_matrix_fig(sim_matrix, roi_labels, proto_labels):
+        sim_matrix = sim_matrix.detach().cpu().numpy()
+        roi_labels = roi_labels.cpu().numpy()
+        proto_labels = proto_labels.cpu().numpy()
+        fig, ax = plt.subplots(figsize=(max(4, len(proto_labels) * 0.2), max(4, len(roi_labels) * 0.2)))
+        img = ax.imshow(sim_matrix, interpolation='nearest', cmap=plt.cm.Blues, vmin=0, vmax=1)
+        x_tick_marks = np.arange(len(proto_labels))
+        ax.set_xticks(x_tick_marks)
+        ax.set_xticklabels(proto_labels, rotation=45)
+        y_tick_marks = np.arange(len(roi_labels))
+        ax.set_yticks(y_tick_marks)
+        ax.set_yticklabels(roi_labels)
+        ax.set_title("LPCont Similarity matrix")
+        ax.set_ylabel('Labeled features')
+        ax.set_xlabel('Pseudo features')
+        plt.subplots_adjust(left=0.2, right=0.8, top=0.9, bottom=0.1)
+        fig.colorbar(img)
+        # fig.tight_layout()
+        return fig
+
+    def _prep_tb_dict(self, tb_dict, lbl_inds, ulb_inds, reduce_loss_fn):
         tb_dict_ = {}
         for key in tb_dict.keys():
-            if key == 'proto_cont_loss':
+            if key in ['proto_cont_loss', 'lpcont_loss', 'ori_gt_classes']:
                 tb_dict_[key] = tb_dict[key]
             elif 'loss' in key or 'acc' in key or 'point_pos_num' in key:
                 tb_dict_[f"{key}_labeled"] = reduce_loss_fn(tb_dict[key][lbl_inds, ...])
                 tb_dict_[f"{key}_unlabeled"] = reduce_loss_fn(tb_dict[key][ulb_inds, ...])
+            elif 'sim_matrix_info' in key:
+                sim_matrix, roi_labels, proto_labels = tb_dict[key]
+                tb_dict_[key] = self._get_sim_matrix_fig(sim_matrix, roi_labels, proto_labels)
             else:
                 tb_dict_[key] = tb_dict[key]
 

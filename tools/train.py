@@ -189,7 +189,7 @@ def main():
 
     model.train()  # before wrap to DistributedDataParallel to support fixed some parameters
     if dist_train:
-        model = nn.parallel.DistributedDataParallel(model, device_ids=[cfg.LOCAL_RANK % torch.cuda.device_count()])
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[cfg.LOCAL_RANK % torch.cuda.device_count()], find_unused_parameters=True)
     logger.info(model)
 
     lr_scheduler, lr_warmup_scheduler = build_scheduler(
@@ -198,7 +198,7 @@ def main():
     )
 
     # -----------------------start training---------------------------
-    logger.info('**********************Start training %s/%s(%s)**********************'
+    logger.info('**********************Start training %s/%s/%s)**********************'
                 % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
 
     if cfg.MODEL.POST_PROCESSING.get('TEST_EVAL_DURING_TRAIN', False):
@@ -238,10 +238,10 @@ def main():
     if hasattr(train_set, 'use_shared_memory') and train_set.use_shared_memory:
         train_set.clean_shared_memory()
 
-    logger.info('**********************End training %s/%s(%s)**********************\n\n\n'
+    logger.info('**********************End training %s/%s/%s)**********************\n\n\n'
                 % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
 
-    logger.info('**********************Start evaluation %s/%s(%s)**********************' %
+    logger.info('**********************Start evaluation %s/%s/%s)**********************' %
                 (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
     eval_output_dir = output_dir / 'eval' / 'eval_with_train'
     eval_output_dir.mkdir(parents=True, exist_ok=True)
@@ -252,7 +252,7 @@ def main():
         test_loader, args, eval_output_dir, logger, ckpt_dir,
         dist_test=dist_train
     )
-    logger.info('**********************End evaluation %s/%s(%s)**********************' %
+    logger.info('**********************End evaluation%s/%s/%s)**********************' %
                 (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
 
 

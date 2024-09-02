@@ -2,9 +2,8 @@ import torch
 from torch.functional import F
 from torchmetrics import Metric
 import numpy as np
-from torch.distributions import Categorical
-
-
+import torch.distributed as dist
+from torch import nn
 class FeatureBank(Metric):
     full_state_update: bool = False
 
@@ -14,13 +13,14 @@ class FeatureBank(Metric):
         self.tag = kwargs.get('NAME', None)
 
         self.temperature = kwargs.get('TEMPERATURE')
+        self.num_classes = 3
         self.feat_size = kwargs.get('FEATURE_SIZE')
         self.bank_size = kwargs.get('BANK_SIZE')  # e.g., num. of classes or labeled instances
         self.momentum = kwargs.get('MOMENTUM')
         self.direct_update = kwargs.get('DIRECT_UPDATE')
         self.reset_state_interval = kwargs.get('RESET_STATE_INTERVAL')  # reset the state when N unique samples are seen
         self.num_points_thresh = kwargs.get('FILTER_MIN_POINTS_IN_GT', 0)
-
+        self.ce_loss = nn.CrossEntropyLoss()
         self.initialized = False
         self.insId_protoId_mapping = None  # mapping from instance index to prototype index
 
@@ -97,9 +97,9 @@ class FeatureBank(Metric):
 
     def _update_classwise_prototypes(self):
         classwise_prototypes = torch.zeros((3, self.feat_size)).cuda()
-        for i in range(3):  # TODO: refactor it
-            inds = torch.where(self.proto_labels == i)[0]
-            print(f"Update classwise prototypes for class {i} with {len(inds)} instances.")
+        for i in range(self.num_classes):  # TODO: refactor it
+            inds = torch.where(self.proto_labels == (i+1))[0]
+            print(f"Update classwise prototypes for class {(i+1)} with {len(inds)} instances.")
             classwise_prototypes[i] = torch.mean(self.prototypes[inds], dim=0)
         self.classwise_prototypes = self.momentum * self.classwise_prototypes + (1 - self.momentum) * classwise_prototypes
 
@@ -145,6 +145,82 @@ class FeatureBank(Metric):
         log_probs = F.log_softmax(sim_scores / self.temperature, dim=-1)
         return -log_probs[torch.arange(len(labels)), labels]
 
+    def is_initialized(self):
+        return self.initialized
+
+    def get_computed_protos(self):
+        return self.classwise_prototypes, self.prototypes, self.proto_labels, self.num_updates
+
+    def _randomly_sample_protos_by_class(self, num_samples):
+        sampled_protos = []
+        sampled_labels = []
+        for i in range(self.num_classes):
+            inds = torch.where(self.proto_labels == (i+1))[0]
+            sampled_inds = torch.randperm(len(inds))[:num_samples]
+            sampled_protos.append(self.prototypes[inds[sampled_inds]])
+            sampled_labels.append(self.proto_labels[inds[sampled_inds]])
+        return torch.cat(sampled_protos), torch.cat(sampled_labels)
+
+    def get_lpcont_loss(self, roi_feats_sa, roi_labels):
+        # TODO: do we require to filter out the zeros for 'proto' AND 'roi' labels?
+        # non_zero_mask = self.proto_labels.long() != 0
+        # proto_feats_wa = self.prototypes[non_zero_mask]
+        # proto_labels = self.proto_labels[non_zero_mask]
+
+        nppc = 10  # number of prototypes per class
+        proto_feats, proto_labels = self._randomly_sample_protos_by_class(nppc)
+        proto_feats = F.normalize(proto_feats, dim=-1)
+        roi_feats_sa = F.normalize(roi_feats_sa, dim=-1)
+        num_rois = roi_feats_sa.size(0)
+
+        sim_matrix = roi_feats_sa @ proto_feats.t()  # (N, C) @ (C, M) -> (N, M)
+        pos_mask = roi_labels.unsqueeze(1) == proto_labels.unsqueeze(0)
+        neg_sim_matrix = torch.masked_select(sim_matrix, ~pos_mask).view(num_rois, -1)
+        neg_sim_matrix = torch.repeat_interleave(neg_sim_matrix, nppc, dim=0)
+        pos_inds = torch.where(pos_mask)
+        positives = sim_matrix[pos_inds].view(-1, 1)
+        logits = torch.cat((positives, neg_sim_matrix), dim=1)
+        logits = logits / self.temperature
+        labels = torch.zeros((num_rois*3,), dtype=torch.long).cuda()
+        lpcont_loss = self.ce_loss(logits, labels)
+
+        return lpcont_loss, sim_matrix.detach(), proto_labels
+
+    def gather_tensors(self, tensor):
+        assert tensor.size(-1) == 257 , "features should be of size common_instances,(ft_size+ lbl_size)"
+        if not dist.is_initialized():
+            return tensor
+            # Determine sizes first
+        WORLD_SIZE = dist.get_world_size()
+        local_size = torch.tensor(tensor.size(), device=tensor.device)
+        all_sizes = [torch.zeros_like(local_size) for _ in range(WORLD_SIZE)]
+
+        dist.barrier()
+        dist.all_gather(all_sizes,local_size)
+        dist.barrier()
+
+        print(f'all_sizes {all_sizes}')
+        # make zero-padded version https://stackoverflow.com/questions/71433507/pytorch-python-distributed-multiprocessing-gather-concatenate-tensor-arrays-of
+        max_length = max([size[0] for size in all_sizes])
+
+        diff = max_length - local_size[0].item()
+        if diff:
+            pad_size =[diff.item()] #pad with zeros
+            if local_size.ndim >= 1:
+                pad_size.extend(dimension.item() for dimension in local_size[1:])
+            padding = torch.zeros(pad_size, device=tensor.device, dtype=tensor.dtype)
+            tensor = torch.cat((tensor,padding),)
+
+        all_tensors_padded = [torch.zeros_like(tensor) for _ in range(WORLD_SIZE)]
+
+        dist.barrier()
+        dist.all_gather(all_tensors_padded,tensor)
+        dist.barrier()
+
+        gathered_tensor = torch.cat(all_tensors_padded)
+        non_zero_mask = torch.any(gathered_tensor!=0,dim=-1).squeeze()
+        gathered_tensor = gathered_tensor[non_zero_mask]
+        return gathered_tensor
 
 class FeatureBankRegistry(object):
     def __init__(self, **kwargs):

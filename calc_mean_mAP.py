@@ -28,7 +28,27 @@ def get_sorted_text_files(dirpath):
     a.sort(key=lambda s: os.path.getmtime(os.path.join(dirpath, s)))
     return a
 
+def find_eval_list_file(exp_name):
+    primary_path = os.path.join("output/cfgs/kitti_models/pv_rcnn_ssl_60", exp_name, "eval/eval_with_train/eval_list_val.txt")
+    secondary_path = os.path.join("output/kitti_models/pv_rcnn_ssl_60", exp_name, "eval/eval_with_train/eval_list_val.txt")
 
+    if os.path.isfile(primary_path):
+        return primary_path
+    elif os.path.isfile(secondary_path):
+        return secondary_path
+    else:
+        return None
+
+def find_res_dir(exp_name):
+    primary_path = os.path.join("output/cfgs/kitti_models/pv_rcnn_ssl_60", exp_name)
+    secondary_path = os.path.join("output/kitti_models/pv_rcnn_ssl_60", exp_name)
+
+    if os.path.isdir(primary_path):
+        return primary_path
+    elif os.path.isdir(secondary_path):
+        return secondary_path
+    else:
+        return None
 
 def calc_mean_mAP():
     """
@@ -37,16 +57,12 @@ def calc_mean_mAP():
     args = parse_config()
     #THRESH_ = [float(x) for x in args.thresh.split(',')]
     assert args.exp_names is not None
-    exp_names = [str(x) for x in args.exp_names]    
-    # metric=""
-    # if THRESH_[0]==0.5:metric.join("Car AP_R40@0.70, 0.50, 0.50")
-    # if THRESH_[1]==0.25:metric.join("Pedestrian AP_R40@0.50, 0.25, 0.25")
-    # if THRESH_[2]==0.25:metric.join("Cyclist AP_R40@0.50, 0.25, 0.25")
+    exp_names = [str(x) for x in args.exp_names]
 
-    metric = ["Car AP_R40@0.70, 0.70, 0.70","Pedestrian AP_R40@0.50, 0.50, 0.50","Cyclist AP_R40@0.50, 0.50, 0.50"]
+    metric = ["Car AP_R40@0.70, 0.70, 0.70", "Pedestrian AP_R40@0.50, 0.50, 0.50", "Cyclist AP_R40@0.50, 0.50, 0.50"]
     pattern = re.compile(r'({0})'.format('|'.join(metric)))
-    max_results=[]
-    eval_list=None
+    max_results = []
+    eval_list = None
 
     print("\n#--------------------Calculate Mean mAP-----------------------#\n")
     print("\nDefined Metric")
@@ -57,8 +73,8 @@ def calc_mean_mAP():
         print(e)
 
     if args.save_to_file:
-        res_text_file= os.path.join(os.getcwd(), "{}_results.txt".format(exp_names[0] if args.result_tag is None else exp_names[0] + args.result_tag))
-        fw=open(res_text_file, 'w')
+        res_text_file = os.path.join(os.getcwd(), "{}_results.txt".format(exp_names[0] if args.result_tag is None else exp_names[0] + args.result_tag))
+        fw = open(res_text_file, 'w')
         fw.write("\n#--------------------Calculate Mean mAP-----------------------#\n")
         fw.write("\nDefined Metric\n")
         fw.write(str(metric))
@@ -66,52 +82,46 @@ def calc_mean_mAP():
         fw.write(str(exp_names))
     all_eval_results = []
     for _exp in exp_names:
-        curr_eval_list_file = os.path.join("output/cfgs/kitti_models/pv_rcnn_ssl_60", _exp, "eval/eval_with_train/eval_list_val.txt")
-        if eval_list is None and os.path.isfile(curr_eval_list_file):
+        curr_eval_list_file = find_eval_list_file(_exp)
+        if eval_list is None and curr_eval_list_file is not None:
             with open(curr_eval_list_file) as f_eval:
-                eval_list = list(set(map(int, f_eval.readlines())))# take only unique entries 
+                eval_list = list(set(map(int, f_eval.readlines()))) # take only unique entries
                 print("\nEvaluated Epochs")
                 print(*[str(i) for i in eval_list], sep=",")
                 if args.save_to_file:
                     fw.write("\nEvaluated Epochs")
                     fw.write(str(eval_list))
 
-        
-        
-        curr_res_dir = os.path.join("output/cfgs/kitti_models/pv_rcnn_ssl_60", _exp)
-        if not os.path.isdir(curr_res_dir): 
+        curr_res_dir = find_res_dir(_exp)
+        if curr_res_dir is None:
             continue
 
         text_files = get_sorted_text_files(curr_res_dir)
-        if len(text_files)==0:
+        if len(text_files) == 0:
             print("No text file found containing results")
             continue
-        
-        # get data from file 
-        eval_results=[]
 
-        for file_ in text_files:# traverse all file to find evaluation results
-            selected_file=os.path.join(curr_res_dir, file_)
-            print("\nScanning {} for evaluated results\n".format(selected_file))# can be filtered based on date-time
-            if args.save_to_file: 
+        eval_results = []
+
+        for file_ in text_files: # traverse all file to find evaluation results
+            selected_file = os.path.join(curr_res_dir, file_)
+            print("\nScanning {} for evaluated results\n".format(selected_file)) # can be filtered based on date-time
+            if args.save_to_file:
                 fw.write("\nScanning {} for evaluated results\n".format(selected_file))
-            
-            
-            line_numbers=[]
+
+            line_numbers = []
             linenum = 0
-        
+
             with open(selected_file) as fp:
                 for line in fp:
                     linenum += 1
-                    if pattern.search(line) != None: # If a match is found 
-                        line_numbers.append(linenum+3) # add following res-line-number into list
+                    if pattern.search(line) is not None: # If a match is found
+                        line_numbers.append(linenum + 3) # add following res-line-number into list
                     if linenum in line_numbers:
-                        res_=np.fromstring( line.strip().split("3d   AP:")[1], dtype=np.float64, sep=',' )
-                        #print(res_)
+                        res_ = np.fromstring(line.strip().split("3d   AP:")[1], dtype=np.float64, sep=',')
                         eval_results.append(res_)
-        
-        # reshape records based on eval_list
-        eval_results=np.array(eval_results).reshape(len(eval_list),-1)
+
+        eval_results = np.array(eval_results).reshape(len(eval_list), -1)
         all_eval_results.append(eval_results)
         print("\nmAP(s)")
         print(*[str(np.round_(i, decimals=2)) for i in eval_results], sep="\n")
@@ -119,30 +129,29 @@ def calc_mean_mAP():
             fw.write("\nmAP(s)")
             fw.write(str(np.round_(eval_results, decimals=2)))
 
-        current_max=np.max(eval_results, axis=0)
+        current_max = np.max(eval_results, axis=0)
         max_results.append(current_max)
         print("\nMax mAP")
         print(*[str(np.round_(i, decimals=2)) for i in current_max], sep=", ")
-        if args.save_to_file: 
+        if args.save_to_file:
             fw.write("\nMax mAP")
             fw.write(str(np.round_(current_max, decimals=2)))
         print("\n\n")
 
     print("\n\n----------------Final Results----------------\n\n")
-    # all results have been added
-    max_results=np.array(max_results)
+    max_results = np.array(max_results)
     print("Max mAP(s)\n")
     print(*[str(np.round_(i, decimals=2)) for i in max_results], sep="\n")
 
-    if args.save_to_file: 
+    if args.save_to_file:
         fw.write("\n\n----------------Final Results----------------\n\n")
         fw.write("Max mAP(s)\n")
         fw.write(str(np.round_(max_results, decimals=2)))
 
-    mean_res=np.mean(max_results, axis=0)
+    mean_res = np.mean(max_results, axis=0)
     print("\nMean mAP")
     print(*[str(np.round_(i, decimals=2)) for i in mean_res], sep=", ")
-    if args.save_to_file: 
+    if args.save_to_file:
         fw.write("\nMean mAP")
         fw.write(str(np.round_(mean_res, decimals=2)))
 

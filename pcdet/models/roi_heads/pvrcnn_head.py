@@ -46,9 +46,29 @@ class PVRCNNHead(RoIHeadTemplate):
             output_channels=self.box_coder.code_size * self.num_class,
             fc_list=self.model_cfg.REG_FC
         )
-        self.init_weights(weight_init='xavier')
-
         self.print_loss_when_eval = False
+
+        GRID_SIZE = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
+        pre_channel = GRID_SIZE * GRID_SIZE * GRID_SIZE * num_c_out
+
+        self.stg2_projector = None  # Initialize projector as None
+        if self.training:  # Projection head created if training mode only
+            stg2_projector_list = []
+            for k in range(0, self.model_cfg.STG2_PROJ_FC.__len__()):
+                stg2_projector_list.append(
+                    nn.Conv1d(pre_channel, self.model_cfg.STG2_PROJ_FC[k], kernel_size=1, bias=True))
+                if self.model_cfg.STG2_PROJ_FC_CFGS.BATCH_NORM:
+                    stg2_projector_list.append(nn.BatchNorm1d(self.model_cfg.STG2_PROJ_FC[k]))
+                if self.model_cfg.STG2_PROJ_FC_CFGS.ACTIVATION == 'ReLU':
+                    stg2_projector_list.append(nn.ReLU())
+                elif self.model_cfg.STG2_PROJ_FC_CFGS.ACTIVATION == 'Linear':
+                    pass
+                pre_channel = self.model_cfg.STG2_PROJ_FC[k]
+                stg2_projector_list.append(nn.Dropout(self.model_cfg.DP_RATIO))
+
+            self.stg2_projector = nn.Sequential(*stg2_projector_list)
+
+        self.init_weights(weight_init='xavier')
 
     def init_weights(self, weight_init='xavier'):
         if weight_init == 'kaiming':
@@ -70,7 +90,7 @@ class PVRCNNHead(RoIHeadTemplate):
                     nn.init.constant_(m.bias, 0)
         nn.init.normal_(self.reg_layers[-1].weight, mean=0, std=0.001)
 
-    def roi_grid_pool(self, batch_dict, use_gtboxes=False):
+    def roi_grid_pool(self, batch_dict, use_gtboxes=False, use_ori_gtboxes=False):
         """
         Args:
             batch_dict:
@@ -84,7 +104,12 @@ class PVRCNNHead(RoIHeadTemplate):
 
         """
         batch_size = batch_dict['batch_size']
-        rois = batch_dict['gt_boxes'][..., 0:7] if use_gtboxes else batch_dict['rois']
+        if use_gtboxes:
+            rois = batch_dict['gt_boxes'][..., 0:7]
+        elif use_ori_gtboxes:
+            rois = batch_dict['ori_gt_boxes'][..., 0:7]
+        else:
+            rois = batch_dict['rois']
         point_coords = batch_dict["point_coords"]
         point_features = batch_dict["point_features"]
         point_cls_scores = batch_dict["point_cls_scores"]
@@ -141,12 +166,14 @@ class PVRCNNHead(RoIHeadTemplate):
                           - (local_roi_size.unsqueeze(dim=1) / 2)  # (B, 6x6x6, 3)
         return roi_grid_points
 
-    def pool_features(self, batch_dict, use_gtboxes=False):
-        pooled_features = self.roi_grid_pool(batch_dict, use_gtboxes=use_gtboxes)  # (BxN, 6x6x6, C)
+    def pool_features(self, batch_dict, use_gtboxes=False, use_ori_gtboxes=False, use_projector=False):
+        pooled_features = self.roi_grid_pool(batch_dict, use_gtboxes=use_gtboxes, use_ori_gtboxes=use_ori_gtboxes)  # (BxN, 6x6x6, C)
         grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
         batch_size_rcnn = pooled_features.shape[0]
         pooled_features = pooled_features.permute(0, 2, 1). \
             contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
+        if use_projector:
+            pooled_features = self.stg2_projector(pooled_features.view(batch_size_rcnn, -1, 1))
 
         return pooled_features
     
@@ -176,6 +203,12 @@ class PVRCNNHead(RoIHeadTemplate):
             targets_dict['ori_unlabeled_boxes'] = batch_dict['ori_unlabeled_boxes']
             targets_dict['points'] = batch_dict['points']
 
+        # Pooling labeled gts features for feature bank.
+        if self.training:
+            with torch.no_grad():
+                proj_pooled_gts = self.pool_features(batch_dict, use_gtboxes=True, use_projector=True)
+                batch_dict['projected_features_gt'] = proj_pooled_gts
+
         pooled_features = self.pool_features(batch_dict)
         batch_size_rcnn = pooled_features.shape[0]
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
@@ -184,14 +217,14 @@ class PVRCNNHead(RoIHeadTemplate):
         rcnn_sem_cls = self.sem_cls_layers(embeddings).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
         rcnn_reg = self.reg_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
 
-        if (self.training or self.print_loss_when_eval) and not test_only:
-            # RoI-level similarity.
-            # calculate cosine similarity between unlabeled augmented RoI features and labeled augmented prototypes.
-            roi_features = pooled_features.clone().detach().view(batch_size_rcnn, -1)
-            roi_scores_shape = batch_dict['roi_scores'].shape  # (B, N)
-            bank = feature_bank_registry.get('gt_aug_lbl_prototypes')
-            sim_scores = bank.get_sim_scores(roi_features)
-            targets_dict['roi_sim_scores'] = sim_scores.view(*roi_scores_shape, -1)
+        # if (self.training or self.print_loss_when_eval) and not test_only:
+        #     # RoI-level similarity.
+        #     # calculate cosine similarity between unlabeled augmented RoI features and labeled augmented prototypes.
+        #     roi_features = pooled_features.clone().detach().view(batch_size_rcnn, -1)
+        #     roi_scores_shape = batch_dict['roi_scores'].shape  # (B, N)
+        #     bank = feature_bank_registry.get('gt_aug_lbl_prototypes')
+        #     sim_scores = bank.get_sim_scores(roi_features)
+        #     targets_dict['roi_sim_scores'] = sim_scores.view(*roi_scores_shape, -1)
 
         if not self.training or self.predict_boxes_when_training:
             batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(
