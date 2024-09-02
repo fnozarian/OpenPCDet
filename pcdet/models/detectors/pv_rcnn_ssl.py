@@ -79,45 +79,14 @@ class PVRCNN_SSL(Detector3DTemplate):
             "point_cls_scores": batch_dict['point_cls_scores'].clone().detach()
         }
 
-    def _prep_wa_bank_inputs(self, batch_dict_ema, lbl_inds, num_points_threshold=20):
-        projections_gt = batch_dict_ema['projected_features_gt']
-        projections_gt = projections_gt.view(*batch_dict_ema['gt_boxes'].shape[:2], -1)
-        projections_gt = torch.chunk(projections_gt, 2, dim=0)[0]  # Teacher's labeled projections on GT boxes
-
-        bank_inputs = defaultdict(list)
-        for ix in lbl_inds:
-            gt_boxes = batch_dict_ema['gt_boxes'][ix]
-            nonzero_mask = torch.logical_not(torch.eq(gt_boxes, 0).all(dim=-1))
-            if nonzero_mask.sum() == 0:
-                print(f"no gt instance in frame {batch_dict_ema['frame_id'][ix]}")
-                continue
-            gt_boxes = gt_boxes[nonzero_mask]
-            sample_mask = batch_dict_ema['points'][:, 0].int() == ix
-            points = batch_dict_ema['points'][sample_mask, 1:4]
-            gt_feat = projections_gt[ix][nonzero_mask] # Store labeled projections into bank
-            gt_labels = gt_boxes[:, 7].int()
-            gt_boxes = gt_boxes[:, :7]
-            ins_idxs = batch_dict_ema['instance_idx'][ix][nonzero_mask].int()
-            smpl_id = torch.from_numpy(batch_dict_ema['frame_id'].astype(np.int32))[ix].to(gt_boxes.device)
-            num_points_in_gt = roiaware_pool3d_utils.points_in_boxes_cpu(points.cpu(), gt_boxes.cpu()).sum(dim=-1)
-            valid_gts_mask = (num_points_in_gt >= num_points_threshold)
-            if valid_gts_mask.sum() == 0:
-                print(f"no valid gt instances with enough points in frame {batch_dict_ema['frame_id'][ix]}")
-                continue
-            bank_inputs['feats'].append(gt_feat[valid_gts_mask]) # NOTE: Should have no_grad. Labeled features from teacher
-            bank_inputs['labels'].append(gt_labels[valid_gts_mask])
-            bank_inputs['ins_ids'].append(ins_idxs[valid_gts_mask])
-            bank_inputs['smpl_ids'].append(smpl_id)
-        return bank_inputs
-
-    def _prep_bank_inputs(self, batch_dict, inds, num_points_threshold=20):
-        selected_batch_dict = self._clone_gt_boxes_and_feats(batch_dict)
+    def _prep_bank_inputs(self, batch_dict, lbl_inds, num_points_threshold=20):
+        selected_batch_dict = self._clone_gt_boxes_and_feats(batch_dict)  # TODO(farzad): is cloning (all) required?
         with torch.no_grad():
-            batch_gt_feats = self.pv_rcnn.roi_head.pool_features(selected_batch_dict, use_gtboxes=True)
+            batch_gt_feats = self.pv_rcnn.roi_head.pool_features(selected_batch_dict, use_gtboxes=True, use_projector=True)
 
         batch_gt_feats = batch_gt_feats.view(*batch_dict['gt_boxes'].shape[:2], -1)
         bank_inputs = defaultdict(list)
-        for ix in inds:
+        for ix in lbl_inds:
             gt_boxes = selected_batch_dict['gt_boxes'][ix]
             nonzero_mask = torch.logical_not(torch.eq(gt_boxes, 0).all(dim=-1))
             if nonzero_mask.sum() == 0:
@@ -151,23 +120,20 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         return bank_inputs
 
-    def get_pseudo_projections(self, batch_dict):
+    def get_roi_feats(self, batch_dict):
         # ori_pooled_features shape: (16*max_box_num, 216*2, C//2)
         ori_gt_proj_feats = self.pv_rcnn.roi_head.pool_features(batch_dict, use_ori_gtboxes=True, use_projector=True)
         ori_gt_boxes_ulb = torch.chunk(batch_dict['ori_gt_boxes'], 2, dim=0)[1]  # get unlabeled inds
         nonzero_mask = torch.logical_not(torch.eq(ori_gt_boxes_ulb, 0).all(dim=-1))
         batch_size, num_gts = batch_dict['ori_gt_boxes'].shape[:2]
-        ori_gt_proj_feats_ulb = ori_gt_proj_feats.view(batch_size, num_gts, -1).chunk(ori_gt_proj_feats, 2, dim=0)[1]
-        ori_gt_proj_feats_ulb = ori_gt_proj_feats_ulb[nonzero_mask]
+        ori_gt_feats_ulb = ori_gt_proj_feats.view(batch_size, num_gts, -1).chunk(ori_gt_proj_feats, 2, dim=0)[1]
+        ori_gt_feats_ulb = ori_gt_feats_ulb[nonzero_mask]
         ori_labels_ulb = ori_gt_boxes_ulb[..., 7].int()
         ori_labels_ulb = ori_labels_ulb[nonzero_mask]
         ori_labels_ulb_hist = torch.bincount(ori_labels_ulb, minlength=3)
         tb_dict = {'ori_gt_ulb_label_hist': _arr2dict2(ori_labels_ulb_hist)}
 
-        return ori_gt_proj_feats_ulb, ori_labels_ulb, tb_dict
-
-
-
+        return ori_gt_feats_ulb, ori_labels_ulb, tb_dict
 
     def forward(self, batch_dict):
         if self.training:
@@ -290,11 +256,10 @@ class PVRCNN_SSL(Detector3DTemplate):
             # Update the bank with student's features from augmented labeled data
             bank = feature_bank_registry.get('gt_wa_lbl_prototypes')
             ori_lpconf_loss_enabled = self.model_cfg['ROI_HEAD'].get('ENABLE_LPCONT_LOSS', False)
-            if bank.is_initialized() and ori_lpconf_loss_enabled:
-                roi_feats_sa, roi_labels, tb_dicts = self.get_pseudo_projections(batch_dict)
-
-            wa_gt_lbl_inputs = self._prep_wa_bank_inputs(batch_dict_ema, lbl_inds, bank.num_points_thresh)
+            wa_gt_lbl_inputs = self._prep_bank_inputs(batch_dict_ema, lbl_inds, bank.num_points_thresh)
             bank.update(**wa_gt_lbl_inputs, iteration=batch_dict['cur_iteration'])
+            if bank.is_initialized() and ori_lpconf_loss_enabled:
+                roi_feats_sa, roi_labels, tb_dicts = self.get_roi_feats(batch_dict)
 
         # For metrics calculation
         self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = ulb_inds
@@ -353,12 +318,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTOTYPING', False):
             for tag in feature_bank_registry.tags():
                 feature_bank_registry.get(tag).compute()
-            if feature_bank_registry._banks['gt_wa_lbl_prototypes']._computed is not None:
-                prototype_cls_features, prototype_id_features, prototype_id_labels, num_updates = bank.get_computed_protos()
-                class_proto_precision_dict= self.pv_rcnn_ema.roi_head.evaluate_class_prototype_rcnn_sem_precision(prototype_cls_features, torch.unique(prototype_id_labels), tb_dict_)
-                inst_proto_precision_dict = self.pv_rcnn_ema.roi_head.evaluate_instance_prototype_rcnn_sem_precision(prototype_id_features, prototype_id_labels, tb_dict_)
-                tb_dict_.update(**class_proto_precision_dict)
-                tb_dict_.update(**inst_proto_precision_dict)
+
         # update dynamic thresh alg
         if self.thresh_alg is not None and (results := self.thresh_alg.compute()):
             tb_dict_.update(results)

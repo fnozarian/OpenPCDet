@@ -98,8 +98,8 @@ class FeatureBank(Metric):
     def _update_classwise_prototypes(self):
         classwise_prototypes = torch.zeros((3, self.feat_size)).cuda()
         for i in range(self.num_classes):  # TODO: refactor it
-            inds = torch.where(self.proto_labels == (i+1))[0]
-            print(f"Update classwise prototypes for class {(i+1)} with {len(inds)} instances.")
+            inds = torch.where(self.proto_labels == i)[0]
+            print(f"Update classwise prototypes for class {i} with {len(inds)} instances.")
             classwise_prototypes[i] = torch.mean(self.prototypes[inds], dim=0)
         self.classwise_prototypes = self.momentum * self.classwise_prototypes + (1 - self.momentum) * classwise_prototypes
 
@@ -147,9 +147,6 @@ class FeatureBank(Metric):
 
     def is_initialized(self):
         return self.initialized
-
-    def get_computed_protos(self):
-        return self.classwise_prototypes, self.prototypes, self.proto_labels, self.num_updates
 
     def _randomly_sample_protos_by_class(self, num_samples):
         sampled_protos = []

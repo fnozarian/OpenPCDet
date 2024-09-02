@@ -33,6 +33,7 @@ class PVRCNNHead(RoIHeadTemplate):
                 shared_fc_list.append(nn.Dropout(self.model_cfg.DP_RATIO))
 
         self.shared_fc_layer = nn.Sequential(*shared_fc_list)
+        # TODO(Farzad): use separate fc layers for embedding
         self.embedding_layer = nn.Sequential(*shared_fc_list)
 
         self.cls_layers = self.make_fc_layers(
@@ -48,6 +49,7 @@ class PVRCNNHead(RoIHeadTemplate):
         )
         self.print_loss_when_eval = False
 
+        # TODO(Farzad): make a separate function for creating fc layers and use it both here and in shared_fc_list
         GRID_SIZE = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
         pre_channel = GRID_SIZE * GRID_SIZE * GRID_SIZE * num_c_out
 
@@ -64,7 +66,8 @@ class PVRCNNHead(RoIHeadTemplate):
                 elif self.model_cfg.STG2_PROJ_FC_CFGS.ACTIVATION == 'Linear':
                     pass
                 pre_channel = self.model_cfg.STG2_PROJ_FC[k]
-                stg2_projector_list.append(nn.Dropout(self.model_cfg.DP_RATIO))
+                if k != self.model_cfg.SHARED_FC.__len__() - 1 and self.model_cfg.DP_RATIO > 0:
+                    shared_fc_list.append(nn.Dropout(self.model_cfg.DP_RATIO))
 
             self.stg2_projector = nn.Sequential(*stg2_projector_list)
 
@@ -202,12 +205,6 @@ class PVRCNNHead(RoIHeadTemplate):
             targets_dict['unlabeled_inds'] = batch_dict['unlabeled_inds']
             targets_dict['ori_unlabeled_boxes'] = batch_dict['ori_unlabeled_boxes']
             targets_dict['points'] = batch_dict['points']
-
-        # Pooling labeled gts features for feature bank.
-        if self.training:
-            with torch.no_grad():
-                proj_pooled_gts = self.pool_features(batch_dict, use_gtboxes=True, use_projector=True)
-                batch_dict['projected_features_gt'] = proj_pooled_gts
 
         pooled_features = self.pool_features(batch_dict)
         batch_size_rcnn = pooled_features.shape[0]
