@@ -152,7 +152,7 @@ class FeatureBank(Metric):
         sampled_protos = []
         sampled_labels = []
         for i in range(self.num_classes):
-            inds = torch.where(self.proto_labels == (i+1))[0]
+            inds = torch.where(self.proto_labels == i)[0]
             sampled_inds = torch.randperm(len(inds))[:num_samples]
             sampled_protos.append(self.prototypes[inds[sampled_inds]])
             sampled_labels.append(self.proto_labels[inds[sampled_inds]])
@@ -164,7 +164,7 @@ class FeatureBank(Metric):
         # proto_feats_wa = self.prototypes[non_zero_mask]
         # proto_labels = self.proto_labels[non_zero_mask]
 
-        nppc = 10  # number of prototypes per class
+        nppc = 9  # number of prototypes per class
         proto_feats, proto_labels = self._randomly_sample_protos_by_class(nppc)
         proto_feats = F.normalize(proto_feats, dim=-1)
         roi_feats_sa = F.normalize(roi_feats_sa, dim=-1)
@@ -178,7 +178,7 @@ class FeatureBank(Metric):
         positives = sim_matrix[pos_inds].view(-1, 1)
         logits = torch.cat((positives, neg_sim_matrix), dim=1)
         logits = logits / self.temperature
-        labels = torch.zeros((num_rois*3,), dtype=torch.long).cuda()
+        labels = torch.zeros((logits.size(0),), dtype=torch.long).cuda()
         lpcont_loss = self.ce_loss(logits, labels)
 
         return lpcont_loss, sim_matrix.detach(), proto_labels

@@ -121,19 +121,15 @@ class PVRCNN_SSL(Detector3DTemplate):
         return bank_inputs
 
     def get_roi_feats(self, batch_dict):
-        # ori_pooled_features shape: (16*max_box_num, 216*2, C//2)
         ori_gt_proj_feats = self.pv_rcnn.roi_head.pool_features(batch_dict, use_ori_gtboxes=True, use_projector=True)
-        ori_gt_boxes_ulb = torch.chunk(batch_dict['ori_gt_boxes'], 2, dim=0)[1]  # get unlabeled inds
+        ori_gt_proj_feats = ori_gt_proj_feats.view(*batch_dict['ori_gt_boxes'].shape[:2], -1)
+        ori_gt_feats_ulb = ori_gt_proj_feats.chunk(2, dim=0)[1]  # get unlabeled feats
+        ori_gt_boxes_ulb = batch_dict['ori_gt_boxes'].chunk(2, dim=0)[1]
         nonzero_mask = torch.logical_not(torch.eq(ori_gt_boxes_ulb, 0).all(dim=-1))
-        batch_size, num_gts = batch_dict['ori_gt_boxes'].shape[:2]
-        ori_gt_feats_ulb = ori_gt_proj_feats.view(batch_size, num_gts, -1).chunk(ori_gt_proj_feats, 2, dim=0)[1]
         ori_gt_feats_ulb = ori_gt_feats_ulb[nonzero_mask]
-        ori_labels_ulb = ori_gt_boxes_ulb[..., 7].int()
-        ori_labels_ulb = ori_labels_ulb[nonzero_mask]
-        ori_labels_ulb_hist = torch.bincount(ori_labels_ulb, minlength=3)
-        tb_dict = {'ori_gt_ulb_label_hist': _arr2dict2(ori_labels_ulb_hist)}
-
-        return ori_gt_feats_ulb, ori_labels_ulb, tb_dict
+        labels_ulb = ori_gt_boxes_ulb[..., 7].int() - 1
+        labels_ulb = labels_ulb[nonzero_mask]
+        return ori_gt_feats_ulb, labels_ulb
 
     def forward(self, batch_dict):
         if self.training:
@@ -253,13 +249,9 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict = cur_module(batch_dict)
 
         if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTOTYPING', False):
-            # Update the bank with student's features from augmented labeled data
             bank = feature_bank_registry.get('gt_wa_lbl_prototypes')
-            ori_lpconf_loss_enabled = self.model_cfg['ROI_HEAD'].get('ENABLE_LPCONT_LOSS', False)
             wa_gt_lbl_inputs = self._prep_bank_inputs(batch_dict_ema, lbl_inds, bank.num_points_thresh)
             bank.update(**wa_gt_lbl_inputs, iteration=batch_dict['cur_iteration'])
-            if bank.is_initialized() and ori_lpconf_loss_enabled:
-                roi_feats_sa, roi_labels, tb_dicts = self.get_roi_feats(batch_dict)
 
         # For metrics calculation
         self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = ulb_inds
@@ -297,11 +289,12 @@ class PVRCNN_SSL(Detector3DTemplate):
                 tb_dict['proto_cont_loss'] = proto_cont_loss.item()
 
         if self.model_cfg['ROI_HEAD'].get('ENABLE_LPCONT_LOSS', False) and bank.is_initialized():
+            roi_feats_sa, roi_labels = self.get_roi_feats(batch_dict)
             lpcont_loss, sim_matrix, proto_labels = bank.get_lpcont_loss(roi_feats_sa, roi_labels)
             loss += lpcont_loss * self.model_cfg['ROI_HEAD']['LPCONT_LOSS_WEIGHT']
             tb_dict['lpcont_loss'] = lpcont_loss.item()
             tb_dict['sim_matrix_info'] = (sim_matrix, roi_labels, proto_labels)
-            tb_dict['ori_gt_classes'] = tb_dicts['ori_gt_classes']
+            tb_dict['roi_label_hist'] = _arr2dict2(torch.bincount(roi_labels, minlength=3).detach().cpu().numpy())
 
         tb_dict_ = self._prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn)
         tb_dict_.update(**pl_count_dict)

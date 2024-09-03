@@ -66,7 +66,7 @@ class PVRCNNHead(RoIHeadTemplate):
                 elif self.model_cfg.STG2_PROJ_FC_CFGS.ACTIVATION == 'Linear':
                     pass
                 pre_channel = self.model_cfg.STG2_PROJ_FC[k]
-                if k != self.model_cfg.SHARED_FC.__len__() - 1 and self.model_cfg.DP_RATIO > 0:
+                if k != self.model_cfg.STG2_PROJ_FC.__len__() - 1 and self.model_cfg.DP_RATIO > 0:
                     shared_fc_list.append(nn.Dropout(self.model_cfg.DP_RATIO))
 
             self.stg2_projector = nn.Sequential(*stg2_projector_list)
