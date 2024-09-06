@@ -166,11 +166,7 @@ MODEL:
         ENABLE_SOFT_TEACHER: False
         ENABLE_ULB_CLS_DIST_LOSS: False
         SHARED_FC: [256, 256]
-        STG2_PROJ_FC: [256, 256]
-        STG2_PROJ_FC_CFGS:
-            ACTIVATION: ReLU
-            BATCH_NORM: True
-            DP_RATIO: 0.0
+        PROJECTION_SIZE: 128
         ENABLE_LPCONT_LOSS: True
         CLIP_CE: False
         LPCONT_TEMPERATURE: 1.0
@@ -278,15 +274,13 @@ MODEL:
     REDUCE_LOSS: 'mean'
     STORE_SCORES_IN_PKL: False
 
-    FEATURE_BANK_LIST:
-        - NAME: gt_wa_lbl_prototypes
-          BANK_SIZE: null # Determined the total number of labeled instances in all classes for each split during runtime
-          FEATURE_SIZE: 256  # 128 * 6 * 6 * 6: 128 channels of 6x6x6 grid points
-          TEMPERATURE: 0.1
-          DIRECT_UPDATE: False
-          RESET_STATE_INTERVAL: 37  # 1% setting for ~3700 KITTI samples
-          MOMENTUM: 0.9
-          FILTER_MIN_POINTS_IN_GT: 20
+    FEATURE_BANK:
+        NAME: gt_wa_lbl_prototypes
+        FEATURE_SIZE: 128
+        TEMPERATURE: 0.1
+        DIRECT_UPDATE: True
+        MOMENTUM: 0.9
+        FILTER_MIN_POINTS_IN_GT: 20
     METRICS_BANK_LIST:
         - NAME: rcnn_roi_metrics
           ENABLE: False

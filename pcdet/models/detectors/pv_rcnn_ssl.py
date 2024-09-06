@@ -1,31 +1,20 @@
 import copy
 import os
-import pickle
 import numpy as np
 import torch
+import torch.nn.functional as F
 from pcdet.datasets.augmentor import augmentor_utils
 from pcdet.ops.iou3d_nms import iou3d_nms_utils
 from pcdet.ops.roiaware_pool3d import roiaware_pool3d_utils
 from .detector3d_template import Detector3DTemplate
 from .pv_rcnn import PVRCNN
 from matplotlib import pyplot as plt
-import torch.nn.functional as F
 from pcdet.utils import common_utils
 from pcdet.utils.stats_utils import metrics_registry
-from pcdet.utils.prototype_utils import feature_bank_registry
+from pcdet.utils.prototype_utils import FeatureBankV2
 from collections import defaultdict
 from ssod import AdaptiveThresholding
-#from visual_utils import open3d_vis_utils as V
-from sklearn.metrics import precision_score
 
-
-def _arr2dict2(array, ignore_zeros=False, ignore_nan=False):
-    def should_include(value):
-        return not ((ignore_zeros and value == 0) or (ignore_nan and np.isnan(value)))
-
-    classes = ['Car', 'Pedestrian', 'Cyclist']
-    classes = classes[:len(array)]
-    return {cls: array[cind] for cind, cls in enumerate(classes) if should_include(array[cind])}
 
 class PVRCNN_SSL(Detector3DTemplate):
     def __init__(self, model_cfg, num_class, dataset):
@@ -34,7 +23,6 @@ class PVRCNN_SSL(Detector3DTemplate):
         model_cfg_copy = copy.deepcopy(model_cfg)
         dataset_copy = copy.deepcopy(dataset)
         self.pv_rcnn = PVRCNN(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
-
         self.pv_rcnn_ema = PVRCNN(model_cfg=model_cfg_copy, num_class=num_class, dataset=dataset_copy)
         for param in self.pv_rcnn_ema.parameters():
             param.detach_()
@@ -57,16 +45,13 @@ class PVRCNN_SSL(Detector3DTemplate):
         if self.model_cfg.ADAPTIVE_THRESHOLDING.ENABLE:
             self.thresh_alg = AdaptiveThresholding(**self.model_cfg.ADAPTIVE_THRESHOLDING)
 
-        for bank_configs in model_cfg.get("FEATURE_BANK_LIST", []):
-            feature_bank_registry.register(tag=bank_configs["NAME"], **bank_configs)
+        data_sampler = dataset.data_augmentor.data_augmentor_queue[0]
+        instance_ids = data_sampler.instance_ids
+        self.bank = FeatureBankV2(instance_ids, **model_cfg.FEATURE_BANK)
 
         for metrics_configs in model_cfg.get("METRICS_BANK_LIST", []):
             if metrics_configs.ENABLE:
                 metrics_registry.register(tag=metrics_configs["NAME"], dataset=self.dataset, **metrics_configs)
-
-        vals_to_store = ['iou_roi_pl', 'iou_roi_gt', 'pred_scores', 'teacher_pred_scores',
-                         'weights', 'roi_scores', 'pcv_scores', 'num_points_in_roi', 'class_labels', 'iteration']
-        self.val_dict = {val: [] for val in vals_to_store}
 
     @staticmethod
     def _clone_gt_boxes_and_feats(batch_dict):
@@ -79,13 +64,13 @@ class PVRCNN_SSL(Detector3DTemplate):
             "point_cls_scores": batch_dict['point_cls_scores'].clone().detach()
         }
 
-    def _prep_bank_inputs(self, batch_dict, lbl_inds, num_points_threshold=20):
+    def _prep_bank_inputs(self, batch_dict, lbl_inds, pad_size=50):
         selected_batch_dict = self._clone_gt_boxes_and_feats(batch_dict)  # TODO(farzad): is cloning (all) required?
         with torch.no_grad():
             batch_gt_feats = self.pv_rcnn.roi_head.pool_features(selected_batch_dict, use_gtboxes=True, use_projector=True)
 
         batch_gt_feats = batch_gt_feats.view(*batch_dict['gt_boxes'].shape[:2], -1)
-        bank_inputs = defaultdict(list)
+        feats_list, labels_list, ins_ids_list = [], [], []
         for ix in lbl_inds:
             gt_boxes = selected_batch_dict['gt_boxes'][ix]
             nonzero_mask = torch.logical_not(torch.eq(gt_boxes, 0).all(dim=-1))
@@ -93,30 +78,18 @@ class PVRCNN_SSL(Detector3DTemplate):
                 print(f"no gt instance in frame {batch_dict['frame_id'][ix]}")
                 continue
             gt_boxes = gt_boxes[nonzero_mask]
-            sample_mask = batch_dict['points'][:, 0].int() == ix
-            points = batch_dict['points'][sample_mask, 1:4]
-            gt_feat = batch_gt_feats[ix][nonzero_mask]
+            gt_feats = batch_gt_feats[ix][nonzero_mask]
             gt_labels = gt_boxes[:, 7].int() - 1
-            gt_boxes = gt_boxes[:, :7]
-            ins_idxs = batch_dict['instance_idx'][ix][nonzero_mask].int()
-            smpl_id = torch.from_numpy(batch_dict['frame_id'].astype(np.int32))[ix].to(gt_boxes.device)
+            ins_ids = batch_dict['instance_idx'][ix][nonzero_mask].int()
+            gt_feats = F.pad(gt_feats.unsqueeze(0), pad=(0, 0, 0, pad_size - gt_feats.shape[0]))
+            gt_labels = F.pad(gt_labels.unsqueeze(0), pad=(0, pad_size - gt_labels.shape[0]))
+            ins_ids = F.pad(ins_ids.unsqueeze(0), pad=(0, pad_size - ins_ids.shape[0]))
+            feats_list.append(gt_feats)
+            labels_list.append(gt_labels)
+            ins_ids_list.append(ins_ids)
 
-            # filter out gt instances with too few points when updating the bank
-            num_points_in_gt = roiaware_pool3d_utils.points_in_boxes_cpu(points.cpu(), gt_boxes.cpu()).sum(dim=-1)
-            valid_gts_mask = (num_points_in_gt >= num_points_threshold)
-            # print(f"{(~valid_gts_mask).sum()} gt instance(s) with id(s) {ins_idxs[~valid_gts_mask].tolist()}"
-            #       f" and num points {num_points_in_gt[~valid_gts_mask].tolist()} are filtered")
-            if valid_gts_mask.sum() == 0:
-                print(f"no valid gt instances with enough points in frame {batch_dict['frame_id'][ix]}")
-                continue
-            bank_inputs['feats'].append(gt_feat[valid_gts_mask])
-            bank_inputs['labels'].append(gt_labels[valid_gts_mask])
-            bank_inputs['ins_ids'].append(ins_idxs[valid_gts_mask])
-            bank_inputs['smpl_ids'].append(smpl_id)
-
-            # valid_boxes = gt_boxes[valid_gts_mask]
-            # valid_box_labels = gt_labels[valid_gts_mask]
-            # self.vis(valid_boxes, valid_box_labels, points)
+        bank_inputs = {'feats': torch.cat(feats_list, dim=0), 'labels': torch.cat(labels_list, dim=0),
+                       'ins_ids': torch.cat(ins_ids_list, dim=0)}
 
         return bank_inputs
 
@@ -249,9 +222,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict = cur_module(batch_dict)
 
         if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTOTYPING', False):
-            bank = feature_bank_registry.get('gt_wa_lbl_prototypes')
-            wa_gt_lbl_inputs = self._prep_bank_inputs(batch_dict_ema, lbl_inds, bank.num_points_thresh)
-            bank.update(**wa_gt_lbl_inputs, iteration=batch_dict['cur_iteration'])
+            wa_gt_lbl_inputs = self._prep_bank_inputs(batch_dict_ema, lbl_inds)
+            self.bank.update(**wa_gt_lbl_inputs)
 
         # For metrics calculation
         self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = ulb_inds
@@ -283,18 +255,18 @@ class PVRCNN_SSL(Detector3DTemplate):
         if self.unlabeled_supervise_refine:
             loss += reduce_loss_fn(loss_rcnn_box[ulb_inds, ...]) * self.unlabeled_weight
         if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTO_CONTRASTIVE_LOSS', False):
-            proto_cont_loss = self._get_proto_contrastive_loss(batch_dict, bank, ulb_inds)
+            proto_cont_loss = self._get_proto_contrastive_loss(batch_dict, ulb_inds)
             if proto_cont_loss is not None:
                 loss += proto_cont_loss * self.model_cfg['ROI_HEAD']['PROTO_CONTRASTIVE_LOSS_WEIGHT']
                 tb_dict['proto_cont_loss'] = proto_cont_loss.item()
 
-        if self.model_cfg['ROI_HEAD'].get('ENABLE_LPCONT_LOSS', False) and bank.is_initialized():
+        if self.model_cfg['ROI_HEAD'].get('ENABLE_LPCONT_LOSS', False):
             roi_feats_sa, roi_labels = self.get_roi_feats(batch_dict)
-            lpcont_loss, sim_matrix, proto_labels = bank.get_lpcont_loss(roi_feats_sa, roi_labels)
-            loss += lpcont_loss * self.model_cfg['ROI_HEAD']['LPCONT_LOSS_WEIGHT']
-            tb_dict['lpcont_loss'] = lpcont_loss.item()
-            tb_dict['sim_matrix_info'] = (sim_matrix, roi_labels, proto_labels)
-            tb_dict['roi_label_hist'] = _arr2dict2(torch.bincount(roi_labels, minlength=3).detach().cpu().numpy())
+            lpcont_loss, sim_matrix, proto_labels = self.bank.get_lpcont_loss(roi_feats_sa, roi_labels)
+            if lpcont_loss is not None:
+                loss += lpcont_loss * self.model_cfg['ROI_HEAD']['LPCONT_LOSS_WEIGHT']
+                tb_dict['lpcont_loss'] = lpcont_loss.item()
+                tb_dict['sim_matrix_info'] = (sim_matrix, roi_labels, proto_labels)
 
         tb_dict_ = self._prep_tb_dict(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn)
         tb_dict_.update(**pl_count_dict)
@@ -307,10 +279,6 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         if self.model_cfg.get('STORE_SCORES_IN_PKL', False):
             self.dump_statistics(batch_dict, ulb_inds)
-
-        if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTOTYPING', False):
-            for tag in feature_bank_registry.tags():
-                feature_bank_registry.get(tag).compute()
 
         # update dynamic thresh alg
         if self.thresh_alg is not None and (results := self.thresh_alg.compute()):
@@ -397,13 +365,13 @@ class PVRCNN_SSL(Detector3DTemplate):
     def _arr2dict(self, array):
         return {cls: array[cind] for cind, cls in enumerate(self.class_names)}
 
-    def _get_proto_contrastive_loss(self, batch_dict, bank, ulb_inds):
+    def _get_proto_contrastive_loss(self, batch_dict, ulb_inds):
         gt_boxes = batch_dict['gt_boxes']
         B, N = gt_boxes.shape[:2]
         # TODO: change the prototype contrastive loss to use the projected features
         sa_pl_feats = self.pv_rcnn.roi_head.pool_features(batch_dict, use_gtboxes=True, use_projector=True).view(B * N, -1)
         pl_labels = batch_dict['gt_boxes'][..., 7].view(-1).long() - 1
-        proto_cont_loss = bank.get_proto_contrastive_loss(sa_pl_feats, pl_labels)
+        proto_cont_loss = self.bank.get_proto_contrastive_loss(sa_pl_feats, pl_labels)
         if proto_cont_loss is None:
             return
         nonzero_mask = torch.logical_not(torch.eq(gt_boxes, 0).all(dim=-1))
@@ -426,9 +394,9 @@ class PVRCNN_SSL(Detector3DTemplate):
         y_tick_marks = np.arange(len(roi_labels))
         ax.set_yticks(y_tick_marks)
         ax.set_yticklabels(roi_labels)
-        ax.set_title("LPCont Similarity matrix")
-        ax.set_ylabel('Labeled features')
-        ax.set_xlabel('Pseudo features')
+        ax.set_title("Similarity matrix")
+        ax.set_ylabel('Unlabeled RoI features')
+        ax.set_xlabel('Labeled Bank features')
         plt.subplots_adjust(left=0.2, right=0.8, top=0.9, bottom=0.1)
         fig.colorbar(img)
         # fig.tight_layout()

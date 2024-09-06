@@ -4,6 +4,93 @@ from torchmetrics import Metric
 import numpy as np
 import torch.distributed as dist
 from torch import nn
+
+
+class FeatureBankV2:
+    def __init__(self, instance_ids, **kwargs):
+
+        super().__init__()
+        self.tag = kwargs.get('NAME', None)
+        self.distributed = dist.is_initialized()
+        self.world_size = kwargs.get('WORLD_SIZE', 1)
+
+        self.num_classes = 3
+        self.temperature = kwargs.get('TEMPERATURE')
+        self.feature_size = kwargs.get('FEATURE_SIZE')
+        self.momentum = kwargs.get('MOMENTUM')
+        self.direct_update = kwargs.get('DIRECT_UPDATE')
+        self.num_points_thresh = kwargs.get('FILTER_MIN_POINTS_IN_GT', 0)
+        self.bank_size = len(instance_ids)
+        self.ce_loss = nn.CrossEntropyLoss()
+
+        # Globally synchronized tensors
+        self.instance_ids = torch.tensor(instance_ids, dtype=torch.long).cuda()
+        self.features = torch.zeros((self.bank_size, self.feature_size), dtype=torch.float32).cuda()
+        self.classwise_prototypes = torch.zeros((3, self.feature_size), dtype=torch.float32).cuda()
+        self.labels = -torch.ones(self.bank_size, dtype=torch.long).cuda()
+
+    @torch.no_grad()
+    def concat_all_gather(self, tensor):
+        tensors_gather = [torch.ones_like(tensor)
+                          for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(tensors_gather, tensor)
+        output = torch.cat(tensors_gather, dim=0)
+        return output
+
+    @torch.no_grad()
+    def update(self, feats, labels, ins_ids):
+        if self.distributed and self.world_size > 1:
+            feats = self.concat_all_gather(feats)
+            labels = self.concat_all_gather(labels)
+            ins_ids = self.concat_all_gather(ins_ids)
+
+        feats = feats.view(-1, feats.size(-1))
+        labels = labels.view(-1)
+        ins_ids = ins_ids.view(-1)
+        # filter out padded samples
+        valid_mask = ins_ids != 0
+        ins_ids = ins_ids[valid_mask]
+        labels = labels[valid_mask]
+        feats = feats[valid_mask]
+        feat_indices = torch.tensor([torch.where(self.instance_ids == x)[0].item() for x in ins_ids]).cuda()
+
+        if self.direct_update:
+            self.features[feat_indices, :] = feats.detach()
+        else:
+            smoothed_feats = self.momentum * self.features[feat_indices, :] + (1 - self.momentum) * feats.detach()
+            self.features[feat_indices, :] = F.normalize(smoothed_feats, dim=-1)
+        self.labels[feat_indices] = labels.long().detach()
+
+    def _randomly_sample_protos_by_class(self, num_samples):
+        sampled_labels = []
+        for i in range(self.num_classes):
+            inds = torch.where(self.labels == i)[0]
+            sampled_inds = torch.randperm(len(inds))[:num_samples]
+            sampled_labels.append(self.labels[inds[sampled_inds]])
+        return torch.cat(sampled_labels)
+
+    def get_lpcont_loss(self, roi_feats_sa, roi_labels, nppc=10):
+        bank_labels = self._randomly_sample_protos_by_class(nppc)
+        if torch.bincount(bank_labels).min() < nppc or roi_labels.size(0) == 0:
+            return None, None, None
+        bank_feats_wa = F.normalize(self.features[bank_labels], dim=-1)
+        roi_feats_sa = F.normalize(roi_feats_sa, dim=-1)
+        num_rois = roi_feats_sa.size(0)
+
+        sim_matrix = roi_feats_sa @ bank_feats_wa.t()  # (N, C) @ (C, M) -> (N, M)
+        pos_mask = roi_labels.unsqueeze(1) == bank_labels.unsqueeze(0)
+        neg_sim_matrix = torch.masked_select(sim_matrix, ~pos_mask).view(num_rois, -1)
+        neg_sim_matrix = torch.repeat_interleave(neg_sim_matrix, nppc, dim=0)
+        pos_inds = torch.where(pos_mask)
+        positives = sim_matrix[pos_inds].view(-1, 1)
+        logits = torch.cat((positives, neg_sim_matrix), dim=1)
+        logits = logits / self.temperature
+        labels = torch.zeros((logits.size(0),), dtype=torch.long).cuda()
+        lpcont_loss = self.ce_loss(logits, labels)
+
+        return lpcont_loss, sim_matrix.detach(), bank_labels
+
+
 class FeatureBank(Metric):
     full_state_update: bool = False
 
@@ -183,41 +270,6 @@ class FeatureBank(Metric):
 
         return lpcont_loss, sim_matrix.detach(), proto_labels
 
-    def gather_tensors(self, tensor):
-        assert tensor.size(-1) == 257 , "features should be of size common_instances,(ft_size+ lbl_size)"
-        if not dist.is_initialized():
-            return tensor
-            # Determine sizes first
-        WORLD_SIZE = dist.get_world_size()
-        local_size = torch.tensor(tensor.size(), device=tensor.device)
-        all_sizes = [torch.zeros_like(local_size) for _ in range(WORLD_SIZE)]
-
-        dist.barrier()
-        dist.all_gather(all_sizes,local_size)
-        dist.barrier()
-
-        print(f'all_sizes {all_sizes}')
-        # make zero-padded version https://stackoverflow.com/questions/71433507/pytorch-python-distributed-multiprocessing-gather-concatenate-tensor-arrays-of
-        max_length = max([size[0] for size in all_sizes])
-
-        diff = max_length - local_size[0].item()
-        if diff:
-            pad_size =[diff.item()] #pad with zeros
-            if local_size.ndim >= 1:
-                pad_size.extend(dimension.item() for dimension in local_size[1:])
-            padding = torch.zeros(pad_size, device=tensor.device, dtype=tensor.dtype)
-            tensor = torch.cat((tensor,padding),)
-
-        all_tensors_padded = [torch.zeros_like(tensor) for _ in range(WORLD_SIZE)]
-
-        dist.barrier()
-        dist.all_gather(all_tensors_padded,tensor)
-        dist.barrier()
-
-        gathered_tensor = torch.cat(all_tensors_padded)
-        non_zero_mask = torch.any(gathered_tensor!=0,dim=-1).squeeze()
-        gathered_tensor = gathered_tensor[non_zero_mask]
-        return gathered_tensor
 
 class FeatureBankRegistry(object):
     def __init__(self, **kwargs):

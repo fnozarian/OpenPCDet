@@ -25,16 +25,17 @@ class DataBaseSampler(object):
         for db_info_path in sampler_cfg.DB_INFO_PATH:
             db_info_path = self.root_path.resolve() / db_info_path
             try:
-                with open(str(db_info_path), 'rb') as f: # read classwise info CAR:187 ...
+                with open(str(db_info_path), 'rb') as f:
                     infos = pickle.load(f)
                     [self.db_infos[cur_class].extend(infos[cur_class]) for cur_class in class_names]
             except FileNotFoundError:
                 print(f"{str(db_info_path)} not found.")
                 return
- 
+        self.instance_ids = []
         for class_name in self.class_names:
-            for i,val in enumerate(self.db_infos[class_name]):
+            for i, val in enumerate(self.db_infos[class_name]):
                 val['instance_idx'] = int(val['image_idx']) * 100 + int(val['gt_idx'])
+                self.instance_ids.append(val['instance_idx'])
                 val['class_name'] = class_name
         for func_name, val in sampler_cfg.PREPARE.items():
             self.db_infos = getattr(self, func_name)(self.db_infos, val)

@@ -33,8 +33,6 @@ class PVRCNNHead(RoIHeadTemplate):
                 shared_fc_list.append(nn.Dropout(self.model_cfg.DP_RATIO))
 
         self.shared_fc_layer = nn.Sequential(*shared_fc_list)
-        # TODO(Farzad): use separate fc layers for embedding
-        self.embedding_layer = nn.Sequential(*shared_fc_list)
 
         self.cls_layers = self.make_fc_layers(
             input_channels=pre_channel, output_channels=self.num_class, fc_list=self.model_cfg.CLS_FC
@@ -49,27 +47,13 @@ class PVRCNNHead(RoIHeadTemplate):
         )
         self.print_loss_when_eval = False
 
-        # TODO(Farzad): make a separate function for creating fc layers and use it both here and in shared_fc_list
-        GRID_SIZE = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
-        pre_channel = GRID_SIZE * GRID_SIZE * GRID_SIZE * num_c_out
-
-        self.stg2_projector = None  # Initialize projector as None
-        if self.training:  # Projection head created if training mode only
-            stg2_projector_list = []
-            for k in range(0, self.model_cfg.STG2_PROJ_FC.__len__()):
-                stg2_projector_list.append(
-                    nn.Conv1d(pre_channel, self.model_cfg.STG2_PROJ_FC[k], kernel_size=1, bias=True))
-                if self.model_cfg.STG2_PROJ_FC_CFGS.BATCH_NORM:
-                    stg2_projector_list.append(nn.BatchNorm1d(self.model_cfg.STG2_PROJ_FC[k]))
-                if self.model_cfg.STG2_PROJ_FC_CFGS.ACTIVATION == 'ReLU':
-                    stg2_projector_list.append(nn.ReLU())
-                elif self.model_cfg.STG2_PROJ_FC_CFGS.ACTIVATION == 'Linear':
-                    pass
-                pre_channel = self.model_cfg.STG2_PROJ_FC[k]
-                if k != self.model_cfg.STG2_PROJ_FC.__len__() - 1 and self.model_cfg.DP_RATIO > 0:
-                    shared_fc_list.append(nn.Dropout(self.model_cfg.DP_RATIO))
-
-            self.stg2_projector = nn.Sequential(*stg2_projector_list)
+        self.proj_size = self.model_cfg.PROJECTION_SIZE
+        input_size = self.model_cfg.SHARED_FC[-1]
+        self.projector = nn.Sequential(*[
+            nn.Linear(input_size, input_size),
+            nn.ReLU(),
+            nn.Linear(input_size, self.proj_size),
+        ])
 
         self.init_weights(weight_init='xavier')
 
@@ -176,7 +160,8 @@ class PVRCNNHead(RoIHeadTemplate):
         pooled_features = pooled_features.permute(0, 2, 1). \
             contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
         if use_projector:
-            pooled_features = self.stg2_projector(pooled_features.view(batch_size_rcnn, -1, 1))
+            shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1)).squeeze()
+            pooled_features = self.projector(shared_features)
 
         return pooled_features
     
@@ -209,9 +194,8 @@ class PVRCNNHead(RoIHeadTemplate):
         pooled_features = self.pool_features(batch_dict)
         batch_size_rcnn = pooled_features.shape[0]
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
-        embeddings = self.embedding_layer(pooled_features.view(batch_size_rcnn, -1, 1).detach())
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
-        rcnn_sem_cls = self.sem_cls_layers(embeddings).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
+        rcnn_sem_cls = self.sem_cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
         rcnn_reg = self.reg_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
 
         # if (self.training or self.print_loss_when_eval) and not test_only:
