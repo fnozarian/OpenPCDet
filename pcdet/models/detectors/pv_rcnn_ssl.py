@@ -58,17 +58,15 @@ class PVRCNN_SSL(Detector3DTemplate):
         return {
             "batch_size": batch_dict['batch_size'],
             "gt_boxes": batch_dict['gt_boxes'].clone().detach(),
-            "ori_gt_boxes": batch_dict['ori_gt_boxes'].clone().detach(),
             "point_coords": batch_dict['point_coords'].clone().detach(),
             "point_features": batch_dict['point_features'].clone().detach(),
             "point_cls_scores": batch_dict['point_cls_scores'].clone().detach()
         }
 
+    @torch.no_grad()
     def _prep_bank_inputs(self, batch_dict, lbl_inds, pad_size=50):
         selected_batch_dict = self._clone_gt_boxes_and_feats(batch_dict)  # TODO(farzad): is cloning (all) required?
-        with torch.no_grad():
-            batch_gt_feats = self.pv_rcnn.roi_head.pool_features(selected_batch_dict, use_gtboxes=True, use_projector=True)
-
+        batch_gt_feats = self.pv_rcnn.roi_head.pool_features(selected_batch_dict, use_gtboxes=True, use_projector=True)
         batch_gt_feats = batch_gt_feats.view(*batch_dict['gt_boxes'].shape[:2], -1)
         feats_list, labels_list, ins_ids_list = [], [], []
         for ix in lbl_inds:
@@ -79,7 +77,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 continue
             gt_boxes = gt_boxes[nonzero_mask]
             gt_feats = batch_gt_feats[ix][nonzero_mask]
-            gt_labels = gt_boxes[:, 7].int() - 1
+            gt_labels = gt_boxes[:, 7].long() - 1
             ins_ids = batch_dict['instance_idx'][ix][nonzero_mask].int()
             gt_feats = F.pad(gt_feats.unsqueeze(0), pad=(0, 0, 0, pad_size - gt_feats.shape[0]))
             gt_labels = F.pad(gt_labels.unsqueeze(0), pad=(0, pad_size - gt_labels.shape[0]))
@@ -100,7 +98,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         ori_gt_boxes_ulb = batch_dict['ori_gt_boxes'].chunk(2, dim=0)[1]
         nonzero_mask = torch.logical_not(torch.eq(ori_gt_boxes_ulb, 0).all(dim=-1))
         ori_gt_feats_ulb = ori_gt_feats_ulb[nonzero_mask]
-        labels_ulb = ori_gt_boxes_ulb[..., 7].int() - 1
+        labels_ulb = ori_gt_boxes_ulb[..., 7].long() - 1
         labels_ulb = labels_ulb[nonzero_mask]
         return ori_gt_feats_ulb, labels_ulb
 
@@ -126,10 +124,6 @@ class PVRCNN_SSL(Detector3DTemplate):
     @staticmethod
     def _split_batch(batch_dict, tag='ema'):
         assert tag in ['ema', 'pre_gt_sample'], f'{tag} not in list [ema, pre_gt_sample]'
-        # batch_dict['instance_idx_ema'] = batch_dict['instance_idx']
-        batch_dict['frame_id_ema'] = batch_dict['frame_id']
-        batch_dict['ori_gt_boxes'] = batch_dict['gt_boxes'].clone()
-        batch_dict['ori_gt_boxes_ema'] = batch_dict['gt_boxes'].clone()
         batch_dict_out = {}
         keys = list(batch_dict.keys())
         for k in keys:
@@ -149,7 +143,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         unlabeled_inds = torch.nonzero(1 - labeled_mask).squeeze(1).long()
         batch_dict['unlabeled_inds'] = unlabeled_inds
         batch_dict['labeled_inds'] = labeled_inds
-        batch_dict['ori_unlabeled_boxes'] = batch_dict['gt_boxes'][unlabeled_inds, ...].clone().detach()
+        batch_dict['ori_gt_boxes'] = batch_dict['gt_boxes'].clone().detach()
         return labeled_inds, unlabeled_inds
 
     @staticmethod
@@ -207,8 +201,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         # TODO(farzad): Check if commenting the following line and apply_augmentation is equal to a fully supervised setting
         self._fill_with_pls(batch_dict, pl_boxes, masks, ulb_inds, lbl_inds)
 
-        pl_cls_count_post_filter = torch.bincount(batch_dict['gt_boxes'][ulb_inds][...,7].view(-1).int().detach(), minlength=4)[1:]
-        gt_cls_count = torch.bincount(batch_dict['ori_unlabeled_boxes'][...,-1].view(-1).int().detach(), minlength=4)[1:]
+        pl_cls_count_post_filter = torch.bincount(batch_dict['gt_boxes'][ulb_inds, :, 7].view(-1).int().detach(), minlength=4)[1:]
+        gt_cls_count = torch.bincount(batch_dict['ori_gt_boxes'][ulb_inds, :, 7].view(-1).int().detach(), minlength=4)[1:]
 
         pl_count_dict = {'avg_num_gts_per_sample': self._arr2dict(gt_cls_count / len(ulb_inds)),  # backward compatibility. Added to stats_utils. Will be removed later.
                          'avg_num_pls_pre_filter_per_sample': self._arr2dict(pl_cls_count_pre_filter / len(ulb_inds)),

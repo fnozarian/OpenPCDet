@@ -25,7 +25,8 @@ class FeatureBankV2:
 
         # Globally synchronized tensors
         self.instance_ids = torch.tensor(instance_ids, dtype=torch.long).cuda()
-        self.features = torch.zeros((self.bank_size, self.feature_size), dtype=torch.float32).cuda()
+        features = torch.randn((self.bank_size, self.feature_size), dtype=torch.float32).cuda()
+        self.features = F.normalize(features, dim=-1)
         self.classwise_prototypes = torch.zeros((3, self.feature_size), dtype=torch.float32).cuda()
         self.labels = -torch.ones(self.bank_size, dtype=torch.long).cuda()
 
@@ -53,31 +54,33 @@ class FeatureBankV2:
         labels = labels[valid_mask]
         feats = feats[valid_mask]
         feat_indices = torch.tensor([torch.where(self.instance_ids == x)[0].item() for x in ins_ids]).cuda()
-
+        feats = F.normalize(feats, dim=-1)
         if self.direct_update:
             self.features[feat_indices, :] = feats.detach()
         else:
             smoothed_feats = self.momentum * self.features[feat_indices, :] + (1 - self.momentum) * feats.detach()
             self.features[feat_indices, :] = F.normalize(smoothed_feats, dim=-1)
-        self.labels[feat_indices] = labels.long().detach()
+        self.labels[feat_indices] = labels.detach()
 
+    @torch.no_grad()
     def _randomly_sample_protos_by_class(self, num_samples):
-        sampled_labels = []
+        sampled_inds_list = []
         for i in range(self.num_classes):
             inds = torch.where(self.labels == i)[0]
             sampled_inds = torch.randperm(len(inds))[:num_samples]
-            sampled_labels.append(self.labels[inds[sampled_inds]])
-        return torch.cat(sampled_labels)
+            sampled_inds_list.append(inds[sampled_inds])
+        return torch.cat(sampled_inds_list)
 
     def get_lpcont_loss(self, roi_feats_sa, roi_labels, nppc=10):
-        bank_labels = self._randomly_sample_protos_by_class(nppc)
+        sampled_inds = self._randomly_sample_protos_by_class(nppc)
+        bank_labels = self.labels[sampled_inds]
+        bank_feats_wa = self.features[sampled_inds]
         if torch.bincount(bank_labels).min() < nppc or roi_labels.size(0) == 0:
             return None, None, None
-        bank_feats_wa = F.normalize(self.features[bank_labels], dim=-1)
         roi_feats_sa = F.normalize(roi_feats_sa, dim=-1)
-        num_rois = roi_feats_sa.size(0)
 
         sim_matrix = roi_feats_sa @ bank_feats_wa.t()  # (N, C) @ (C, M) -> (N, M)
+        num_rois = roi_feats_sa.size(0)
         pos_mask = roi_labels.unsqueeze(1) == bank_labels.unsqueeze(0)
         neg_sim_matrix = torch.masked_select(sim_matrix, ~pos_mask).view(num_rois, -1)
         neg_sim_matrix = torch.repeat_interleave(neg_sim_matrix, nppc, dim=0)

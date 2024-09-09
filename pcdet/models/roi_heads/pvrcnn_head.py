@@ -186,10 +186,6 @@ class PVRCNNHead(RoIHeadTemplate):
             batch_dict['rcnn_cls_labels'] = targets_dict['rcnn_cls_labels']
             (batch_dict['rcnn_cls_labels'] == -1).any().item() and print('rcnn_cls_labels has -1')
             batch_dict['gt_iou_of_rois'] = targets_dict['gt_iou_of_rois']
-            # Temporarily add infos to targets_dict for metrics
-            targets_dict['unlabeled_inds'] = batch_dict['unlabeled_inds']
-            targets_dict['ori_unlabeled_boxes'] = batch_dict['ori_unlabeled_boxes']
-            targets_dict['points'] = batch_dict['points']
 
         pooled_features = self.pool_features(batch_dict)
         batch_size_rcnn = pooled_features.shape[0]
