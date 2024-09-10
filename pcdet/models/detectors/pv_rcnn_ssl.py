@@ -91,16 +91,20 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         return bank_inputs
 
-    def get_roi_feats(self, batch_dict):
-        ori_gt_proj_feats = self.pv_rcnn.roi_head.pool_features(batch_dict, use_ori_gtboxes=True, use_projector=True)
-        ori_gt_proj_feats = ori_gt_proj_feats.view(*batch_dict['ori_gt_boxes'].shape[:2], -1)
-        ori_gt_feats_ulb = ori_gt_proj_feats.chunk(2, dim=0)[1]  # get unlabeled feats
-        ori_gt_boxes_ulb = batch_dict['ori_gt_boxes'].chunk(2, dim=0)[1]
-        nonzero_mask = torch.logical_not(torch.eq(ori_gt_boxes_ulb, 0).all(dim=-1))
-        ori_gt_feats_ulb = ori_gt_feats_ulb[nonzero_mask]
-        labels_ulb = ori_gt_boxes_ulb[..., 7].long() - 1
+    def get_roi_feats(self, batch_dict, bbox_name='gt_boxes'):
+        if bbox_name == 'gt_boxes':
+            roi_feats_sa = self.pv_rcnn.roi_head.pool_features(batch_dict, use_gtboxes=True, use_projector=True)
+        else:
+            roi_feats_sa = self.pv_rcnn.roi_head.pool_features(batch_dict, use_ori_gtboxes=True, use_projector=True)
+        roi_boxes_sa = batch_dict[bbox_name]
+        roi_feats_sa = roi_feats_sa.view(*roi_boxes_sa.shape[:2], -1)
+        roi_feats_sa_ulb = roi_feats_sa.chunk(2, dim=0)[1]  # get unlabeled feats
+        roi_boxes_ulb = roi_boxes_sa.chunk(2, dim=0)[1]
+        nonzero_mask = torch.logical_not(torch.eq(roi_boxes_ulb, 0).all(dim=-1))
+        roi_feats_sa_ulb = roi_feats_sa_ulb[nonzero_mask]
+        labels_ulb = roi_boxes_ulb[..., 7].long() - 1
         labels_ulb = labels_ulb[nonzero_mask]
-        return ori_gt_feats_ulb, labels_ulb
+        return roi_feats_sa_ulb, labels_ulb
 
     def forward(self, batch_dict):
         if self.training:
@@ -249,13 +253,13 @@ class PVRCNN_SSL(Detector3DTemplate):
         if self.unlabeled_supervise_refine:
             loss += reduce_loss_fn(loss_rcnn_box[ulb_inds, ...]) * self.unlabeled_weight
         if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTO_CONTRASTIVE_LOSS', False):
-            proto_cont_loss = self._get_proto_contrastive_loss(batch_dict, ulb_inds)
+            roi_feats_sa, roi_labels = self.get_roi_feats(batch_dict)
+            proto_cont_loss = self.bank.get_proto_contrastive_loss(roi_feats_sa, roi_labels)
             if proto_cont_loss is not None:
                 loss += proto_cont_loss * self.model_cfg['ROI_HEAD']['PROTO_CONTRASTIVE_LOSS_WEIGHT']
                 tb_dict['proto_cont_loss'] = proto_cont_loss.item()
-
         if self.model_cfg['ROI_HEAD'].get('ENABLE_LPCONT_LOSS', False):
-            roi_feats_sa, roi_labels = self.get_roi_feats(batch_dict)
+            roi_feats_sa, roi_labels = self.get_roi_feats(batch_dict, 'ori_gt_boxes')
             lpcont_loss, sim_matrix, proto_labels = self.bank.get_lpcont_loss(roi_feats_sa, roi_labels)
             if lpcont_loss is not None:
                 loss += lpcont_loss * self.model_cfg['ROI_HEAD']['LPCONT_LOSS_WEIGHT']
@@ -358,22 +362,6 @@ class PVRCNN_SSL(Detector3DTemplate):
 
     def _arr2dict(self, array):
         return {cls: array[cind] for cind, cls in enumerate(self.class_names)}
-
-    def _get_proto_contrastive_loss(self, batch_dict, ulb_inds):
-        gt_boxes = batch_dict['gt_boxes']
-        B, N = gt_boxes.shape[:2]
-        # TODO: change the prototype contrastive loss to use the projected features
-        sa_pl_feats = self.pv_rcnn.roi_head.pool_features(batch_dict, use_gtboxes=True, use_projector=True).view(B * N, -1)
-        pl_labels = batch_dict['gt_boxes'][..., 7].view(-1).long() - 1
-        proto_cont_loss = self.bank.get_proto_contrastive_loss(sa_pl_feats, pl_labels)
-        if proto_cont_loss is None:
-            return
-        nonzero_mask = torch.logical_not(torch.eq(gt_boxes, 0).all(dim=-1))
-        ulb_nonzero_mask = nonzero_mask[ulb_inds]
-        if ulb_nonzero_mask.sum() == 0:
-            print(f"No pl instances predicted for strongly augmented frame(s) {batch_dict['frame_id'][ulb_inds]}")
-            return
-        return proto_cont_loss.view(B, N)[ulb_inds][ulb_nonzero_mask].mean()
 
     @staticmethod
     def _get_sim_matrix_fig(sim_matrix, roi_labels, proto_labels):

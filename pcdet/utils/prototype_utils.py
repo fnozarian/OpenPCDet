@@ -27,7 +27,8 @@ class FeatureBankV2:
         self.instance_ids = torch.tensor(instance_ids, dtype=torch.long).cuda()
         features = torch.randn((self.bank_size, self.feature_size), dtype=torch.float32).cuda()
         self.features = F.normalize(features, dim=-1)
-        self.classwise_prototypes = torch.zeros((3, self.feature_size), dtype=torch.float32).cuda()
+        classwise_prototypes = torch.randn((3, self.feature_size), dtype=torch.float32).cuda()
+        self.prototypes = F.normalize(classwise_prototypes, dim=-1)
         self.labels = -torch.ones(self.bank_size, dtype=torch.long).cuda()
 
     @torch.no_grad()
@@ -61,6 +62,14 @@ class FeatureBankV2:
             smoothed_feats = self.momentum * self.features[feat_indices, :] + (1 - self.momentum) * feats.detach()
             self.features[feat_indices, :] = F.normalize(smoothed_feats, dim=-1)
         self.labels[feat_indices] = labels.detach()
+        self._update_prototypes()
+
+    def _update_prototypes(self):
+        for i in range(self.num_classes):  # TODO: refactor it
+            inds = torch.where(self.labels == i)[0]
+            cls_mean_feat = torch.mean(self.features[inds], dim=0)
+            self.prototypes[i] = cls_mean_feat
+
 
     @torch.no_grad()
     def _randomly_sample_protos_by_class(self, num_samples):
@@ -92,6 +101,17 @@ class FeatureBankV2:
         lpcont_loss = self.ce_loss(logits, labels)
 
         return lpcont_loss, sim_matrix.detach(), bank_labels
+
+    def get_proto_contrastive_loss(self, roi_feats_sa, roi_labels, nppc=10):
+        sampled_inds = self._randomly_sample_protos_by_class(nppc)
+        bank_labels = self.labels[sampled_inds]
+        if torch.bincount(bank_labels).min() < nppc or roi_labels.size(0) == 0:
+            return None
+        roi_feats_sa = F.normalize(roi_feats_sa, dim=-1)
+        sim_scores = roi_feats_sa @ self.prototypes.t()
+        logits = sim_scores / self.temperature
+        loss = self.ce_loss(logits, roi_labels)
+        return loss
 
 
 class FeatureBank(Metric):
