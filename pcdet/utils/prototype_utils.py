@@ -105,13 +105,14 @@ class FeatureBankV2:
     def get_proto_contrastive_loss(self, roi_feats_sa, roi_labels, nppc=10):
         sampled_inds = self._randomly_sample_protos_by_class(nppc)
         bank_labels = self.labels[sampled_inds]
-        if torch.bincount(bank_labels).min() < nppc or roi_labels.size(0) == 0:
-            return None
         roi_feats_sa = F.normalize(roi_feats_sa, dim=-1)
         sim_scores = roi_feats_sa @ self.prototypes.t()
         logits = sim_scores / self.temperature
+        if torch.bincount(bank_labels).min() < nppc or roi_labels.size(0) == 0:
+            print("WARNING: Not enough samples in the bank or no roi samples.")
+            return torch.tensor(0), logits, bank_labels
         loss = self.ce_loss(logits, roi_labels)
-        return loss
+        return loss, logits.detach(), bank_labels
 
 
 class FeatureBank(Metric):

@@ -33,6 +33,7 @@ def _assert_inputs_are_valid(rois: [torch.Tensor], roi_scores: [torch.Tensor], g
     if num_gts.eq(0).any():
         print(f"\nWARNING! Unlabeled sample has no ground truths!")
 
+
 def get_max_iou_with_same_class(rois, roi_labels, gt_boxes, gt_labels):
     """
     Args:
@@ -68,6 +69,7 @@ def get_max_iou_with_same_class(rois, roi_labels, gt_boxes, gt_labels):
 
     return max_overlaps, gt_assignment
 
+
 def get_max_iou(anchors, gt_boxes, gt_classes, matched_threshold=0.6):
     num_anchors = anchors.shape[0]
     num_gts = gt_boxes.shape[0]
@@ -88,6 +90,7 @@ def get_max_iou(anchors, gt_boxes, gt_classes, matched_threshold=0.6):
         ious[:] = anchor_to_gt_max
 
     return ious, labels, gt_to_anchor_max
+
 
 def plot_confusion_matrix(cm, class_names):
   """
@@ -122,12 +125,15 @@ def plot_confusion_matrix(cm, class_names):
 
   return fig
 
+
 def _arr2dict(array, ignore_zeros=False, ignore_nan=False):
     def should_include(value):
         return not ((ignore_zeros and value == 0) or (ignore_nan and np.isnan(value)))
 
     classes = ['Bg', 'Fg'] if array.shape[-1] == 2 else ['Car', 'Pedestrian', 'Cyclist']
     return {cls: array[cind] for cind, cls in enumerate(classes) if should_include(array[cind])}
+
+
 class PredQualityMetrics(Metric):
     full_state_update: bool = False
 
@@ -137,7 +143,8 @@ class PredQualityMetrics(Metric):
         self.tag = kwargs.get('tag', None)
         self.dataset = kwargs.get('dataset', None)
 
-        self.states_name = ["roi_scores", "roi_weights", "roi_labels", "roi_iou_wrt_gt", "roi_assigned_labels"]
+        self.states_name = ["roi_scores", "roi_rcnn_sem_scores", "roi_weights", "roi_labels", "roi_sim_logits",
+                            "roi_iou_wrt_gt", "roi_assigned_labels"]
         self.fg_threshs = kwargs.get('fg_threshs', None)
         self.bg_thresh = kwargs.get('BG_THRESH', 0.25)
         self.min_overlaps = np.array([0.7, 0.5, 0.5])
@@ -148,7 +155,8 @@ class PredQualityMetrics(Metric):
         for name in self.states_name:
             self.add_state(name, default=[], dist_reduce_fx='cat')
 
-    def update(self, rois: [torch.Tensor], roi_scores: [torch.Tensor], roi_weights: [torch.Tensor], ground_truths: [torch.Tensor]) -> None:
+    def update(self, rois: [torch.Tensor], roi_scores: [torch.Tensor], roi_weights: [torch.Tensor],
+               roi_rcnn_sem_scores: [torch.Tensor], ground_truths: [torch.Tensor], roi_sim_logits=None) -> None:
 
         _assert_inputs_are_valid(rois, roi_scores, ground_truths)
 
@@ -156,8 +164,10 @@ class PredQualityMetrics(Metric):
 
             valid_roi_mask = torch.logical_not(torch.all(sample_rois == 0, dim=-1))
             sample_rois = sample_rois[valid_roi_mask]
-            roi_scores[i] = roi_scores[i][valid_roi_mask]
-            roi_weights[i] = roi_weights[i][valid_roi_mask]
+            sample_roi_scores = roi_scores[i][valid_roi_mask]
+
+            sample_roi_rcnn_sem_scores = roi_rcnn_sem_scores[i][valid_roi_mask]
+            sample_roi_weights = roi_weights[i][valid_roi_mask]
 
             valid_gts_mask = torch.logical_not(torch.all(ground_truths[i] == 0, dim=-1))
             sample_gts = ground_truths[i][valid_gts_mask]
@@ -185,12 +195,12 @@ class PredQualityMetrics(Metric):
                 print("WARNING! Both rois and gts are empty!")
                 continue
 
-            self.roi_scores.append(roi_scores[i])
-            # self.roi_sim_scores.append(roi_sim_scores[i])
+            self.roi_scores.append(sample_roi_scores)
+            self.roi_rcnn_sem_scores.append(sample_roi_rcnn_sem_scores)
             self.roi_iou_wrt_gt.append(sample_roi_iou_wrt_gt.view(-1, 1))
             self.roi_assigned_labels.append(assigned_label.view(-1, 1))
             self.roi_labels.append(sample_roi_labels.view(-1, 1))
-            self.roi_weights.append(roi_weights[i])
+            self.roi_weights.append(sample_roi_weights)
 
         # Draw the last sample in batch
         # pred_boxes = sample_rois[:, :-1].clone().cpu().numpy()
@@ -201,7 +211,8 @@ class PredQualityMetrics(Metric):
         # pts = points[i].clone().cpu().numpy()
         # V.draw_scenes(points=pts, gt_boxes=gts, gt_labels=gt_labels,
         #               ref_boxes=pred_boxes, ref_scores=pred_scores, ref_labels=pred_labels)
-
+        if roi_sim_logits is not None:
+            self.roi_sim_logits.append(roi_sim_logits)
         self.num_samples += len(rois)
 
     def _accumulate_metrics(self):
@@ -255,15 +266,18 @@ class PredQualityMetrics(Metric):
         y_labels = torch.where(assigned_labels == -1, 3, assigned_labels)
         y_labels = y_labels.cpu().numpy()
         pred_labels = pred_labels.cpu().numpy()
-        # one_hot_labels = argmax_scores.new_zeros(len(y_labels), 4, dtype=torch.long, device=scores.device)
-        # one_hot_labels.scatter_(-1, y_labels.unsqueeze(dim=-1).long(), 1.0).cpu().numpy()
         precision = precision_score(y_labels, pred_labels, sample_weight=weights.cpu().numpy(), average=None, labels=range(3), zero_division=np.nan)
         classwise_metrics['avg_precision_sem_score'] = _arr2dict(precision[:3], ignore_nan=True)
 
-        # sim_scores = accumulated_metrics["roi_sim_scores"]
-        # sim_labels = torch.argmax(sim_scores, dim=-1)
-        # y_sim_scores = np.zeros((len(y_labels), 4))
-        # y_sim_scores[:, :3] = sim_scores.cpu().numpy()
+        assert accumulated_metrics['roi_sim_logits'].shape[0] == scores.shape[0]
+        sim_scores = accumulated_metrics["roi_sim_logits"].view(scores.shape[0], -1).softmax(dim=-1)
+        sim_labels = torch.argmax(sim_scores, dim=-1).cpu().numpy()
+        sim_scores_precision = precision_score(y_labels, sim_labels, average=None, labels=range(3), zero_division=np.nan)
+        classwise_metrics['avg_precision_sim_score'] = _arr2dict(sim_scores_precision[:3], ignore_nan=True)
+        rcnn_sem_scores = accumulated_metrics["roi_rcnn_sem_scores"].view(-1, 3)
+        rcnn_sem_labels = torch.argmax(rcnn_sem_scores, dim=-1).cpu().numpy()
+        rcnn_sem_scores_precision = precision_score(y_labels, rcnn_sem_labels, average=None, labels=range(3), zero_division=np.nan)
+        classwise_metrics['avg_precision_rcnn_sem_score'] = _arr2dict(rcnn_sem_scores_precision, ignore_nan=True)
 
         # cm = confusion_matrix(y_labels, pred_labels)
         # print("\n Confusion Matrix: \n", cm)
@@ -298,7 +312,7 @@ class PredQualityMetrics(Metric):
             classwise_metrics['avg_num_rois_per_sample'][cls] = cls_pred_mask.sum() / self.num_samples
             classwise_metrics['avg_num_gts_per_sample'][cls] = self.num_gts[cind] / self.num_samples
 
-            # classwise_metrics['rois_fg_ratio'][cls] = cls_fg_mask.sum() / max(cls_pred_mask.sum(), 1)
+            classwise_metrics['rois_fg_ratio'][cls] = cls_fg_mask.sum() / max(cls_pred_mask.sum(), 1)
             # classwise_metrics['rois_uc_ratio'][cls] = cls_uc_mask.sum() / max(cls_pred_mask.sum(), 1)
             # classwise_metrics['rois_bg_ratio'][cls] = cls_bg_mask.sum() / max(cls_pred_mask.sum(), 1)
 
@@ -309,18 +323,6 @@ class PredQualityMetrics(Metric):
             # recall
             for t, thresh in enumerate([0.3, 0.5, 0.7]):
                 classwise_metrics[f'recall_{thresh}'][cls] = self.num_gts_matched[t, cind] / torch.clip(self.num_gts[cind], min=1)
-
-            # y_sim_scores = sim_scores[:, cind].cpu().numpy()
-            # sem_clf_pr_curve_sim_score_data = {'labels': cls_label_mask, 'predictions': y_sim_scores}
-            # classwise_metrics['sem_clf_pr_curve_sim_score'][cls] = sem_clf_pr_curve_sim_score_data
-            # classwise_metrics['avg_precision_sim_score'][cls] = average_precision_score(cls_label_mask, y_sim_scores)
-            # cls_sim_mask = sim_labels == cind
-            # cls_roi_sim_scores = sim_scores[cls_pred_mask, cind]
-            # cls_roi_sim_scores_entropy = Categorical(sim_scores[cls_pred_mask] + torch.finfo(torch.float32).eps).entropy()
-            # classwise_metrics['avg_num_pred_rois_using_sim_score_per_sample'][cls] = cls_sim_mask.sum() / self.num_samples
-            # add_avg_metric('rois_avg_sim_score', cls_roi_sim_scores)
-            # add_avg_metric('rois_avg_sim_score_entropy', cls_roi_sim_scores_entropy)
-
 
         self.reset()
         # Torchmetrics has an issue with defaultdicts. I have to pass the keys and values separately.
