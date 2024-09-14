@@ -21,7 +21,7 @@ class FeatureBankV2:
         self.direct_update = kwargs.get('DIRECT_UPDATE')
         self.num_points_thresh = kwargs.get('FILTER_MIN_POINTS_IN_GT', 0)
         self.bank_size = len(instance_ids)
-        self.ce_loss = nn.CrossEntropyLoss()
+        self.ce_loss = nn.CrossEntropyLoss(reduction='none')
 
         # Globally synchronized tensors
         self.instance_ids = torch.tensor(instance_ids, dtype=torch.long).cuda()
@@ -80,7 +80,7 @@ class FeatureBankV2:
             sampled_inds_list.append(inds[sampled_inds])
         return torch.cat(sampled_inds_list)
 
-    def get_lpcont_loss(self, roi_feats_sa, roi_labels, nppc=10):
+    def get_lpcont_loss(self, roi_feats_sa, roi_labels, weights=None, nppc=10):
         sampled_inds = self._randomly_sample_protos_by_class(nppc)
         bank_labels = self.labels[sampled_inds]
         bank_feats_wa = self.features[sampled_inds]
@@ -93,12 +93,14 @@ class FeatureBankV2:
         pos_mask = roi_labels.unsqueeze(1) == bank_labels.unsqueeze(0)
         neg_sim_matrix = torch.masked_select(sim_matrix, ~pos_mask).view(num_rois, -1)
         neg_sim_matrix = torch.repeat_interleave(neg_sim_matrix, nppc, dim=0)
+        weights = torch.repeat_interleave(weights, nppc, dim=0)
         pos_inds = torch.where(pos_mask)
         positives = sim_matrix[pos_inds].view(-1, 1)
         logits = torch.cat((positives, neg_sim_matrix), dim=1)
         logits = logits / self.temperature
         labels = torch.zeros((logits.size(0),), dtype=torch.long).cuda()
         lpcont_loss = self.ce_loss(logits, labels)
+        lpcont_loss = torch.sum(lpcont_loss * weights) / torch.sum(weights)
 
         return lpcont_loss, sim_matrix.detach(), bank_labels
 

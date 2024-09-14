@@ -243,8 +243,13 @@ class PVRCNN_SSL(Detector3DTemplate):
             loss += proto_cont_loss * self.model_cfg['ROI_HEAD']['PROTO_CONTRASTIVE_LOSS_WEIGHT']
             tb_dict['proto_cont_loss'] = proto_cont_loss.item()
         if self.model_cfg['ROI_HEAD'].get('ENABLE_LPCONT_LOSS', False):
-            roi_feats_sa, roi_labels = self.get_roi_feats(batch_dict, 'ori_gt_boxes')
-            lpcont_loss, sim_matrix, proto_labels = self.bank.get_lpcont_loss(roi_feats_sa, roi_labels)
+            roi_feats_sa, roi_labels = self.get_roi_feats(batch_dict)
+            # NOTE: we temporarily use true roi ious between PLs and GTs as weights
+            # to find the upper bound performance of the loss and to make it independent of the FG/BG scores
+            ulb_gt_boxes = batch_dict['gt_boxes'].chunk(2)[1]
+            ulb_ori_gt_boxes = batch_dict['ori_gt_boxes'].chunk(2)[1]
+            _, true_ious = self._calc_true_ious(ulb_gt_boxes, ulb_ori_gt_boxes)
+            lpcont_loss, sim_matrix, proto_labels = self.bank.get_lpcont_loss(roi_feats_sa, roi_labels, weights=true_ious)
             if lpcont_loss is not None:
                 loss += lpcont_loss * self.model_cfg['ROI_HEAD']['LPCONT_LOSS_WEIGHT']
                 tb_dict['lpcont_loss'] = lpcont_loss.item()
@@ -321,29 +326,26 @@ class PVRCNN_SSL(Detector3DTemplate):
             masks.append(torch.ones((pboxes.shape[0],), dtype=torch.bool, device=pboxes.device))
         return pl_boxes, pl_conf_scores, pl_sem_scores, pl_sem_logits, pl_rect_scores, masks
 
-    def _calc_true_ious(self, pls: [torch.Tensor], batch_gts: torch.Tensor):
-        batch_ious = []
-        for batch_idx, sample_pls in enumerate(pls):
-            ious = torch.zeros((sample_pls.shape[0],), dtype=torch.float, device=sample_pls.device)
-            gts = batch_gts[batch_idx]
+    def _calc_true_ious(self, batch_pls: torch.Tensor, batch_gts: torch.Tensor):
+        assert batch_pls.shape[0] == batch_gts.shape[0]
+        ious = torch.zeros(batch_pls.shape[:2], dtype=torch.float, device=batch_pls.device)
+        for i, (pls, gts) in enumerate(zip(batch_pls, batch_gts)):
             mask_gt = torch.logical_not(torch.all(gts == 0, dim=-1))
-            mask_pl = torch.logical_not(torch.all(sample_pls == 0, dim=-1))
+            mask_pl = torch.logical_not(torch.all(pls == 0, dim=-1))
+            gts = gts[mask_gt]
+            pls = pls[mask_pl]
 
-            valid_gts = gts[mask_gt]
-            valid_pls = sample_pls[mask_pl]
-
-            if len(valid_gts) > 0 and len(valid_pls) > 0:
-                valid_gts_labels = valid_gts[:, -1].long() - 1
-                valid_pls_labels = valid_pls[:, -1].long() - 1
-                matched_threshold = torch.tensor(np.array([0.7, 0.5, 0.5]), dtype=torch.float, device=valid_pls_labels.device)[valid_pls_labels]
-                valid_pls_iou_wrt_gt, assigned_label, gt_to_pls_max_iou = self.get_max_iou(valid_pls[:, 0:7],
-                                                                                           valid_gts[:, 0:7],
-                                                                                           valid_gts_labels,
-                                                                                           matched_threshold=matched_threshold)
-                ious[mask_pl] = valid_pls_iou_wrt_gt
-            batch_ious.append(ious)
-
-        return batch_ious
+            if len(gts) > 0 and len(pls) > 0:
+                gts_labels = gts[:, -1].long() - 1
+                pls_labels = pls[:, -1].long() - 1
+                thresh = torch.tensor([0.7, 0.5, 0.5], device=pls_labels.device)[pls_labels]
+                pls_iou_wrt_gt, assigned_label, gt_to_pls_max_iou = self.get_max_iou(pls[:, 0:7], gts[:, 0:7],
+                                                                                     gts_labels,
+                                                                                     matched_threshold=thresh)
+                inds = mask_pl.nonzero().squeeze()
+                ious[i, inds] = pls_iou_wrt_gt
+        inds = torch.logical_not(torch.all(batch_pls == 0, dim=-1)).nonzero(as_tuple=True)
+        return ious, ious[inds]
 
     def _arr2dict(self, array):
         return {cls: array[cind] for cind, cls in enumerate(self.class_names)}

@@ -269,15 +269,16 @@ class PredQualityMetrics(Metric):
         precision = precision_score(y_labels, pred_labels, sample_weight=weights.cpu().numpy(), average=None, labels=range(3), zero_division=np.nan)
         classwise_metrics['avg_precision_sem_score'] = _arr2dict(precision[:3], ignore_nan=True)
 
-        assert accumulated_metrics['roi_sim_logits'].shape[0] == scores.shape[0]
-        sim_scores = accumulated_metrics["roi_sim_logits"].view(scores.shape[0], -1).softmax(dim=-1)
-        sim_labels = torch.argmax(sim_scores, dim=-1).cpu().numpy()
-        sim_scores_precision = precision_score(y_labels, sim_labels, average=None, labels=range(3), zero_division=np.nan)
-        classwise_metrics['avg_precision_sim_score'] = _arr2dict(sim_scores_precision[:3], ignore_nan=True)
-        rcnn_sem_scores = accumulated_metrics["roi_rcnn_sem_scores"].view(-1, 3)
-        rcnn_sem_labels = torch.argmax(rcnn_sem_scores, dim=-1).cpu().numpy()
-        rcnn_sem_scores_precision = precision_score(y_labels, rcnn_sem_labels, average=None, labels=range(3), zero_division=np.nan)
-        classwise_metrics['avg_precision_rcnn_sem_score'] = _arr2dict(rcnn_sem_scores_precision, ignore_nan=True)
+        if len(accumulated_metrics["roi_sim_logits"]) > 0:
+            assert accumulated_metrics['roi_sim_logits'].shape[0] == scores.shape[0]
+            sim_scores = accumulated_metrics["roi_sim_logits"].view(scores.shape[0], -1).softmax(dim=-1)
+            sim_labels = torch.argmax(sim_scores, dim=-1).cpu().numpy()
+            sim_scores_precision = precision_score(y_labels, sim_labels, average=None, labels=range(3), zero_division=np.nan)
+            classwise_metrics['avg_precision_sim_score'] = _arr2dict(sim_scores_precision[:3], ignore_nan=True)
+            rcnn_sem_scores = accumulated_metrics["roi_rcnn_sem_scores"].view(-1, 3)
+            rcnn_sem_labels = torch.argmax(rcnn_sem_scores, dim=-1).cpu().numpy()
+            rcnn_sem_scores_precision = precision_score(y_labels, rcnn_sem_labels, average=None, labels=range(3), zero_division=np.nan)
+            classwise_metrics['avg_precision_rcnn_sem_score'] = _arr2dict(rcnn_sem_scores_precision, ignore_nan=True)
 
         # cm = confusion_matrix(y_labels, pred_labels)
         # print("\n Confusion Matrix: \n", cm)
