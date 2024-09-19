@@ -50,9 +50,7 @@ class PVRCNNHead(RoIHeadTemplate):
         self.proj_size = self.model_cfg.PROJECTION_SIZE
         input_size = self.model_cfg.SHARED_FC[-1]
         self.projector = nn.Sequential(*[
-            nn.Linear(input_size, input_size),
-            nn.ReLU(),
-            nn.Linear(input_size, self.proj_size),
+            nn.Linear(input_size, self.proj_size)
         ])
 
         self.init_weights(weight_init='xavier')
@@ -190,18 +188,10 @@ class PVRCNNHead(RoIHeadTemplate):
         pooled_features = self.pool_features(batch_dict)
         batch_size_rcnn = pooled_features.shape[0]
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
+        proj_feats = self.projector(shared_features.squeeze())
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
         rcnn_sem_cls = self.sem_cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
         rcnn_reg = self.reg_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
-
-        # if (self.training or self.print_loss_when_eval) and not test_only:
-        #     # RoI-level similarity.
-        #     # calculate cosine similarity between unlabeled augmented RoI features and labeled augmented prototypes.
-        #     roi_features = pooled_features.clone().detach().view(batch_size_rcnn, -1)
-        #     roi_scores_shape = batch_dict['roi_scores'].shape  # (B, N)
-        #     bank = feature_bank_registry.get('gt_aug_lbl_prototypes')
-        #     sim_scores = bank.get_sim_scores(roi_features)
-        #     targets_dict['roi_sim_scores'] = sim_scores.view(*roi_scores_shape, -1)
 
         if not self.training or self.predict_boxes_when_training:
             batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(
@@ -219,6 +209,7 @@ class PVRCNNHead(RoIHeadTemplate):
             targets_dict['rcnn_cls'] = rcnn_cls
             targets_dict['rcnn_reg'] = rcnn_reg
             targets_dict['rcnn_sem_cls'] = rcnn_sem_cls
+            targets_dict['proj_feats'] = proj_feats
             self.forward_ret_dict = targets_dict
 
         return batch_dict

@@ -12,7 +12,6 @@ from pcdet.utils import common_utils
 from pcdet.utils.stats_utils import metrics_registry
 from pcdet.utils.prototype_utils import FeatureBankV2
 from ssod import AdaptiveThresholding
-from torch.profiler import profile, ProfilerActivity
 
 
 class PVRCNN_SSL(Detector3DTemplate):
@@ -45,6 +44,9 @@ class PVRCNN_SSL(Detector3DTemplate):
         data_sampler = dataset.data_augmentor.data_augmentor_queue[0]
         instance_ids = data_sampler.instance_ids
         self.bank = FeatureBankV2(instance_ids, **model_cfg.FEATURE_BANK)
+
+        self.temperature = 0.01
+        self.iou_pos_thresh = 0.4
 
         for metrics_configs in model_cfg.get("METRICS_BANK_LIST", []):
             if metrics_configs.ENABLE:
@@ -203,9 +205,6 @@ class PVRCNN_SSL(Detector3DTemplate):
             wa_gt_lbl_inputs = self._prep_bank_inputs(batch_dict_ema, lbl_inds)
             self.bank.update(**wa_gt_lbl_inputs)
 
-        # For metrics calculation
-        self.pv_rcnn.roi_head.forward_ret_dict['unlabeled_inds'] = ulb_inds
-
         if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False):
             # using teacher to evaluate student's bg/fg proposals through its rcnn head
             with torch.no_grad():
@@ -248,12 +247,49 @@ class PVRCNN_SSL(Detector3DTemplate):
             # to find the upper bound performance of the loss and to make it independent of the FG/BG scores
             ulb_gt_boxes = batch_dict['gt_boxes'].chunk(2)[1]
             ulb_ori_gt_boxes = batch_dict['ori_gt_boxes'].chunk(2)[1]
-            _, true_ious = self._calc_true_ious(ulb_gt_boxes, ulb_ori_gt_boxes)
+            _, true_ious = self._calc_roi_ious(ulb_gt_boxes, ulb_ori_gt_boxes)
             lpcont_loss, sim_matrix, proto_labels = self.bank.get_lpcont_loss(roi_feats_sa, roi_labels, weights=true_ious)
             if lpcont_loss is not None:
                 loss += lpcont_loss * self.model_cfg['ROI_HEAD']['LPCONT_LOSS_WEIGHT']
                 tb_dict['lpcont_loss'] = lpcont_loss.item()
                 tb_dict['sim_matrix_info'] = self._get_sim_matrix_fig(sim_matrix, roi_labels, proto_labels)
+        if self.model_cfg['ROI_HEAD'].get('ENABLE_INST_CONT_LOSS', False):
+            with torch.no_grad():
+                rois_wa = self.pv_rcnn_ema.roi_head.forward_ret_dict['rois'].clone()
+                rois_sa = self.pv_rcnn.roi_head.forward_ret_dict['rois']
+                self.apply_augmentation({'rois': rois_wa}, batch_dict, ulb_inds, key='rois')
+
+                assert torch.logical_not(torch.eq(rois_wa, 0).all(dim=-1)).all(), "Assumes no zero-padding in rois"
+                assert torch.logical_not(torch.eq(rois_sa, 0).all(dim=-1)).all(), "Assumes no zero-padding in rois"
+                ulb_rois_wa = rois_wa.chunk(2)[1]
+                ulb_rois_sa = rois_sa.chunk(2)[1]
+
+                ious = iou3d_nms_utils.boxes_iou3d_gpu(ulb_rois_sa.view(-1, 7), ulb_rois_wa.view(-1, 7))
+                # `mask` sets the iou between rois of different samples to zero.
+                smpl_ids_wa = torch.arange(ulb_rois_wa.shape[0], device=ulb_rois_wa.device).repeat_interleave(ulb_rois_wa.shape[1])
+                smpl_ids_sa = torch.arange(ulb_rois_sa.shape[0], device=ulb_rois_sa.device).repeat_interleave(ulb_rois_sa.shape[1])
+                mask = smpl_ids_sa.unsqueeze(1) == smpl_ids_wa.unsqueeze(0)
+                ious = ious * mask.float()
+                ulb_roi_feats_wa = self.pv_rcnn_ema.roi_head.forward_ret_dict['proj_feats'].chunk(2)[1]
+                ulb_roi_feats_wa = F.normalize(ulb_roi_feats_wa, dim=-1)
+
+            # TODO: check the difference between this direct and get_roi_feats indirect approach
+            ulb_roi_feats_sa = self.pv_rcnn.roi_head.forward_ret_dict['proj_feats'].chunk(2)[1]
+            ulb_roi_feats_sa = F.normalize(ulb_roi_feats_sa, dim=-1)
+            sim_matrix = ulb_roi_feats_sa @ ulb_roi_feats_wa.T
+            logits = sim_matrix / self.temperature
+            positive_mask = (ious > self.iou_pos_thresh).float()
+            log_prob = F.log_softmax(logits, dim=1)
+            log_prob = log_prob * positive_mask
+            num_pos = positive_mask.sum(dim=1)
+            inst_cont_loss = -log_prob.sum(dim=1) / (num_pos + 1e-8)
+            inst_cont_loss = inst_cont_loss.mean()
+            loss += inst_cont_loss
+            plt.clf()
+            plt.imshow(sim_matrix.detach().cpu().numpy(), cmap='plasma', vmin=0, vmax=1, aspect='auto')
+            plt.colorbar()
+            tb_dict['inst_cont_loss_unlabeled'] = inst_cont_loss.item()
+            tb_dict['sim_matrix_info'] = plt.gcf()
 
         # update dynamic thresh alg
         if self.model_cfg.ADAPTIVE_THRESHOLDING.ENABLE:
@@ -326,25 +362,23 @@ class PVRCNN_SSL(Detector3DTemplate):
             masks.append(torch.ones((pboxes.shape[0],), dtype=torch.bool, device=pboxes.device))
         return pl_boxes, pl_conf_scores, pl_sem_scores, pl_sem_logits, pl_rect_scores, masks
 
-    def _calc_true_ious(self, batch_pls: torch.Tensor, batch_gts: torch.Tensor):
-        assert batch_pls.shape[0] == batch_gts.shape[0]
-        ious = torch.zeros(batch_pls.shape[:2], dtype=torch.float, device=batch_pls.device)
-        for i, (pls, gts) in enumerate(zip(batch_pls, batch_gts)):
-            mask_gt = torch.logical_not(torch.all(gts == 0, dim=-1))
-            mask_pl = torch.logical_not(torch.all(pls == 0, dim=-1))
-            gts = gts[mask_gt]
-            pls = pls[mask_pl]
+    def _calc_roi_ious(self, batch_rois1: torch.Tensor, batch_rois2: torch.Tensor):
+        assert batch_rois1.shape[0] == batch_rois2.shape[0]
+        ious = torch.zeros(batch_rois1.shape[:2], dtype=torch.float, device=batch_rois1.device)
+        for i, (rois1, rois2) in enumerate(zip(batch_rois1, batch_rois2)):
+            mask_rois1 = torch.logical_not(torch.all(rois1 == 0, dim=-1))
+            mask_rois2 = torch.logical_not(torch.all(rois2 == 0, dim=-1))
+            rois1 = rois1[mask_rois1]
+            rois2 = rois2[mask_rois2]
 
-            if len(gts) > 0 and len(pls) > 0:
-                gts_labels = gts[:, -1].long() - 1
-                pls_labels = pls[:, -1].long() - 1
-                thresh = torch.tensor([0.7, 0.5, 0.5], device=pls_labels.device)[pls_labels]
-                pls_iou_wrt_gt, assigned_label, gt_to_pls_max_iou = self.get_max_iou(pls[:, 0:7], gts[:, 0:7],
-                                                                                     gts_labels,
-                                                                                     matched_threshold=thresh)
-                inds = mask_pl.nonzero().squeeze()
-                ious[i, inds] = pls_iou_wrt_gt
-        inds = torch.logical_not(torch.all(batch_pls == 0, dim=-1)).nonzero(as_tuple=True)
+            if len(rois2) > 0 and len(rois1) > 0:
+                roi1_labels = rois1[:, -1].long() - 1
+                roi2_labels = rois2[:, -1].long() - 1
+                thresh = torch.tensor([0.7, 0.5, 0.5], device=roi1_labels.device)[roi1_labels]
+                roi_ious, _, _ = self.get_max_iou(rois1[:, 0:7], rois2[:, 0:7], roi2_labels, matched_threshold=thresh)
+                inds = mask_rois1.nonzero().squeeze()
+                ious[i, inds] = roi_ious
+        inds = torch.logical_not(torch.all(batch_rois1 == 0, dim=-1)).nonzero(as_tuple=True)
         return ious, ious[inds]
 
     def _arr2dict(self, array):
