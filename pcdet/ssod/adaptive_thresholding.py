@@ -453,9 +453,9 @@ class AdaptiveThresholding(Metric):
         prob = getattr(self, p_name)
         prob[tag] = prob_shadow[tag] / (1 - momentum ** self.iteration_count)
 
-    def get_mask(self, conf_scores, sem_logits, rcnn_sem_logits):
-        assert self.thresh_method in ['3DIoUMatch', 'AdaMatch', 'FreeMatch', 'DebiasedPL', 'LabelMatch'], \
-            f'{self.thresh_method} not in list [3DIoUMatch, AdaMatch, FreeMatch, SoftMatch, DebiasedPL]'
+    def get_mask(self, conf_scores, sem_logits):
+        assert self.thresh_method in ['SimpleRCNNSemScores', '3DIoUMatch', 'AdaMatch', 'FreeMatch', 'DebiasedPL', 'LabelMatch'], \
+            f'{self.thresh_method} not in list [SimpleRCNNSemScores, 3DIoUMatch, AdaMatch, FreeMatch, SoftMatch, DebiasedPL]'
 
         if self.thresh_method == '3DIoUMatch':  # Baseline
             labels = torch.argmax(sem_logits, dim=1)
@@ -468,9 +468,8 @@ class AdaptiveThresholding(Metric):
             mask_sem = sem_scores > sem_thresh
             mask = mask_conf & mask_sem
             rect_scores = torch.sigmoid(sem_logits)  # in the baseline we don't rectify the scores
-            rcnn_sem_scores = torch.softmax(rcnn_sem_logits, dim=1)
             weights = torch.ones_like(conf_scores)
-            return mask, rect_scores, weights, rcnn_sem_scores
+            return mask, rect_scores, weights
 
         elif self.thresh_method == 'AdaMatch':
             sem_scores = torch.softmax(sem_logits / self.temperature, dim=-1)

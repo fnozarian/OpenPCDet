@@ -37,9 +37,6 @@ class PVRCNNHead(RoIHeadTemplate):
         self.cls_layers = self.make_fc_layers(
             input_channels=pre_channel, output_channels=self.num_class, fc_list=self.model_cfg.CLS_FC
         )
-        self.sem_cls_layers = self.make_fc_layers(
-            input_channels=pre_channel, output_channels=3, fc_list=self.model_cfg.CLS_FC
-        )
         self.reg_layers = self.make_fc_layers(
             input_channels=pre_channel,
             output_channels=self.box_coder.code_size * self.num_class,
@@ -190,7 +187,6 @@ class PVRCNNHead(RoIHeadTemplate):
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
         proj_feats = self.projector(shared_features.squeeze())
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
-        rcnn_sem_cls = self.sem_cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
         rcnn_reg = self.reg_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
 
         if not self.training or self.predict_boxes_when_training:
@@ -200,7 +196,6 @@ class PVRCNNHead(RoIHeadTemplate):
             # note that the rpn batch_cls_preds and batch_box_preds are being overridden here by rcnn preds
             batch_dict['batch_cls_preds'] = batch_cls_preds
             batch_dict['batch_box_preds'] = batch_box_preds
-            batch_dict['batch_sem_cls_preds'] = rcnn_sem_cls.view(batch_dict['batch_size'], -1, 3)
             batch_dict['cls_preds_normalized'] = False
             # Temporarily add infos to targets_dict for metrics
             targets_dict['batch_box_preds'] = batch_box_preds
@@ -208,7 +203,6 @@ class PVRCNNHead(RoIHeadTemplate):
         if self.training or self.print_loss_when_eval:
             targets_dict['rcnn_cls'] = rcnn_cls
             targets_dict['rcnn_reg'] = rcnn_reg
-            targets_dict['rcnn_sem_cls'] = rcnn_sem_cls
             targets_dict['proj_feats'] = proj_feats
             self.forward_ret_dict = targets_dict
 

@@ -545,15 +545,13 @@ class RoIHeadTemplate(nn.Module):
             metrics_registry.get('rcnn_roi_metrics').update(**metrics_input)
 
         rcnn_loss_cls, cls_tb_dict = self.get_box_cls_layer_loss(self.forward_ret_dict)
-        rcnn_loss_sem_cls, sem_cls_tb_dict = self.get_box_sem_cls_layer_loss(self.forward_ret_dict)
         rcnn_loss_reg, reg_tb_dict = self.get_box_reg_layer_loss(self.forward_ret_dict)
-        rcnn_loss = rcnn_loss_cls + rcnn_loss_reg + rcnn_loss_sem_cls
+        rcnn_loss = rcnn_loss_cls + rcnn_loss_reg
         tb_dict.update(cls_tb_dict)
         tb_dict.update(reg_tb_dict)
-        tb_dict.update(sem_cls_tb_dict)
         tb_dict['rcnn_loss'] = rcnn_loss
 
-        return rcnn_loss_cls, rcnn_loss_reg, rcnn_loss_sem_cls, tb_dict
+        return rcnn_loss_cls, rcnn_loss_reg, tb_dict
 
     def generate_predicted_boxes(self, batch_size, rois, cls_preds, box_preds):
         """

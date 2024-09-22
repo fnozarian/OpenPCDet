@@ -143,7 +143,7 @@ class PredQualityMetrics(Metric):
         self.tag = kwargs.get('tag', None)
         self.dataset = kwargs.get('dataset', None)
 
-        self.states_name = ["roi_scores", "roi_rcnn_sem_scores", "roi_weights", "roi_labels", "roi_sim_logits",
+        self.states_name = ["roi_scores", "roi_weights", "roi_labels", "roi_sim_logits",
                             "roi_iou_wrt_gt", "roi_assigned_labels"]
         self.fg_threshs = kwargs.get('fg_threshs', None)
         self.bg_thresh = kwargs.get('BG_THRESH', 0.25)
@@ -156,7 +156,7 @@ class PredQualityMetrics(Metric):
             self.add_state(name, default=[], dist_reduce_fx='cat')
 
     def update(self, rois: [torch.Tensor], roi_scores: [torch.Tensor], roi_weights: [torch.Tensor],
-               roi_rcnn_sem_scores: [torch.Tensor], ground_truths: [torch.Tensor], roi_sim_logits=None) -> None:
+               ground_truths: [torch.Tensor], roi_sim_logits=None) -> None:
 
         _assert_inputs_are_valid(rois, roi_scores, ground_truths)
 
@@ -166,7 +166,6 @@ class PredQualityMetrics(Metric):
             sample_rois = sample_rois[valid_roi_mask]
             sample_roi_scores = roi_scores[i][valid_roi_mask]
 
-            sample_roi_rcnn_sem_scores = roi_rcnn_sem_scores[i][valid_roi_mask]
             sample_roi_weights = roi_weights[i][valid_roi_mask]
 
             valid_gts_mask = torch.logical_not(torch.all(ground_truths[i] == 0, dim=-1))
@@ -196,7 +195,6 @@ class PredQualityMetrics(Metric):
                 continue
 
             self.roi_scores.append(sample_roi_scores)
-            self.roi_rcnn_sem_scores.append(sample_roi_rcnn_sem_scores)
             self.roi_iou_wrt_gt.append(sample_roi_iou_wrt_gt.view(-1, 1))
             self.roi_assigned_labels.append(assigned_label.view(-1, 1))
             self.roi_labels.append(sample_roi_labels.view(-1, 1))
@@ -275,10 +273,6 @@ class PredQualityMetrics(Metric):
             sim_labels = torch.argmax(sim_scores, dim=-1).cpu().numpy()
             sim_scores_precision = precision_score(y_labels, sim_labels, average=None, labels=range(3), zero_division=np.nan)
             classwise_metrics['avg_precision_sim_score'] = _arr2dict(sim_scores_precision[:3], ignore_nan=True)
-            rcnn_sem_scores = accumulated_metrics["roi_rcnn_sem_scores"].view(-1, 3)
-            rcnn_sem_labels = torch.argmax(rcnn_sem_scores, dim=-1).cpu().numpy()
-            rcnn_sem_scores_precision = precision_score(y_labels, rcnn_sem_labels, average=None, labels=range(3), zero_division=np.nan)
-            classwise_metrics['avg_precision_rcnn_sem_score'] = _arr2dict(rcnn_sem_scores_precision, ignore_nan=True)
 
         # cm = confusion_matrix(y_labels, pred_labels)
         # print("\n Confusion Matrix: \n", cm)
