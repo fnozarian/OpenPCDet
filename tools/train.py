@@ -146,8 +146,9 @@ def main():
     log_config_to_file(cfg, logger=logger)
     if cfg.LOCAL_RANK == 0:
         os.system('cp %s %s' % (args.cfg_file, output_dir))
-
-    tb_log = SummaryWriter(log_dir=str(output_dir / 'tensorboard')) if cfg.LOCAL_RANK == 0 else None
+        tb_log = SummaryWriter(log_dir=str(output_dir / 'tensorboard')) if cfg.LOCAL_RANK == 0 else None
+    else:
+        tb_log = None
 
     # -----------------------create dataloader & network & optimizer---------------------------
     train_set, train_loader, train_sampler = build_dataloader(
@@ -238,23 +239,25 @@ def main():
     if hasattr(train_set, 'use_shared_memory') and train_set.use_shared_memory:
         train_set.clean_shared_memory()
 
-    logger.info('**********************End training %s/%s/%s)**********************\n\n\n'
-                % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
+    if cfg.LOCAL_RANK == 0:
+        logger.info('**********************End training %s/%s/%s)**********************\n\n\n'
+                    % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
+        logger.info('**********************Start evaluation %s/%s/%s)**********************' %
+                    (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
+        eval_output_dir = output_dir / 'eval' / 'eval_with_train'
+        eval_output_dir.mkdir(parents=True, exist_ok=True)
+        args.start_epoch = max(args.epochs - args.num_epochs_to_eval, 0)  # Only evaluate the last 10 epochs
 
-    logger.info('**********************Start evaluation %s/%s/%s)**********************' %
-                (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
-    eval_output_dir = output_dir / 'eval' / 'eval_with_train'
-    eval_output_dir.mkdir(parents=True, exist_ok=True)
-    args.start_epoch = max(args.epochs - args.num_epochs_to_eval, 0)  # Only evaluate the last 10 epochs
+        repeat_eval_ckpt(
+            model.module if dist_train else model,
+            test_loader, args, eval_output_dir, logger, ckpt_dir,
+            dist_test=dist_train
+        )
+        logger.info('**********************End evaluation%s/%s/%s)**********************' %
+                    (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
 
-    repeat_eval_ckpt(
-        model.module if dist_train else model,
-        test_loader, args, eval_output_dir, logger, ckpt_dir,
-        dist_test=dist_train
-    )
-    logger.info('**********************End evaluation%s/%s/%s)**********************' %
-                (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
-
+    if tb_log is not None:
+        tb_log.close()
 
 if __name__ == '__main__':
     main()

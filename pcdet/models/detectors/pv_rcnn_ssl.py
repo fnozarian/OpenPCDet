@@ -11,7 +11,7 @@ from matplotlib import pyplot as plt
 from pcdet.utils import common_utils
 from pcdet.utils.stats_utils import metrics_registry
 from pcdet.utils.prototype_utils import FeatureBankV2
-from ssod import AdaptiveThresholding
+from pcdet.ssod import AdaptiveThresholding
 
 
 class PVRCNN_SSL(Detector3DTemplate):

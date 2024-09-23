@@ -9,7 +9,7 @@ from sklearn.metrics import average_precision_score, confusion_matrix, precision
 from matplotlib import pyplot as plt
 import itertools
 # from tools.visual_utils import open3d_vis_utils as V
-# from pcdet.models.roi_heads.target_assigner.proposal_target_layer import ProposalTargetLayer
+import torch.distributed as dist
 
 __all__ = ["metrics_registry"]
 
@@ -141,25 +141,33 @@ class PredQualityMetrics(Metric):
         super().__init__(**kwargs)
         self.reset_state_interval = kwargs.get('RESET_STATE_INTERVAL', 64)
         self.tag = kwargs.get('tag', None)
+        self.rank = kwargs.get('rank', 0)
         self.dataset = kwargs.get('dataset', None)
-
-        self.states_name = ["roi_scores", "roi_weights", "roi_labels", "roi_sim_logits",
-                            "roi_iou_wrt_gt", "roi_assigned_labels"]
+        self.state_size = kwargs.get('STATE_SIZE', 1000)
+        self.state_index = 0
         self.fg_threshs = kwargs.get('fg_threshs', None)
         self.bg_thresh = kwargs.get('BG_THRESH', 0.25)
         self.min_overlaps = np.array([0.7, 0.5, 0.5])
 
         self.add_state('num_samples', default=torch.tensor(0).cuda(), dist_reduce_fx='sum')
         self.add_state('num_gts', default=torch.zeros((3,)).cuda(), dist_reduce_fx='sum')
-        self.add_state('num_gts_matched', default=torch.zeros((3,3)).cuda(), dist_reduce_fx='sum')  # 3 recall thresholds, 3 classes
-        for name in self.states_name:
-            self.add_state(name, default=[], dist_reduce_fx='cat')
+        self.add_state('num_gts_matched', default=torch.zeros((3, 3)).cuda(), dist_reduce_fx='sum')  # 3 recall thresholds, 3 classes
+        self.add_state('roi_scores', default=torch.zeros(self.state_size, 3).fill_(torch.nan).cuda(), dist_reduce_fx='cat')
+        self.add_state('roi_weights', default=self._init_nan_tensor(), dist_reduce_fx='cat')
+        self.add_state('roi_labels', default=self._init_nan_tensor(), dist_reduce_fx='cat')
+        self.add_state('roi_sim_logits', default=torch.zeros(self.state_size, 3).fill_(torch.nan).cuda(), dist_reduce_fx='cat')
+        self.add_state('roi_iou_wrt_gt', default=self._init_nan_tensor(), dist_reduce_fx='cat')
+        self.add_state('roi_assigned_labels', default=self._init_nan_tensor(), dist_reduce_fx='cat')
+
+    def _init_nan_tensor(self):
+        return torch.zeros(self.state_size).fill_(torch.nan).cuda()
 
     def update(self, rois: [torch.Tensor], roi_scores: [torch.Tensor], roi_weights: [torch.Tensor],
-               ground_truths: [torch.Tensor], roi_sim_logits=None) -> None:
+               ground_truths: [torch.Tensor], roi_sim_logits:torch.tensor) -> None:
 
         _assert_inputs_are_valid(rois, roi_scores, ground_truths)
 
+        roi_scores_list, roi_iou_wrt_gt_list, roi_assigned_labels_list, roi_labels_list, roi_weights_list = [], [], [], [], []
         for i, sample_rois in enumerate(rois):
 
             valid_roi_mask = torch.logical_not(torch.all(sample_rois == 0, dim=-1))
@@ -194,11 +202,11 @@ class PredQualityMetrics(Metric):
                 print("WARNING! Both rois and gts are empty!")
                 continue
 
-            self.roi_scores.append(sample_roi_scores)
-            self.roi_iou_wrt_gt.append(sample_roi_iou_wrt_gt.view(-1, 1))
-            self.roi_assigned_labels.append(assigned_label.view(-1, 1))
-            self.roi_labels.append(sample_roi_labels.view(-1, 1))
-            self.roi_weights.append(sample_roi_weights)
+            roi_scores_list.append(sample_roi_scores)
+            roi_iou_wrt_gt_list.append(sample_roi_iou_wrt_gt)
+            roi_assigned_labels_list.append(assigned_label)
+            roi_labels_list.append(sample_roi_labels)
+            roi_weights_list.append(sample_roi_weights)
 
         # Draw the last sample in batch
         # pred_boxes = sample_rois[:, :-1].clone().cpu().numpy()
@@ -209,16 +217,31 @@ class PredQualityMetrics(Metric):
         # pts = points[i].clone().cpu().numpy()
         # V.draw_scenes(points=pts, gt_boxes=gts, gt_labels=gt_labels,
         #               ref_boxes=pred_boxes, ref_scores=pred_scores, ref_labels=pred_labels)
+
+        if len(roi_scores_list) == 0:
+            self.num_samples += len(rois)
+            print("WARNING! No valid rois in the batch!")
+            return
+
+        roi_scores = torch.cat(roi_scores_list, dim=0)
+        roi_iou_wrt_gt = torch.cat(roi_iou_wrt_gt_list, dim=0)
+        roi_assigned_labels = torch.cat(roi_assigned_labels_list, dim=0)
+        roi_labels = torch.cat(roi_labels_list, dim=0)
+        roi_weights = torch.cat(roi_weights_list, dim=0)
+        self.roi_scores[self.state_index: self.state_index + roi_scores.shape[0]] = roi_scores
+        self.roi_iou_wrt_gt[self.state_index: self.state_index + roi_iou_wrt_gt.shape[0]] = roi_iou_wrt_gt
+        self.roi_assigned_labels[self.state_index: self.state_index + roi_assigned_labels.shape[0]] = roi_assigned_labels
+        self.roi_labels[self.state_index: self.state_index + roi_labels.shape[0]] = roi_labels
+        self.roi_weights[self.state_index: self.state_index + roi_weights.shape[0]] = roi_weights
         if roi_sim_logits is not None:
-            self.roi_sim_logits.append(roi_sim_logits)
+            self.roi_sim_logits[self.state_index: self.state_index + roi_sim_logits.shape[0]] = roi_sim_logits
+        self.state_index += roi_scores.shape[0]
+        assert self.state_index <= self.state_size, "State size exceeded!"
         self.num_samples += len(rois)
 
-    def _accumulate_metrics(self):
-        accumulated_metrics = {}
-        for mname in self.states_name:
-            mstate = getattr(self, mname)
-            accumulated_metrics[mname] = torch.cat(mstate, dim=0) if len(mstate) > 0 else []
-        return accumulated_metrics
+    @staticmethod
+    def _unpad(tensor):
+        return tensor[torch.where(~tensor.isnan())[0].unique()]
 
     # @staticmethod
     # def draw_sim_matrix_figure(sim_matrix, lbls):
@@ -234,16 +257,25 @@ class PredQualityMetrics(Metric):
             return None
 
         classwise_metrics = defaultdict(dict)
+        if dist.is_initialized():
+            # flatten dim 0 (world size) and dim 1 (state size)
+            self.roi_scores = self.roi_scores.view(-1, 3)
+            self.roi_iou_wrt_gt = self.roi_iou_wrt_gt.view(-1)
+            self.roi_labels = self.roi_labels.view(-1)
+            self.roi_assigned_labels = self.roi_assigned_labels.view(-1)
+            self.roi_weights = self.roi_weights.view(-1)
+            self.roi_sim_logits = self.roi_sim_logits.view(-1, 3)
 
-        accumulated_metrics = self._accumulate_metrics()  # shape (N, 1)
-        if len(accumulated_metrics["roi_scores"]) == 0:  # No valid samples
+        scores = self._unpad(self.roi_scores)
+        if len(scores) == 0:  # No valid samples
             self.reset()
             return None
-        scores = accumulated_metrics["roi_scores"]
-        iou_wrt_gt = accumulated_metrics["roi_iou_wrt_gt"].view(-1)
-        pred_labels = accumulated_metrics["roi_labels"].view(-1)
-        assigned_labels = accumulated_metrics["roi_assigned_labels"].view(-1)
-        weights = accumulated_metrics["roi_weights"].view(-1)
+
+        iou_wrt_gt = self._unpad(self.roi_iou_wrt_gt)
+        pred_labels = self._unpad(self.roi_labels)
+        assigned_labels = self._unpad(self.roi_assigned_labels).long()
+        weights = self._unpad(self.roi_weights)
+        sim_logits = self._unpad(self.roi_sim_logits)
         scores *= weights.unsqueeze(-1)
         max_scores, argmax_scores = scores.max(dim=-1)
 
@@ -267,9 +299,9 @@ class PredQualityMetrics(Metric):
         precision = precision_score(y_labels, pred_labels, sample_weight=weights.cpu().numpy(), average=None, labels=range(3), zero_division=np.nan)
         classwise_metrics['avg_precision_sem_score'] = _arr2dict(precision[:3], ignore_nan=True)
 
-        if len(accumulated_metrics["roi_sim_logits"]) > 0:
-            assert accumulated_metrics['roi_sim_logits'].shape[0] == scores.shape[0]
-            sim_scores = accumulated_metrics["roi_sim_logits"].view(scores.shape[0], -1).softmax(dim=-1)
+        if len(sim_logits) > 0:
+            assert sim_logits.shape[0] == scores.shape[0]
+            sim_scores = sim_logits.view(scores.shape[0], -1).softmax(dim=-1)
             sim_labels = torch.argmax(sim_scores, dim=-1).cpu().numpy()
             sim_scores_precision = precision_score(y_labels, sim_labels, average=None, labels=range(3), zero_division=np.nan)
             classwise_metrics['avg_precision_sim_score'] = _arr2dict(sim_scores_precision[:3], ignore_nan=True)
@@ -320,6 +352,7 @@ class PredQualityMetrics(Metric):
                 classwise_metrics[f'recall_{thresh}'][cls] = self.num_gts_matched[t, cind] / torch.clip(self.num_gts[cind], min=1)
 
         self.reset()
+        self.state_index = 0
         # Torchmetrics has an issue with defaultdicts. I have to pass the keys and values separately.
         return classwise_metrics.keys(), classwise_metrics.values()
 

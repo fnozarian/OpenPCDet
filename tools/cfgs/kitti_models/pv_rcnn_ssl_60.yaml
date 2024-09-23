@@ -287,6 +287,7 @@ MODEL:
         - NAME: pl_metrics
           ENABLE: True
           RESET_STATE_INTERVAL: 32
+          STATE_SIZE: 500  # func of reset_state_interval * max num rois per sample
           BG_THRESH: 0.25
     ADAPTIVE_THRESHOLDING:
         ENABLE: False
