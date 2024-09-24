@@ -61,6 +61,8 @@ class ProposalTargetLayer(nn.Module):
 
         for index in range(batch_size):
             cur_gt_boxes = batch_dict['gt_boxes'][index]
+            cur_rois = batch_dict['rois'][index]
+            cur_roi_labels = batch_dict['roi_labels'][index]
             k = cur_gt_boxes.__len__() - 1
             while k >= 0 and cur_gt_boxes[k].sum() == 0:
                 k -= 1
@@ -71,11 +73,11 @@ class ProposalTargetLayer(nn.Module):
             if index in batch_dict['unlabeled_inds']:
                 subsample_unlabeled_rois = getattr(self, self.roi_sampler_cfg.UNLABELED_SAMPLER_TYPE, None)
                 if self.roi_sampler_cfg.UNLABELED_SAMPLER_TYPE is None:
-                    sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = self.subsample_labeled_rois(batch_dict, index)
+                    sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = self.subsample_labeled_rois(cur_rois, cur_roi_labels, cur_gt_boxes)
                 else:
-                    sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = subsample_unlabeled_rois(batch_dict, index)
+                    sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = subsample_unlabeled_rois(cur_rois, cur_roi_labels, cur_gt_boxes)
             else:
-                sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = self.subsample_labeled_rois(batch_dict, index)
+                sampled_inds, cur_reg_valid_mask, cur_cls_labels, roi_ious, gt_assignment, cur_interval_mask = self.subsample_labeled_rois(cur_rois, cur_roi_labels, cur_gt_boxes)
             batch_rois[index] = batch_dict['rois'][index][sampled_inds]
             batch_gt_of_rois[index] = cur_gt_boxes[gt_assignment[sampled_inds]]
             batch_roi_ious[index] = roi_ious
@@ -204,12 +206,7 @@ class ProposalTargetLayer(nn.Module):
 
         return sampled_inds, reg_valid_mask, cls_labels, roi_ious, gt_assignment, interval_mask
 
-    def subsample_labeled_rois(self, batch_dict, index):
-        cur_roi = batch_dict['rois'][index]
-        cur_gt_boxes = batch_dict['gt_boxes'][index]
-        # cur_gt_boxes = cur_gt_boxes[:, 0:8]
-        cur_roi_labels = batch_dict['roi_labels'][index]
-
+    def subsample_labeled_rois(self, cur_roi, cur_roi_labels, cur_gt_boxes):
         if self.roi_sampler_cfg.get('SAMPLE_ROI_BY_EACH_CLASS', False):
             max_overlaps, gt_assignment = self.get_max_iou_with_same_class(
                 rois=cur_roi, roi_labels=cur_roi_labels,
