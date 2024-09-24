@@ -240,6 +240,15 @@ def main():
         train_set.clean_shared_memory()
 
     if cfg.LOCAL_RANK == 0:
+        if not cfg.MODEL.POST_PROCESSING.get('TEST_EVAL_DURING_TRAIN', False):
+            test_set, test_loader, sampler = build_dataloader(
+                dataset_cfg=cfg.DATA_CONFIG,
+                class_names=cfg.CLASS_NAMES,
+                batch_size=args.eval_batch_size,
+                dist=dist_train, workers=args.workers,
+                logger=logger,
+                training=False
+            )
         logger.info('**********************End training %s/%s/%s)**********************\n\n\n'
                     % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
         logger.info('**********************Start evaluation %s/%s/%s)**********************' %
