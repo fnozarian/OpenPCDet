@@ -56,8 +56,8 @@ def parse_config():
     parser.add_argument('--thresh', type=str, default='0.5, 0.25, 0.25')
     parser.add_argument('--sem_thresh', type=str, default='0.4, 0.4, 0.4')
     parser.add_argument('--unlabeled_weight', type=float, default=1.0)
-    parser.add_argument('--unlabeled_supervise_cls', action='store_true', default=True)
-    parser.add_argument('--unlabeled_supervise_refine', action='store_true', default=True)
+    parser.add_argument('--unlabeled_supervise_cls', action='store_true')
+    parser.add_argument('--unlabeled_supervise_refine', action='store_true')
     parser.add_argument('--lr', type=float, default=0.0)
 
     parser.add_argument('--no_nms', action='store_true', default=False)
@@ -80,8 +80,10 @@ def parse_config():
 
     cfg.MODEL.THRESH = [float(x) for x in args.thresh.split(',')]
     cfg.MODEL.SEM_THRESH = [float(x) for x in args.sem_thresh.split(',')]
-    cfg.MODEL.UNLABELED_SUPERVISE_CLS = args.unlabeled_supervise_cls
-    cfg.MODEL.UNLABELED_SUPERVISE_REFINE = args.unlabeled_supervise_refine
+    if args.unlabeled_supervise_cls:
+        cfg.MODEL.UNLABELED_SUPERVISE_CLS = True
+    if args.unlabeled_supervise_refine:
+        cfg.MODEL.UNLABELED_SUPERVISE_REFINE = True
     cfg.MODEL.UNLABELED_WEIGHT = args.unlabeled_weight
     cfg.MODEL.NO_NMS = args.no_nms
     cfg.MODEL.SUPERVISE_MODE = args.supervise_mode
