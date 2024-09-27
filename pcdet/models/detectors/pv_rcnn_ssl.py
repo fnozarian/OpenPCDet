@@ -56,6 +56,7 @@ class PVRCNN_SSL(Detector3DTemplate):
     def _clone_gt_boxes_and_feats(batch_dict):
         return {
             "batch_size": batch_dict['batch_size'],
+            "instance_idx": batch_dict['instance_idx'],
             "gt_boxes": batch_dict['gt_boxes'].clone().detach(),
             "point_coords": batch_dict['point_coords'].clone().detach(),
             "point_features": batch_dict['point_features'].clone().detach(),
@@ -63,34 +64,26 @@ class PVRCNN_SSL(Detector3DTemplate):
         }
 
     @torch.no_grad()
-    def _prep_bank_inputs(self, batch_dict, lbl_inds, pad_size=50):
-        selected_batch_dict = self._clone_gt_boxes_and_feats(batch_dict)  # TODO(farzad): is cloning (all) required?
-        batch_gt_feats = self.pv_rcnn_ema.roi_head.pool_features(selected_batch_dict, use_gtboxes=True, use_projector=True)
-        batch_gt_feats = batch_gt_feats.view(*batch_dict['gt_boxes'].shape[:2], -1)
-        feats_list, labels_list, ins_ids_list = [], [], []
-        for ix in lbl_inds:
-            gt_boxes = selected_batch_dict['gt_boxes'][ix]
-            nonzero_mask = torch.logical_not(torch.eq(gt_boxes, 0).all(dim=-1))
-            if nonzero_mask.sum() == 0:
-                print(f"no gt instance in frame {batch_dict['frame_id'][ix]}")
-                continue
-            gt_boxes = gt_boxes[nonzero_mask]
-            gt_feats = batch_gt_feats[ix][nonzero_mask]
-            gt_labels = gt_boxes[:, 7].long() - 1
-            ins_ids = batch_dict['instance_idx'][ix][nonzero_mask].int()
-            gt_feats = F.pad(gt_feats.unsqueeze(0), pad=(0, 0, 0, pad_size - gt_feats.shape[0]))
-            gt_labels = F.pad(gt_labels.unsqueeze(0), pad=(0, pad_size - gt_labels.shape[0]))
-            ins_ids = F.pad(ins_ids.unsqueeze(0), pad=(0, pad_size - ins_ids.shape[0]))
-            feats_list.append(gt_feats)
-            labels_list.append(gt_labels)
-            ins_ids_list.append(ins_ids)
+    def get_roi_feats_wa(self, batch_dict, chunk=False):
+        batch_dict = self._clone_gt_boxes_and_feats(batch_dict)  # TODO(farzad): is cloning (all) required?
+        batch_feats = self.pv_rcnn_ema.roi_head.pool_features(batch_dict, use_gtboxes=True, use_projector=True)
+        batch_feats = batch_feats.view(*batch_dict['gt_boxes'].shape[:2], -1)
+        pad_inds = torch.where(torch.eq(batch_dict['gt_boxes'], 0).all(dim=-1))
+        batch_feats[pad_inds] = 0
+        batch_labels = batch_dict['gt_boxes'][..., 7].long() - 1
+        batch_ins_ids = batch_dict['instance_idx'].long()
+        if chunk:
+            batch_feats = batch_feats.chunk(2, dim=0)
+            batch_labels = batch_labels.chunk(2, dim=0)
+            batch_ins_ids = batch_ins_ids.chunk(2, dim=0)
+            lbl_chunk = {'feats': batch_feats[0], 'labels': batch_labels[0], 'ins_ids': batch_ins_ids[0]}
+            ulb_chunk = {'feats': batch_feats[1], 'labels': batch_labels[1], 'ins_ids': batch_ins_ids[1]}
+            return lbl_chunk, ulb_chunk
+        out_dict = {'feats': batch_feats, 'labels': batch_labels, 'ins_ids': batch_ins_ids}
 
-        bank_inputs = {'feats': torch.cat(feats_list, dim=0), 'labels': torch.cat(labels_list, dim=0),
-                       'ins_ids': torch.cat(ins_ids_list, dim=0)}
+        return out_dict
 
-        return bank_inputs
-
-    def get_roi_feats(self, batch_dict, bbox_name='gt_boxes'):
+    def get_roi_feats_sa(self, batch_dict, bbox_name='gt_boxes'):
         if bbox_name == 'gt_boxes':
             roi_feats_sa = self.pv_rcnn.roi_head.pool_features(batch_dict, use_gtboxes=True, use_projector=True)
         else:
@@ -178,22 +171,17 @@ class PVRCNN_SSL(Detector3DTemplate):
         return batch_dict_out
 
     def _forward_training(self, batch_dict):
-        # batch_dict = self._get_fixed_batch_dict()
-
         lbl_inds, ulb_inds = self._prep_batch_dict(batch_dict)
         batch_dict_ema = self._split_batch(batch_dict, tag='ema')
 
-        if self.supervise_mode == 1:
-            pl_boxes, pl_conf_scores, pl_sem_scores, pl_sem_logits, pl_rect_scores, masks = self._get_gt_pls(batch_dict_ema, ulb_inds)
-            pl_weights = [scores.new_ones(scores.shape[0], 1) for scores in pl_conf_scores]  # No weights for now
-        else:
-            self._gen_pseudo_labels(batch_dict_ema)
-            pls_teacher_wa, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
-            (pl_boxes, pl_conf_scores, pl_sem_scores, pl_sem_logits,
-             pl_rect_scores, masks, pl_weights) = self._filter_pls(pls_teacher_wa, ulb_inds)
+        self._gen_pseudo_labels(batch_dict_ema)
+        preds_ema, _ = self.pv_rcnn_ema.post_processing(batch_dict_ema, no_recall_dict=True)
+        pls = self._filter_pls(preds_ema, ulb_inds)
+        self._fill_with_pls(batch_dict, pls['boxes'], pls['masks'], ulb_inds, lbl_inds)
 
-        # TODO(farzad): Check if commenting the following line and apply_augmentation is equal to a fully supervised setting
-        self._fill_with_pls(batch_dict, pl_boxes, masks, ulb_inds, lbl_inds)
+        # Note! Form now on, the `gt_boxes` of `batch_dict_ema` for unlabeled samples are replaced with filtered pls.
+        # TODO: find usages of `gt_boxes` in `batch_dict_ema` for unlabeled samples and adapt them with this new change.
+        self._fill_with_pls(batch_dict_ema, pls['boxes'], pls['masks'], ulb_inds, lbl_inds)
 
         # apply student's augs on teacher's pseudo-labels (filtered) only (not points)
         batch_dict = self.apply_augmentation(batch_dict, batch_dict, ulb_inds, key='gt_boxes')
@@ -202,8 +190,8 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict = cur_module(batch_dict)
 
         if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTOTYPING', False):
-            wa_gt_lbl_inputs = self._prep_bank_inputs(batch_dict_ema, lbl_inds)
-            self.bank.update(**wa_gt_lbl_inputs)
+            lbl_roi_feats_wa, _ = self.get_roi_feats_wa(batch_dict_ema, chunk=True)
+            self.bank.update(**lbl_roi_feats_wa)
 
         if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False):
             # using teacher to evaluate student's bg/fg proposals through its rcnn head
@@ -235,13 +223,14 @@ class PVRCNN_SSL(Detector3DTemplate):
             ulb_loss_cls_dist, cls_dist_dict = self.pv_rcnn.roi_head.get_ulb_cls_dist_loss(roi_head_forward_dict)
             loss += ulb_loss_cls_dist
             tb_dict.update(cls_dist_dict)
-        if protocon_enabled := self.model_cfg['ROI_HEAD'].get('ENABLE_PROTO_CONTRASTIVE_LOSS', False):
-            roi_feats_sa, roi_labels = self.get_roi_feats(batch_dict)
+        if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTO_CONTRASTIVE_LOSS', False):
+            roi_feats_sa, roi_labels = self.get_roi_feats_sa(batch_dict)
             proto_cont_loss, pl_sim_logits, bank_labels = self.bank.get_proto_contrastive_loss(roi_feats_sa, roi_labels)
             loss += proto_cont_loss * self.model_cfg['ROI_HEAD']['PROTO_CONTRASTIVE_LOSS_WEIGHT']
             tb_dict['proto_cont_loss'] = proto_cont_loss.item()
+            pls['sim_logits'] = pl_sim_logits
         if self.model_cfg['ROI_HEAD'].get('ENABLE_LPCONT_LOSS', False):
-            roi_feats_sa, roi_labels = self.get_roi_feats(batch_dict)
+            roi_feats_sa, roi_labels = self.get_roi_feats_sa(batch_dict)
             # NOTE: we temporarily use true roi ious between PLs and GTs as weights
             # to find the upper bound performance of the loss and to make it independent of the FG/BG scores
             ulb_gt_boxes = batch_dict['gt_boxes'].chunk(2)[1]
@@ -293,16 +282,16 @@ class PVRCNN_SSL(Detector3DTemplate):
         # update dynamic thresh alg
         if self.model_cfg.ADAPTIVE_THRESHOLDING.ENABLE:
             # Note that the thresholding algorithms use pl information *before* filtering.
-            self._update_thresh_alg(pl_conf_scores, pl_sem_logits, batch_dict_ema, pls_teacher_wa, lbl_inds)
+            self._update_thresh_alg(pls['conf_scores'], pls['sem_logits'], batch_dict_ema, preds_ema, lbl_inds)
             if results := self.thresh_alg.compute():
                 tb_dict.update(results)
 
         # update metrics
         for tag in metrics_registry.tags():
             if tag == 'pl_metrics':
-                pl_sim_logits = pl_sim_logits if protocon_enabled else None
+                pl_sim_logits = pls['sim_logits'] if 'sim_logits' in pls.keys() else None
                 # Note that the metrics use pl information *after* filtering.
-                self._update_pl_metrics(pl_boxes, pl_rect_scores, pl_weights, masks,
+                self._update_pl_metrics(pls['boxes'], pls['rect_scores'], pls['weights'], pls['masks'],
                                         batch_dict_ema['gt_boxes'][ulb_inds], pl_sim_logits=pl_sim_logits)
             if results := metrics_registry.get(tag).compute():
                 tb_dict.update({f"{tag}/{k}": v for k, v in zip(*results)})
@@ -538,20 +527,15 @@ class PVRCNN_SSL(Detector3DTemplate):
             pl_weights.append(weights)
             masks.append(mask)
 
-        return pl_boxes, pl_scores, pl_sem_scores, pl_sem_logits, pl_rect_scores, masks, pl_weights
+        pls = {'boxes': pl_boxes, 'scores': pl_scores, 'sem_scores': pl_sem_scores,
+               'sem_logits': pl_sem_logits, 'rect_scores': pl_rect_scores, 'masks': masks, 'weights': pl_weights}
+        return pls
 
     @staticmethod
     def _fill_with_pls(batch_dict, pseudo_boxes, masks, ulb_inds, lb_inds, key=None):
         key = 'gt_boxes' if key is None else key
         max_box_num = batch_dict[key].shape[1]
         pseudo_boxes = [pboxes[mask] for pboxes, mask in zip(pseudo_boxes, masks)]
-
-        # # Expand the gt_boxes to have the same shape as the pseudo_boxes
-        # gt_scores = torch.zeros((batch_dict['gt_boxes'].shape[0], max_box_num, 1), device=batch_dict['gt_boxes'].device)
-        # batch_dict['gt_boxes'] = torch.cat([batch_dict['gt_boxes'], gt_scores], dim=-1)
-        # # Make sure that scores of labeled boxes are always 1, except for the padding rows which should remain zero.
-        # valid_inds_lbl = torch.logical_not(torch.eq(batch_dict['gt_boxes'][labeled_inds], 0).all(dim=-1)).nonzero().long()
-        # batch_dict['gt_boxes'][valid_inds_lbl[:, 0], valid_inds_lbl[:, 1], 8] = 1
 
         # Ignore the count of pseudo boxes if filled with default values(zeros) when no preds are made
         max_pseudo_box_num = max(

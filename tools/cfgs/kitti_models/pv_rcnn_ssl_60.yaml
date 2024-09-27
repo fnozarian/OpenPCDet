@@ -163,7 +163,7 @@ MODEL:
         ENABLE_SOFT_TEACHER: False
         ENABLE_ULB_CLS_DIST_LOSS: False
         ENABLE_PROTOTYPING: True
-        ENABLE_INST_CONT_LOSS: True
+        ENABLE_INST_CONT_LOSS: False
         ENABLE_PROTO_CONTRASTIVE_LOSS: False
         ENABLE_LPCONT_LOSS: False
         PROTO_CONTRASTIVE_LOSS_WEIGHT: 1.0
@@ -251,7 +251,7 @@ MODEL:
 
         EVAL_METRIC: kitti
         ENABLE_KITTI_EVAL: True
-        TEST_EVAL_DURING_TRAIN: True
+        TEST_EVAL_DURING_TRAIN: False
         NMS_CONFIG:
             MULTI_CLASSES_NMS: False
             NMS_TYPE: nms_gpu
@@ -261,7 +261,7 @@ MODEL:
 
     THRESH: [0.5, 0.25, 0.25]  # Backward compatibility: Moved to ADAPTIVE_THRESHOLDING.
     SEM_THRESH: [0.4, 0.4, 0.4]  # Backward compatibility: Moved to ADAPTIVE_THRESHOLDING.
-    UNLABELED_SUPERVISE_CLS: True
+    UNLABELED_SUPERVISE_CLS: False
     UNLABELED_SUPERVISE_OBJ: False
     UNLABELED_SUPERVISE_REFINE: True
     UNLABELED_WEIGHT: 1.0
@@ -295,7 +295,7 @@ MODEL:
         CONF_THRESH: [0.5, 0.25, 0.25]  # 3DIoUMatch: [0.5, 0.25, 0.25], reliable-student: [0.95, 0.85, 0.85]
         SEM_THRESH: [0.4, 0.4, 0.4]  # 3DIoUMatch: [0.4, 0.4, 0.4], reliable-student: [0.0, 0.0, 0.0]
         JOINT_DIST_ALIGN: True  # LabelMatch: True (Tested)
-        TEMPERATURE: 2.0
+        TEMPERATURE: 1.0  # Others: 2.0
         TEMPERATURE_SA: 2.0
         # TODO: Experiment: This adjusts the precision/recall trade-off.
         # TODO: Improve by making it dynamic.

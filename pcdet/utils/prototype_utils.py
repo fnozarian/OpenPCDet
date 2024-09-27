@@ -50,10 +50,10 @@ class FeatureBankV2:
         labels = labels.view(-1)
         ins_ids = ins_ids.view(-1)
         # filter out padded samples
-        valid_mask = ins_ids != 0
-        ins_ids = ins_ids[valid_mask]
-        labels = labels[valid_mask]
-        feats = feats[valid_mask]
+        keep_ids = torch.where(ins_ids != 0)[0]
+        ins_ids = ins_ids[keep_ids]
+        labels = labels[keep_ids]
+        feats = feats[keep_ids]
         feat_indices = torch.tensor([torch.where(self.instance_ids == x)[0].item() for x in ins_ids]).cuda()
         feats = F.normalize(feats, dim=-1)
         if self.direct_update:
