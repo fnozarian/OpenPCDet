@@ -65,7 +65,7 @@ class PVRCNN_SSL(Detector3DTemplate):
     @torch.no_grad()
     def _prep_bank_inputs(self, batch_dict, lbl_inds, pad_size=50):
         selected_batch_dict = self._clone_gt_boxes_and_feats(batch_dict)  # TODO(farzad): is cloning (all) required?
-        batch_gt_feats = self.pv_rcnn.roi_head.pool_features(selected_batch_dict, use_gtboxes=True, use_projector=True)
+        batch_gt_feats = self.pv_rcnn_ema.roi_head.pool_features(selected_batch_dict, use_gtboxes=True, use_projector=True)
         batch_gt_feats = batch_gt_feats.view(*batch_dict['gt_boxes'].shape[:2], -1)
         feats_list, labels_list, ins_ids_list = [], [], []
         for ix in lbl_inds:
