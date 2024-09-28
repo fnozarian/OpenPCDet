@@ -282,7 +282,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         # update dynamic thresh alg
         if self.model_cfg.ADAPTIVE_THRESHOLDING.ENABLE:
             # Note that the thresholding algorithms use pl information *before* filtering.
-            self._update_thresh_alg(pls['conf_scores'], pls['sem_logits'], batch_dict_ema, preds_ema, lbl_inds)
+            gt_labels = batch_dict['ori_gt_boxes'][..., -1].long() - 1
+            self._update_thresh_alg(pls['boxes'], pls['scores'], pls['sem_logits'],  gt_labels, preds_ema, lbl_inds)
             if results := self.thresh_alg.compute():
                 tb_dict.update(results)
 
@@ -292,7 +293,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 pl_sim_logits = pls['sim_logits'] if 'sim_logits' in pls.keys() else None
                 # Note that the metrics use pl information *after* filtering.
                 self._update_pl_metrics(pls['boxes'], pls['rect_scores'], pls['weights'], pls['masks'],
-                                        batch_dict_ema['gt_boxes'][ulb_inds], pl_sim_logits=pl_sim_logits)
+                                        batch_dict_ema['ori_gt_boxes'][ulb_inds], pl_sim_logits=pl_sim_logits)
             if results := metrics_registry.get(tag).compute():
                 tb_dict.update({f"{tag}/{k}": v for k, v in zip(*results)})
 
@@ -449,11 +450,11 @@ class PVRCNN_SSL(Detector3DTemplate):
         box_labels = box_labels.cpu().numpy()
         V.draw_scenes(points=points, gt_boxes=boxes, gt_labels=box_labels)
 
-    def _update_thresh_alg(self, pl_conf_scores, pl_sem_logits, batch_dict_ema, batch_dict_wa, lbl_inds):
+    def _update_thresh_alg(self, pl_boxes, pl_conf_scores, pl_sem_logits, gt_labels, preds_ema, lbl_inds):
         thresh_inputs = dict()
 
-        conf_scores_wa_lbl = [self.pad_tensor_dim2(batch_dict_wa[i]['pred_scores']) for i in lbl_inds]
-        sem_logits_wa_lbl = [self.pad_tensor_dim2(batch_dict_wa[i]['pred_sem_logits']) for i in lbl_inds]
+        conf_scores_wa_lbl = [self.pad_tensor_dim2(preds_ema[i]['pred_scores']) for i in lbl_inds]
+        sem_logits_wa_lbl = [self.pad_tensor_dim2(preds_ema[i]['pred_sem_logits']) for i in lbl_inds]
         conf_scores_wa_lbl = torch.cat(conf_scores_wa_lbl).detach().clone()
         sem_logits_wa_lbl = torch.cat(sem_logits_wa_lbl).detach().clone()
 
@@ -464,10 +465,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         # Note: sem_scores_wa is actually sem_logits_wa
         thresh_inputs['sem_scores_wa'] = torch.cat([sem_logits_wa_lbl, sem_logits_wa_ulb])
 
-        thresh_inputs['gt_labels_wa'] = self.pad_tensor_dim2(batch_dict_ema['gt_boxes'][..., 7:8]).detach().clone()
-        # thresh_inputs['gts_wa'] = self.pad_tensor_dim2(batch_dict_ema['gt_boxes']).detach().clone()
-        pls_ws = [torch.cat([pl['pred_boxes'], pl['pred_labels'].view(-1, 1)], dim=-1) for pl in batch_dict_wa]
-        thresh_inputs['pls_wa'] = torch.cat([self.pad_tensor_dim2(pl) for pl in pls_ws]).detach().clone()
+        thresh_inputs['gt_labels'] = gt_labels
+        thresh_inputs['pls_wa'] = torch.cat([self.pad_tensor_dim2(pl) for pl in pl_boxes]).detach().clone()
 
         self.thresh_alg.update(**thresh_inputs)
 

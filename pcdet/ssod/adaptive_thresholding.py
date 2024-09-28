@@ -39,7 +39,7 @@ class AdaptiveThresholding(Metric):
         self.joint_dist_align = configs.get('JOINT_DIST_ALIGN', True)
         self.enable_ulb_cls_dist_loss = configs.get('ENABLE_ULB_CLS_DIST_LOSS', False)
         self.states_name = ['sem_scores_wa', 'conf_scores_wa', 'joint', 'pls_wa',  # 'gts_wa',
-                            'gt_labels_wa', 'rcnn_sem_scores']
+                            'gt_labels', 'rcnn_sem_scores']
         self.class_names = ['Car', 'Pedestrian', 'Cyclist']
         self.thresh = torch.ones(1) / len(self.class_names) # set by the thresh method
         self.iteration_count = 0
@@ -269,8 +269,8 @@ class AdaptiveThresholding(Metric):
         # self.draw_joint_dist_plots(acc_metrics['sem_scores_wa'], acc_metrics['conf_scores_wa'], prev_pad_mask,
         #                            self.pls_wa, self.gts_wa)
 
-        results['labels_hist_lbl/gts_wa'] = self._arr2dict(_get_cls_dist(_lbl(acc_metrics['gt_labels_wa'].view(-1))))
-        results['labels_hist_ulb/gts_wa'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels_wa'].view(-1))))
+        results['labels_hist_lbl/gts'] = self._arr2dict(_get_cls_dist(_lbl(acc_metrics['gt_labels'].view(-1))))
+        results['labels_hist_ulb/gts'] = self._arr2dict(_get_cls_dist(_ulb(acc_metrics['gt_labels'].view(-1))))
 
         if self.thresh_method == 'AdaMatch':
             assert self.joint_dist_align, "AdaMatch requires joint scores currently."
