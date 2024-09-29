@@ -115,6 +115,11 @@ def draw_box(vis, gt_boxes, color=(0, 0, 1), ref_labels=None, score=None):
             vis.add_3d_label(corners[4], classes[ref_labels[i]])
         else:
             line_set.paint_uniform_color(box_colormap[ref_labels[i]])
+            if score[i] == 1:
+                for corner in corners:
+                    sphere = open3d.geometry.TriangleMesh.create_sphere(radius=0.05)
+                    sphere.translate(corner)
+                    vis.add_geometry(f"corner_{i}_{corner}", sphere)
 
         name = f"gt_box_{i}_{classes[ref_labels[i]]}" if score is None else f"pred_box_{i}_{classes[ref_labels[i]]}"
         vis.add_geometry(name, line_set)

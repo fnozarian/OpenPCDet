@@ -162,14 +162,19 @@ MODEL:
         ENABLE_VIS: False
         ENABLE_SOFT_TEACHER: False
         ENABLE_ULB_CLS_DIST_LOSS: False
-        ENABLE_PROTOTYPING: True
-        ENABLE_INST_CONT_LOSS: False
+        ENABLE_PROTOTYPING: False
+        INST_CONT_LOSS:
+            ENABLE: True
+            TEMPERATURE: 0.1
+            IOU_POS_THRESH: 0.7
+            WEIGHT: 1.0
+            VISUALIZE: True
         ENABLE_PROTO_CONTRASTIVE_LOSS: False
         ENABLE_LPCONT_LOSS: False
         PROTO_CONTRASTIVE_LOSS_WEIGHT: 1.0
+        LPCONT_LOSS_WEIGHT: 1.0
         SHARED_FC: [256, 256]
         PROJECTION_SIZE: 128
-        LPCONT_LOSS_WEIGHT: 1.0
         CLS_FC: [256, 256]
         REG_FC: [256, 256]
         DP_RATIO: 0.3

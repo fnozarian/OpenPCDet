@@ -185,6 +185,7 @@ class PVRCNNHead(RoIHeadTemplate):
         pooled_features = self.pool_features(batch_dict)
         batch_size_rcnn = pooled_features.shape[0]
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
+        proj_feats = self.projector(shared_features.squeeze())
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
         rcnn_reg = self.reg_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
 
@@ -202,6 +203,7 @@ class PVRCNNHead(RoIHeadTemplate):
         if self.training or self.print_loss_when_eval:
             targets_dict['rcnn_cls'] = rcnn_cls
             targets_dict['rcnn_reg'] = rcnn_reg
+            targets_dict['proj_feats'] = proj_feats
             self.forward_ret_dict = targets_dict
 
         return batch_dict

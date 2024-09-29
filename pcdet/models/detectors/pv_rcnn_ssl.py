@@ -12,6 +12,7 @@ from pcdet.utils import common_utils
 from pcdet.utils.stats_utils import metrics_registry
 from pcdet.utils.prototype_utils import FeatureBankV2
 from pcdet.ssod import AdaptiveThresholding
+from tools.visual_utils import open3d_vis_utils as V
 
 
 class PVRCNN_SSL(Detector3DTemplate):
@@ -45,8 +46,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         instance_ids = data_sampler.instance_ids
         self.bank = FeatureBankV2(instance_ids, **model_cfg.FEATURE_BANK)
 
-        self.temperature = 0.01
-        self.iou_pos_thresh = 0.4
+        self.temperature = self.model_cfg['ROI_HEAD']['INST_CONT_LOSS']['TEMPERATURE']
+        self.iou_pos_thresh = self.model_cfg['ROI_HEAD']['INST_CONT_LOSS']['IOU_POS_THRESH']
 
         for metrics_configs in model_cfg.get("METRICS_BANK_LIST", []):
             if metrics_configs.ENABLE:
@@ -84,6 +85,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         return out_dict
 
     def get_roi_feats_sa(self, batch_dict, bbox_name='gt_boxes'):
+        # TODO(farzad): check if the feats of the padded rois are set to zero.
         if bbox_name == 'gt_boxes':
             roi_feats_sa = self.pv_rcnn.roi_head.pool_features(batch_dict, use_gtboxes=True, use_projector=True)
         else:
@@ -140,6 +142,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         batch_dict['unlabeled_inds'] = unlabeled_inds
         batch_dict['labeled_inds'] = labeled_inds
         batch_dict['ori_gt_boxes'] = batch_dict['gt_boxes'].clone().detach()
+        batch_dict['ori_gt_boxes_ema'] = batch_dict['gt_boxes_ema'].clone().detach()
         return labeled_inds, unlabeled_inds
 
     @staticmethod
@@ -241,41 +244,51 @@ class PVRCNN_SSL(Detector3DTemplate):
                 loss += lpcont_loss * self.model_cfg['ROI_HEAD']['LPCONT_LOSS_WEIGHT']
                 tb_dict['lpcont_loss'] = lpcont_loss.item()
                 tb_dict['sim_matrix_info'] = self._get_sim_matrix_fig(sim_matrix, roi_labels, proto_labels)
-        if self.model_cfg['ROI_HEAD'].get('ENABLE_INST_CONT_LOSS', False):
+        if self.model_cfg['ROI_HEAD']['INST_CONT_LOSS'].get('ENABLE', False):
             with torch.no_grad():
-                rois_wa = self.pv_rcnn_ema.roi_head.forward_ret_dict['rois'].clone()
-                rois_sa = self.pv_rcnn.roi_head.forward_ret_dict['rois']
-                self.apply_augmentation({'rois': rois_wa}, batch_dict, ulb_inds, key='rois')
+                ulb_pl_dict_wa = self.get_roi_feats_wa(batch_dict_ema, chunk=True)[1]
+                ulb_pl_feats_wa = F.normalize(ulb_pl_dict_wa['feats'], dim=-1)
+                keep_idns = torch.eq(ulb_pl_feats_wa, 0).all(dim=-1).logical_not().nonzero(as_tuple=True)
+                ulb_pl_feats_wa = ulb_pl_feats_wa[keep_idns]
 
-                assert torch.logical_not(torch.eq(rois_wa, 0).all(dim=-1)).all(), "Assumes no zero-padding in rois"
-                assert torch.logical_not(torch.eq(rois_sa, 0).all(dim=-1)).all(), "Assumes no zero-padding in rois"
-                ulb_rois_wa = rois_wa.chunk(2)[1]
-                ulb_rois_sa = rois_sa.chunk(2)[1]
-
-                ious = iou3d_nms_utils.boxes_iou3d_gpu(ulb_rois_sa.view(-1, 7), ulb_rois_wa.view(-1, 7))
+                ulb_pls_sa = batch_dict['gt_boxes'][..., :7].chunk(2)[1]
+                ulb_pls_sa = ulb_pls_sa[keep_idns]
+                ulb_rois_sa = self.pv_rcnn.roi_head.forward_ret_dict['rois'].chunk(2)[1]
+                ious = iou3d_nms_utils.boxes_iou3d_gpu(ulb_rois_sa.view(-1, 7), ulb_pls_sa)
                 # `mask` sets the iou between rois of different samples to zero.
-                smpl_ids_wa = torch.arange(ulb_rois_wa.shape[0], device=ulb_rois_wa.device).repeat_interleave(ulb_rois_wa.shape[1])
-                smpl_ids_sa = torch.arange(ulb_rois_sa.shape[0], device=ulb_rois_sa.device).repeat_interleave(ulb_rois_sa.shape[1])
-                mask = smpl_ids_sa.unsqueeze(1) == smpl_ids_wa.unsqueeze(0)
+                smpl_pl_ids = keep_idns[0]
+                smpl_roi_ids = torch.arange(ulb_rois_sa.shape[0], device=ulb_rois_sa.device).repeat_interleave(ulb_rois_sa.shape[1])
+                mask = smpl_roi_ids.unsqueeze(1) == smpl_pl_ids.unsqueeze(0)
                 ious = ious * mask.float()
-                ulb_roi_feats_wa = self.pv_rcnn_ema.roi_head.forward_ret_dict['proj_feats'].chunk(2)[1]
-                ulb_roi_feats_wa = F.normalize(ulb_roi_feats_wa, dim=-1)
 
-            # TODO: check the difference between this direct and get_roi_feats indirect approach
             ulb_roi_feats_sa = self.pv_rcnn.roi_head.forward_ret_dict['proj_feats'].chunk(2)[1]
             ulb_roi_feats_sa = F.normalize(ulb_roi_feats_sa, dim=-1)
-            sim_matrix = ulb_roi_feats_sa @ ulb_roi_feats_wa.T
+            sim_matrix = ulb_roi_feats_sa @ ulb_pl_feats_wa.T
             logits = sim_matrix / self.temperature
             positive_mask = (ious > self.iou_pos_thresh).float()
             log_prob = F.log_softmax(logits, dim=1)
             log_prob = log_prob * positive_mask
             num_pos = positive_mask.sum(dim=1)
             inst_cont_loss = -log_prob.sum(dim=1) / (num_pos + 1e-8)
-            inst_cont_loss = inst_cont_loss.mean()
+            inst_cont_loss = inst_cont_loss.mean() * self.model_cfg['ROI_HEAD']['INST_CONT_LOSS'].get('WEIGHT', 1.0)
             loss += inst_cont_loss
             plt.clf()
             plt.imshow(sim_matrix.detach().cpu().numpy(), cmap='plasma', vmin=0, vmax=1, aspect='auto')
             plt.colorbar()
+
+            if self.model_cfg['ROI_HEAD']['INST_CONT_LOSS'].get('VISUALIZE', False):
+                points_sa = batch_dict['points']
+                ulb_points_mask = points_sa[:, 0] >= ulb_inds.min()
+                ulb_points_sa = points_sa[ulb_points_mask, 1:4]
+                ulb_pls_labels = batch_dict['gt_boxes'][..., -1].chunk(2)[1]
+                ulb_roi_labels_sa = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'].chunk(2)[1] - 1
+                ulb_roi_scores_sa = torch.zeros(ulb_rois_sa.shape[1])
+                pos_inds = torch.where(ious > self.iou_pos_thresh)
+                # Temporarily use score 1 for positive samples to vis them with bold corner points
+                ulb_roi_scores_sa[pos_inds[0]] = 1
+                self.vis(ulb_points_sa, ulb_pls_sa.squeeze(), ulb_pls_labels.squeeze(),
+                         ulb_rois_sa.squeeze(), ulb_roi_labels_sa.squeeze(), ulb_roi_scores_sa)
+
             tb_dict['inst_cont_loss_unlabeled'] = inst_cont_loss.item()
             tb_dict['sim_matrix_info'] = plt.gcf()
 
@@ -444,11 +457,15 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.pv_rcnn.roi_head.forward_ret_dict['batch_box_preds_teacher'] = batch_box_preds_teacher # for metrics
 
     @staticmethod
-    def vis(boxes, box_labels, points):
-        boxes = boxes.cpu().numpy()
+    def vis(points, gt_boxes, gt_labels, ref_boxes=None, ref_labels=None, ref_scores=None):
+        gt_boxes = gt_boxes.cpu().numpy()
         points = points.cpu().numpy()
-        box_labels = box_labels.cpu().numpy()
-        V.draw_scenes(points=points, gt_boxes=boxes, gt_labels=box_labels)
+        gt_labels = gt_labels.cpu().numpy()
+        ref_boxes = ref_boxes.cpu().numpy() if ref_boxes is not None else None
+        ref_labels = ref_labels.cpu().numpy() if ref_labels is not None else None
+        ref_scores = ref_scores.cpu().numpy() if ref_scores is not None else None
+        V.draw_scenes(points=points, gt_boxes=gt_boxes, gt_labels=gt_labels, ref_boxes=ref_boxes,
+                      ref_labels=ref_labels, ref_scores=ref_scores)
 
     def _update_thresh_alg(self, pl_boxes, pl_conf_scores, pl_sem_logits, gt_labels, preds_ema, lbl_inds):
         thresh_inputs = dict()
