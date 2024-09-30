@@ -166,9 +166,9 @@ MODEL:
         INST_CONT_LOSS:
             ENABLE: True
             TEMPERATURE: 0.1
-            IOU_POS_THRESH: 0.7
+            IOU_POS_THRESH: 0.5
             WEIGHT: 1.0
-            VISUALIZE: True
+            VISUALIZE: False
         ENABLE_PROTO_CONTRASTIVE_LOSS: False
         ENABLE_LPCONT_LOSS: False
         PROTO_CONTRASTIVE_LOSS_WEIGHT: 1.0

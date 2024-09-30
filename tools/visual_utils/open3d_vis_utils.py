@@ -36,7 +36,8 @@ def get_coor_colors(obj_labels):
     return label_rgba
 
 
-def draw_scenes(points, gt_boxes=None, gt_labels=None, ref_boxes=None, ref_labels=None, ref_scores=None, point_colors=None, draw_origin=True):
+def draw_scenes(points, gt_boxes=None, gt_labels=None, ref_boxes=None, ref_labels=None, ref_scores=None,
+                attributes=None, point_colors=None, draw_origin=True):
     if isinstance(points, torch.Tensor):
         points = points.cpu().numpy()
     if isinstance(gt_boxes, torch.Tensor):
@@ -72,7 +73,7 @@ def draw_scenes(points, gt_boxes=None, gt_labels=None, ref_boxes=None, ref_label
         vis = draw_box(vis, gt_boxes, (0, 0, 1), gt_labels)
 
     if ref_boxes is not None:
-        vis = draw_box(vis, ref_boxes, (0, 1, 0), ref_labels, ref_scores)
+        vis = draw_box(vis, ref_boxes, (0, 1, 0), ref_labels, ref_scores, attributes=attributes)
 
     vis.reset_camera_to_default()
     app.add_window(vis)
@@ -105,7 +106,7 @@ def translate_boxes_to_open3d_instance(gt_boxes):
     return line_set, box3d
 
 
-def draw_box(vis, gt_boxes, color=(0, 0, 1), ref_labels=None, score=None):
+def draw_box(vis, gt_boxes, color=(0, 0, 1), ref_labels=None, score=None, attributes: dict = None):
     for i in range(gt_boxes.shape[0]):
         line_set, box3d = translate_boxes_to_open3d_instance(gt_boxes[i])
         corners = box3d.get_box_points()
@@ -115,12 +116,15 @@ def draw_box(vis, gt_boxes, color=(0, 0, 1), ref_labels=None, score=None):
             vis.add_3d_label(corners[4], classes[ref_labels[i]])
         else:
             line_set.paint_uniform_color(box_colormap[ref_labels[i]])
-            if score[i] == 1:
+
+        if attributes is not None and isinstance(attributes, dict):
+            if 'positive' in attributes.keys() and attributes['positive'][i]:
                 for corner in corners:
                     sphere = open3d.geometry.TriangleMesh.create_sphere(radius=0.05)
                     sphere.translate(corner)
                     vis.add_geometry(f"corner_{i}_{corner}", sphere)
-
+            if 'id' in attributes.keys():
+                vis.add_3d_label(corners[6], f"{attributes['id'][i]}")
         name = f"gt_box_{i}_{classes[ref_labels[i]]}" if score is None else f"pred_box_{i}_{classes[ref_labels[i]]}"
         vis.add_geometry(name, line_set)
 

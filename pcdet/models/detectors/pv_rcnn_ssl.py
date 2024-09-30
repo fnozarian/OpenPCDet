@@ -13,6 +13,7 @@ from pcdet.utils.stats_utils import metrics_registry
 from pcdet.utils.prototype_utils import FeatureBankV2
 from pcdet.ssod import AdaptiveThresholding
 from tools.visual_utils import open3d_vis_utils as V
+from pcdet.ops.roiaware_pool3d.roiaware_pool3d_utils import points_in_boxes_gpu
 
 
 class PVRCNN_SSL(Detector3DTemplate):
@@ -248,20 +249,39 @@ class PVRCNN_SSL(Detector3DTemplate):
             with torch.no_grad():
                 ulb_pl_dict_wa = self.get_roi_feats_wa(batch_dict_ema, chunk=True)[1]
                 ulb_pl_feats_wa = F.normalize(ulb_pl_dict_wa['feats'], dim=-1)
-                keep_idns = torch.eq(ulb_pl_feats_wa, 0).all(dim=-1).logical_not().nonzero(as_tuple=True)
-                ulb_pl_feats_wa = ulb_pl_feats_wa[keep_idns]
+                keep_pl_idns = torch.eq(ulb_pl_feats_wa, 0).all(dim=-1).logical_not().nonzero(as_tuple=True)
+                ulb_pl_feats_wa = ulb_pl_feats_wa[keep_pl_idns]
 
                 ulb_pls_sa = batch_dict['gt_boxes'][..., :7].chunk(2)[1]
-                ulb_pls_sa = ulb_pls_sa[keep_idns]
+                ulb_pls_sa = ulb_pls_sa[keep_pl_idns]
                 ulb_rois_sa = self.pv_rcnn.roi_head.forward_ret_dict['rois'].chunk(2)[1]
-                ious = iou3d_nms_utils.boxes_iou3d_gpu(ulb_rois_sa.view(-1, 7), ulb_pls_sa)
+
+                # filter out gt instances with too few points when updating the bank
+                num_points_thresh = self.model_cfg['ROI_HEAD']['INST_CONT_LOSS'].get('NUM_POINTS_THRESHOLD', 10)
+                ulb_valid_rois_mask = []
+                for i, ui in enumerate(ulb_inds):
+                    mask = batch_dict['points'][:, 0] == ui
+                    points = batch_dict['points'][mask, 1:4]
+                    box_idxs = points_in_boxes_gpu(points.unsqueeze(0), ulb_rois_sa[i].unsqueeze(0))  # (num_points,)
+                    box_idxs = box_idxs[box_idxs >= 0]  # remove points that are not in any box
+                    # Count the number of points in each box
+                    box_point_counts = torch.bincount(box_idxs, minlength=ulb_rois_sa[i].shape[0])
+                    valid_roi_mask = box_point_counts >= num_points_thresh
+                    ulb_valid_rois_mask.append(valid_roi_mask)
+                ulb_valid_rois_mask = torch.vstack(ulb_valid_rois_mask)
+
+                ulb_rois_sa = ulb_rois_sa[ulb_valid_rois_mask]
+                # TODO: add wa feats of ulb_rois_sa with enough points to the bank!
+                keep_roi_inds = ulb_valid_rois_mask.nonzero(as_tuple=True)
+                ious = iou3d_nms_utils.boxes_iou3d_gpu(ulb_rois_sa, ulb_pls_sa)
                 # `mask` sets the iou between rois of different samples to zero.
-                smpl_pl_ids = keep_idns[0]
-                smpl_roi_ids = torch.arange(ulb_rois_sa.shape[0], device=ulb_rois_sa.device).repeat_interleave(ulb_rois_sa.shape[1])
+                smpl_pl_ids = keep_pl_idns[0]
+                smpl_roi_ids = keep_roi_inds[0]
                 mask = smpl_roi_ids.unsqueeze(1) == smpl_pl_ids.unsqueeze(0)
                 ious = ious * mask.float()
 
             ulb_roi_feats_sa = self.pv_rcnn.roi_head.forward_ret_dict['proj_feats'].chunk(2)[1]
+            ulb_roi_feats_sa = ulb_roi_feats_sa[ulb_valid_rois_mask.view(-1)]
             ulb_roi_feats_sa = F.normalize(ulb_roi_feats_sa, dim=-1)
             sim_matrix = ulb_roi_feats_sa @ ulb_pl_feats_wa.T
             logits = sim_matrix / self.temperature
@@ -278,16 +298,17 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             if self.model_cfg['ROI_HEAD']['INST_CONT_LOSS'].get('VISUALIZE', False):
                 points_sa = batch_dict['points']
-                ulb_points_mask = points_sa[:, 0] >= ulb_inds.min()
+                ulb_points_mask = points_sa[:, 0] == ulb_inds[0]  # only visualize the first ulb sample
                 ulb_points_sa = points_sa[ulb_points_mask, 1:4]
-                ulb_pls_labels = batch_dict['gt_boxes'][..., -1].chunk(2)[1]
+                ulb_pls_labels = batch_dict['gt_boxes'][..., -1].chunk(2)[1] - 1
+                ulb_pls_labels = ulb_pls_labels[keep_pl_idns]
                 ulb_roi_labels_sa = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'].chunk(2)[1] - 1
-                ulb_roi_scores_sa = torch.zeros(ulb_rois_sa.shape[1])
-                pos_inds = torch.where(ious > self.iou_pos_thresh)
-                # Temporarily use score 1 for positive samples to vis them with bold corner points
-                ulb_roi_scores_sa[pos_inds[0]] = 1
+                ulb_roi_labels_sa = ulb_roi_labels_sa[ulb_valid_rois_mask]
+                ulb_roi_scores_sa = torch.zeros(ulb_rois_sa.shape[0])
+                attributes = {"id": np.arange(ulb_rois_sa.shape[0]),
+                              'positive': (positive_mask.sum(dim=-1) > 0).cpu().numpy()}
                 self.vis(ulb_points_sa, ulb_pls_sa.squeeze(), ulb_pls_labels.squeeze(),
-                         ulb_rois_sa.squeeze(), ulb_roi_labels_sa.squeeze(), ulb_roi_scores_sa)
+                         ulb_rois_sa.squeeze(), ulb_roi_labels_sa.squeeze(), ulb_roi_scores_sa, attributes=attributes)
 
             tb_dict['inst_cont_loss_unlabeled'] = inst_cont_loss.item()
             tb_dict['sim_matrix_info'] = plt.gcf()
@@ -457,7 +478,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         self.pv_rcnn.roi_head.forward_ret_dict['batch_box_preds_teacher'] = batch_box_preds_teacher # for metrics
 
     @staticmethod
-    def vis(points, gt_boxes, gt_labels, ref_boxes=None, ref_labels=None, ref_scores=None):
+    def vis(points, gt_boxes, gt_labels, ref_boxes=None, ref_labels=None, ref_scores=None, attributes=None):
         gt_boxes = gt_boxes.cpu().numpy()
         points = points.cpu().numpy()
         gt_labels = gt_labels.cpu().numpy()
@@ -465,7 +486,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         ref_labels = ref_labels.cpu().numpy() if ref_labels is not None else None
         ref_scores = ref_scores.cpu().numpy() if ref_scores is not None else None
         V.draw_scenes(points=points, gt_boxes=gt_boxes, gt_labels=gt_labels, ref_boxes=ref_boxes,
-                      ref_labels=ref_labels, ref_scores=ref_scores)
+                      ref_labels=ref_labels, ref_scores=ref_scores, attributes=attributes)
 
     def _update_thresh_alg(self, pl_boxes, pl_conf_scores, pl_sem_logits, gt_labels, preds_ema, lbl_inds):
         thresh_inputs = dict()
