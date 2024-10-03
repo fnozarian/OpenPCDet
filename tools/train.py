@@ -241,31 +241,30 @@ def main():
     if hasattr(train_set, 'use_shared_memory') and train_set.use_shared_memory:
         train_set.clean_shared_memory()
 
-    if cfg.LOCAL_RANK == 0:
-        if not cfg.MODEL.POST_PROCESSING.get('TEST_EVAL_DURING_TRAIN', False):
-            test_set, test_loader, sampler = build_dataloader(
-                dataset_cfg=cfg.DATA_CONFIG,
-                class_names=cfg.CLASS_NAMES,
-                batch_size=args.eval_batch_size,
-                dist=dist_train, workers=args.workers,
-                logger=logger,
-                training=False
-            )
-        logger.info('**********************End training %s/%s/%s)**********************\n\n\n'
-                    % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
-        logger.info('**********************Start evaluation %s/%s/%s)**********************' %
-                    (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
-        eval_output_dir = output_dir / 'eval' / 'eval_with_train'
-        eval_output_dir.mkdir(parents=True, exist_ok=True)
-        args.start_epoch = max(args.epochs - args.num_epochs_to_eval, 0)  # Only evaluate the last 10 epochs
-
-        repeat_eval_ckpt(
-            model.module if dist_train else model,
-            test_loader, args, eval_output_dir, logger, ckpt_dir,
-            dist_test=dist_train
+    if not cfg.MODEL.POST_PROCESSING.get('TEST_EVAL_DURING_TRAIN', False):
+        test_set, test_loader, sampler = build_dataloader(
+            dataset_cfg=cfg.DATA_CONFIG,
+            class_names=cfg.CLASS_NAMES,
+            batch_size=args.eval_batch_size,
+            dist=dist_train, workers=args.workers,
+            logger=logger,
+            training=False
         )
-        logger.info('**********************End evaluation%s/%s/%s)**********************' %
-                    (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
+    logger.info('**********************End training %s/%s/%s)**********************\n\n\n'
+                % (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
+    logger.info('**********************Start evaluation %s/%s/%s)**********************' %
+                (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
+    eval_output_dir = output_dir / 'eval' / 'eval_with_train'
+    eval_output_dir.mkdir(parents=True, exist_ok=True)
+    args.start_epoch = max(args.epochs - args.num_epochs_to_eval, 0)  # Only evaluate the last 10 epochs
+
+    repeat_eval_ckpt(
+        model.module if dist_train else model,
+        test_loader, args, eval_output_dir, logger, ckpt_dir,
+        dist_test=dist_train
+    )
+    logger.info('**********************End evaluation%s/%s/%s)**********************' %
+                (cfg.EXP_GROUP_PATH, cfg.TAG, args.extra_tag))
 
     if tb_log is not None:
         tb_log.close()

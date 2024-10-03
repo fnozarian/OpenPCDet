@@ -14,5 +14,5 @@ do
 done
 echo $PORT
 
-torchrun --nproc_per_node=${NGPUS} --rdzv_endpoint=127.0.0.1:${PORT} train.py ${PY_ARGS}
+torchrun --nproc_per_node=${NGPUS} --rdzv_endpoint=127.0.0.1:${PORT} train.py --launcher pytorch ${PY_ARGS}
 
