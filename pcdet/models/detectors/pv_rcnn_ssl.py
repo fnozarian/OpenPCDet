@@ -49,6 +49,7 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         self.temperature = self.model_cfg['ROI_HEAD']['INST_CONT_LOSS']['TEMPERATURE']
         self.iou_pos_thresh = self.model_cfg['ROI_HEAD']['INST_CONT_LOSS']['IOU_POS_THRESH']
+        self.inst_cont_loss_cls_weight = self.model_cfg['ROI_HEAD']['INST_CONT_LOSS']['CLS_WEIGHT']
 
         for metrics_configs in model_cfg.get("METRICS_BANK_LIST", []):
             if metrics_configs.ENABLE:
@@ -255,8 +256,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                 ulb_pls_sa = batch_dict['gt_boxes'][..., :7].chunk(2)[1]
                 ulb_pls_sa = ulb_pls_sa[keep_pl_idns]
                 ulb_rois_sa = self.pv_rcnn.roi_head.forward_ret_dict['rois'].chunk(2)[1]
-
-                # filter out gt instances with too few points when updating the bank
+                ulb_roi_labels_sa = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'].chunk(2)[1] - 1
+                # filter out rois with too few points
                 num_points_thresh = self.model_cfg['ROI_HEAD']['INST_CONT_LOSS'].get('NUM_POINTS_THRESHOLD', 10)
                 ulb_valid_rois_mask = []
                 for i, ui in enumerate(ulb_inds):
@@ -271,6 +272,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 ulb_valid_rois_mask = torch.vstack(ulb_valid_rois_mask)
 
                 ulb_rois_sa = ulb_rois_sa[ulb_valid_rois_mask]
+                ulb_roi_labels_sa = ulb_roi_labels_sa[ulb_valid_rois_mask]
                 # TODO: add wa feats of ulb_rois_sa with enough points to the bank!
                 keep_roi_inds = ulb_valid_rois_mask.nonzero(as_tuple=True)
                 ious = iou3d_nms_utils.boxes_iou3d_gpu(ulb_rois_sa, ulb_pls_sa)
@@ -285,13 +287,16 @@ class PVRCNN_SSL(Detector3DTemplate):
             ulb_roi_feats_sa = F.normalize(ulb_roi_feats_sa, dim=-1)
             sim_matrix = ulb_roi_feats_sa @ ulb_pl_feats_wa.T
             logits = sim_matrix / self.temperature
-            positive_mask = (ious > self.iou_pos_thresh).float()
+            iou_thresh = torch.tensor(self.iou_pos_thresh, device=ious.device)[ulb_roi_labels_sa].unsqueeze(1).expand_as(ious)
+            positive_mask = (ious > iou_thresh).float()
             log_prob = F.log_softmax(logits, dim=1)
             log_prob = log_prob * positive_mask
             num_pos = positive_mask.sum(dim=1)
             inst_cont_loss = -log_prob.sum(dim=1) / (num_pos + 1e-8)
-            inst_cont_loss = inst_cont_loss.mean() * self.model_cfg['ROI_HEAD']['INST_CONT_LOSS'].get('WEIGHT', 1.0)
-            loss += inst_cont_loss
+            cls_weights = torch.tensor(self.inst_cont_loss_cls_weight, device=inst_cont_loss.device)[ulb_roi_labels_sa]
+            inst_cont_loss = inst_cont_loss * cls_weights
+            inst_cont_loss = inst_cont_loss.mean()
+            loss += inst_cont_loss * self.model_cfg['ROI_HEAD']['INST_CONT_LOSS'].get('WEIGHT', 1.0)
             plt.clf()
             plt.imshow(sim_matrix.detach().cpu().numpy(), cmap='plasma', vmin=0, vmax=1, aspect='auto')
             plt.colorbar()
@@ -302,8 +307,6 @@ class PVRCNN_SSL(Detector3DTemplate):
                 ulb_points_sa = points_sa[ulb_points_mask, 1:4]
                 ulb_pls_labels = batch_dict['gt_boxes'][..., -1].chunk(2)[1] - 1
                 ulb_pls_labels = ulb_pls_labels[keep_pl_idns]
-                ulb_roi_labels_sa = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'].chunk(2)[1] - 1
-                ulb_roi_labels_sa = ulb_roi_labels_sa[ulb_valid_rois_mask]
                 ulb_roi_scores_sa = torch.zeros(ulb_rois_sa.shape[0])
                 attributes = {"id": np.arange(ulb_rois_sa.shape[0]),
                               'positive': (positive_mask.sum(dim=-1) > 0).cpu().numpy()}
