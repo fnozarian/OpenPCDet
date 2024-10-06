@@ -164,12 +164,14 @@ MODEL:
         ENABLE_ULB_CLS_DIST_LOSS: False
         ENABLE_PROTOTYPING: False
         INST_CONT_LOSS:
-            ENABLE: True
+            ENABLE: False
             TEMPERATURE: 0.1
-            IOU_POS_THRESH: [0.7, 0.4, 0.4]
-            CLS_WEIGHT: [1.0, 7.0, 14.0]
+            IOU_POS_THRESH: [0.7, 0.7, 0.7]
+            CLS_WEIGHT: [1.0, 4.0, 4.0]
             WEIGHT: 1.0
             VISUALIZE: False
+        ROI_CONT_LOSS:
+            ENABLE: True
         ENABLE_PROTO_CONTRASTIVE_LOSS: False
         ENABLE_LPCONT_LOSS: False
         PROTO_CONTRASTIVE_LOSS_WEIGHT: 1.0

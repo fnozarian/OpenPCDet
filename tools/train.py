@@ -88,8 +88,8 @@ def parse_config():
     cfg.MODEL.NO_NMS = args.no_nms
     cfg.MODEL.SUPERVISE_MODE = args.supervise_mode
 
-    rev = get_git_commit_number()
-    args.extra_tag = args.extra_tag + "_" + str(rev)
+    # rev = get_git_commit_number()
+    # args.extra_tag = args.extra_tag + "_" + str(rev)
 
     if args.lr > 0.0:
         cfg.OPTIMIZATION.LR = args.lr

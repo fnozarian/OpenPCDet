@@ -68,7 +68,6 @@ class PVRCNN_SSL(Detector3DTemplate):
 
     @torch.no_grad()
     def get_roi_feats_wa(self, batch_dict, chunk=False):
-        batch_dict = self._clone_gt_boxes_and_feats(batch_dict)  # TODO(farzad): is cloning (all) required?
         batch_feats = self.pv_rcnn_ema.roi_head.pool_features(batch_dict, use_gtboxes=True, use_projector=True)
         batch_feats = batch_feats.view(*batch_dict['gt_boxes'].shape[:2], -1)
         pad_inds = torch.where(torch.eq(batch_dict['gt_boxes'], 0).all(dim=-1))
@@ -101,6 +100,22 @@ class PVRCNN_SSL(Detector3DTemplate):
         labels_ulb = roi_boxes_ulb[..., 7].long() - 1
         labels_ulb = labels_ulb[nonzero_mask]
         return roi_feats_sa_ulb, labels_ulb
+
+    def mask_dense_rois(self, batch_points, rois, inds=None, num_points=10):
+        if inds is None:
+            inds = torch.arange(rois.shape[0], device=rois.device)
+        ulb_valid_rois_mask = []
+        for i, ui in enumerate(inds):
+            mask = batch_points[:, 0] == ui
+            points = batch_points[mask, 1:4]
+            box_idxs = points_in_boxes_gpu(points.unsqueeze(0), rois[i].unsqueeze(0))  # (num_points,)
+            box_idxs = box_idxs[box_idxs >= 0]  # remove points that are not in any box
+            # Count the number of points in each box
+            box_point_counts = torch.bincount(box_idxs, minlength=rois[i].shape[0])
+            valid_roi_mask = box_point_counts >= num_points
+            ulb_valid_rois_mask.append(valid_roi_mask)
+        ulb_valid_rois_mask = torch.vstack(ulb_valid_rois_mask)
+        return ulb_valid_rois_mask
 
     def forward(self, batch_dict):
         if self.training:
@@ -195,7 +210,9 @@ class PVRCNN_SSL(Detector3DTemplate):
             batch_dict = cur_module(batch_dict)
 
         if self.model_cfg['ROI_HEAD'].get('ENABLE_PROTOTYPING', False):
-            lbl_roi_feats_wa, _ = self.get_roi_feats_wa(batch_dict_ema, chunk=True)
+            # TODO(farzad): is cloning (all) required?
+            batch_dict_clone = self._clone_gt_boxes_and_feats(batch_dict_ema)
+            lbl_roi_feats_wa, _ = self.get_roi_feats_wa(batch_dict_clone, chunk=True)
             self.bank.update(**lbl_roi_feats_wa)
 
         if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False):
@@ -248,7 +265,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                 tb_dict['sim_matrix_info'] = self._get_sim_matrix_fig(sim_matrix, roi_labels, proto_labels)
         if self.model_cfg['ROI_HEAD']['INST_CONT_LOSS'].get('ENABLE', False):
             with torch.no_grad():
-                ulb_pl_dict_wa = self.get_roi_feats_wa(batch_dict_ema, chunk=True)[1]
+                batch_dict_clone = self._clone_gt_boxes_and_feats(batch_dict_ema)
+                ulb_pl_dict_wa = self.get_roi_feats_wa(batch_dict_clone, chunk=True)[1]
                 ulb_pl_feats_wa = F.normalize(ulb_pl_dict_wa['feats'], dim=-1)
                 keep_pl_idns = torch.eq(ulb_pl_feats_wa, 0).all(dim=-1).logical_not().nonzero(as_tuple=True)
                 ulb_pl_feats_wa = ulb_pl_feats_wa[keep_pl_idns]
@@ -259,18 +277,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 ulb_roi_labels_sa = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'].chunk(2)[1] - 1
                 # filter out rois with too few points
                 num_points_thresh = self.model_cfg['ROI_HEAD']['INST_CONT_LOSS'].get('NUM_POINTS_THRESHOLD', 10)
-                ulb_valid_rois_mask = []
-                for i, ui in enumerate(ulb_inds):
-                    mask = batch_dict['points'][:, 0] == ui
-                    points = batch_dict['points'][mask, 1:4]
-                    box_idxs = points_in_boxes_gpu(points.unsqueeze(0), ulb_rois_sa[i].unsqueeze(0))  # (num_points,)
-                    box_idxs = box_idxs[box_idxs >= 0]  # remove points that are not in any box
-                    # Count the number of points in each box
-                    box_point_counts = torch.bincount(box_idxs, minlength=ulb_rois_sa[i].shape[0])
-                    valid_roi_mask = box_point_counts >= num_points_thresh
-                    ulb_valid_rois_mask.append(valid_roi_mask)
-                ulb_valid_rois_mask = torch.vstack(ulb_valid_rois_mask)
-
+                ulb_valid_rois_mask = self.mask_dense_rois(batch_dict['points'], ulb_rois_sa, ulb_inds, num_points_thresh)
                 ulb_rois_sa = ulb_rois_sa[ulb_valid_rois_mask]
                 ulb_roi_labels_sa = ulb_roi_labels_sa[ulb_valid_rois_mask]
                 # TODO: add wa feats of ulb_rois_sa with enough points to the bank!
@@ -315,6 +322,46 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             tb_dict['inst_cont_loss_unlabeled'] = inst_cont_loss.item()
             tb_dict['sim_matrix_info'] = plt.gcf()
+            tb_dict['pos_ratio'] = (num_pos > 0).float().mean().item()
+
+        if self.model_cfg['ROI_HEAD']['ROI_CONT_LOSS'].get('ENABLE', False):
+            with torch.no_grad():
+                # Get wa features of sa rois
+                batch_dict_clone = self._clone_gt_boxes_and_feats(batch_dict_ema)
+                rois_sa = self.pv_rcnn.roi_head.forward_ret_dict['rois'].clone()
+                roi_labels_sa = self.pv_rcnn.roi_head.forward_ret_dict['roi_labels'].clone()
+                batch_dict_clone['gt_boxes'] = torch.cat([rois_sa, roi_labels_sa.unsqueeze(2)], dim=-1)
+                batch_dict_clone['instance_idx'] = torch.zeros(rois_sa.shape[:2], device=rois_sa.device)  # dummy
+                batch_dict_clone = self.reverse_augmentation(batch_dict_clone, batch_dict, key='gt_boxes')
+
+                roi_dict_wa = self.get_roi_feats_wa(batch_dict_clone)
+                roi_feats_wa = F.normalize(roi_dict_wa['feats'], dim=-1)
+                assert torch.eq(roi_feats_wa, 0).all(dim=-1).logical_not().all().item(), 'wa feats should not be zero!'
+                # filter out rois with too few points
+                # TODO: Define a new NUM_POINTS_THRESHOLD for the ROI_CONT_LOSS
+                points_thresh = self.model_cfg['ROI_HEAD']['INST_CONT_LOSS'].get('NUM_POINTS_THRESHOLD', 10)
+                valid_rois_mask = self.mask_dense_rois(batch_dict['points'], rois_sa, num_points=points_thresh)
+                roi_feats_wa = roi_feats_wa[valid_rois_mask]
+                roi_labels_sa = roi_labels_sa[valid_rois_mask]
+
+            roi_feats_sa = self.pv_rcnn.roi_head.forward_ret_dict['proj_feats']
+            roi_feats_sa = roi_feats_sa[valid_rois_mask.view(-1)]
+            roi_feats_sa = F.normalize(roi_feats_sa, dim=-1)
+            sim_matrix = roi_feats_sa @ roi_feats_wa.T
+            logits = sim_matrix / self.temperature  # TODO: Define a new TEMPERATURE for the ROI_CONT_LOSS
+            labels = torch.arange(logits.shape[0], dtype=torch.long, device=logits.device)
+            inst_cont_loss = F.cross_entropy(logits, labels, reduction='none')
+            cls_weights = torch.tensor(self.inst_cont_loss_cls_weight, device=inst_cont_loss.device)[roi_labels_sa - 1]
+            inst_cont_loss = inst_cont_loss * cls_weights
+            inst_cont_loss = inst_cont_loss.mean()
+            # TODO: Define a new WEIGHT for the ROI_CONT_LOSS
+            loss += inst_cont_loss * self.model_cfg['ROI_HEAD']['INST_CONT_LOSS'].get('WEIGHT', 1.0)
+
+            plt.clf()
+            plt.imshow(sim_matrix.detach().cpu().numpy(), cmap='plasma', vmin=0, vmax=1, aspect='auto')
+            plt.colorbar()
+            tb_dict['sim_matrix_info'] = plt.gcf()
+            tb_dict['inst_cont_loss'] = inst_cont_loss.item()
 
         # update dynamic thresh alg
         if self.model_cfg.ADAPTIVE_THRESHOLDING.ENABLE:
@@ -572,9 +619,8 @@ class PVRCNN_SSL(Detector3DTemplate):
         return pls
 
     @staticmethod
-    def _fill_with_pls(batch_dict, pseudo_boxes, masks, ulb_inds, lb_inds, key=None):
-        key = 'gt_boxes' if key is None else key
-        max_box_num = batch_dict[key].shape[1]
+    def _fill_with_pls(batch_dict, pseudo_boxes, masks, ulb_inds, lb_inds):
+        max_box_num = batch_dict['gt_boxes'].shape[1]
         pseudo_boxes = [pboxes[mask] for pboxes, mask in zip(pseudo_boxes, masks)]
 
         # Ignore the count of pseudo boxes if filled with default values(zeros) when no preds are made
@@ -586,7 +632,8 @@ class PVRCNN_SSL(Detector3DTemplate):
                 diff = max_box_num - pseudo_box.shape[0]
                 if diff > 0:
                     pseudo_box = torch.cat([pseudo_box, torch.zeros((diff, pseudo_box.shape[-1]), device=pseudo_box.device)], dim=0)
-                batch_dict[key][ulb_inds[i]] = pseudo_box
+                batch_dict['gt_boxes'][ulb_inds[i]] = pseudo_box
+                batch_dict['instance_idx'][ulb_inds[i]] = torch.full((max_box_num,), fill_value=-1, device=pseudo_box.device)
         else:
             ori_boxes = batch_dict['gt_boxes']
             ori_ins_ids = batch_dict['instance_idx']
@@ -603,7 +650,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 if diff > 0:
                     pseudo_box = torch.cat([pseudo_box, torch.zeros((diff, pseudo_box.shape[-1]), device=pseudo_box.device)], dim=0)
                 new_boxes[ulb_inds[i]] = pseudo_box
-            batch_dict[key] = new_boxes
+            batch_dict['gt_boxes'] = new_boxes
             batch_dict['instance_idx'] = new_ins_idx
 
     @staticmethod
@@ -624,18 +671,20 @@ class PVRCNN_SSL(Detector3DTemplate):
         return batch_dict
 
     @staticmethod
-    def reverse_augmentation(batch_dict, batch_dict_org, unlabeled_inds, key='rois'):
-        batch_dict[key][unlabeled_inds] = augmentor_utils.global_scaling_bbox(
-            batch_dict[key][unlabeled_inds], 1.0 / batch_dict_org['scale'][unlabeled_inds])
-        batch_dict[key][unlabeled_inds] = augmentor_utils.global_rotation_bbox(
-            batch_dict[key][unlabeled_inds], - batch_dict_org['rot_angle'][unlabeled_inds])
-        batch_dict[key][unlabeled_inds] = augmentor_utils.random_flip_along_y_bbox(
-            batch_dict[key][unlabeled_inds], batch_dict_org['flip_y'][unlabeled_inds])
-        batch_dict[key][unlabeled_inds] = augmentor_utils.random_flip_along_x_bbox(
-            batch_dict[key][unlabeled_inds], batch_dict_org['flip_x'][unlabeled_inds])
+    def reverse_augmentation(batch_dict, batch_dict_org, inds=None, key='rois'):
+        if inds is None:
+            inds = torch.arange(batch_dict[key].shape[0], device=batch_dict[key].device)
+        batch_dict[key][inds] = augmentor_utils.global_scaling_bbox(
+            batch_dict[key][inds], 1.0 / batch_dict_org['scale'][inds])
+        batch_dict[key][inds] = augmentor_utils.global_rotation_bbox(
+            batch_dict[key][inds], - batch_dict_org['rot_angle'][inds])
+        batch_dict[key][inds] = augmentor_utils.random_flip_along_y_bbox(
+            batch_dict[key][inds], batch_dict_org['flip_y'][inds])
+        batch_dict[key][inds] = augmentor_utils.random_flip_along_x_bbox(
+            batch_dict[key][inds], batch_dict_org['flip_x'][inds])
 
-        batch_dict[key][unlabeled_inds, :, 6] = common_utils.limit_period(
-            batch_dict[key][unlabeled_inds, :, 6], offset=0.5, period=2 * np.pi
+        batch_dict[key][inds, :, 6] = common_utils.limit_period(
+            batch_dict[key][inds, :, 6], offset=0.5, period=2 * np.pi
         )
 
         return batch_dict
