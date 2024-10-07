@@ -347,9 +347,23 @@ class PVRCNN_SSL(Detector3DTemplate):
             roi_feats_sa = self.pv_rcnn.roi_head.forward_ret_dict['proj_feats']
             roi_feats_sa = roi_feats_sa[valid_rois_mask.view(-1)]
             roi_feats_sa = F.normalize(roi_feats_sa, dim=-1)
-            sim_matrix = roi_feats_sa @ roi_feats_wa.T
+
+            assert roi_feats_sa.shape[0] == roi_feats_wa.shape[0], 'roi_feats_sa and roi_feats_wa should have the same size!'
+            num_rois = roi_feats_sa.shape[0]
+            roi_feats_sa_wa = torch.cat([roi_feats_sa, roi_feats_wa], dim=0)
+            sim_matrix = roi_feats_sa_wa @ roi_feats_sa_wa.T
+            mask = torch.eye(2*num_rois, device=sim_matrix.device).logical_not()  # exclude diagonal
+            sim_matrix = sim_matrix[mask].view(-1, sim_matrix.shape[0] - 1)
+            pos_col_inds1 = torch.arange(num_rois, 2 * num_rois) - 1
+            pos_col_inds2 = torch.arange(num_rois)
+            labels = torch.cat([pos_col_inds1, pos_col_inds2]).to(sim_matrix.device)
+            roi_labels_sa = roi_labels_sa.repeat(2)  # repeat for the wa feats
+
+            # Initial roi cont loss (0eb2ef2)
+            # sim_matrix = roi_feats_sa @ roi_feats_wa.T
+            # labels = torch.arange(logits.shape[0], dtype=torch.long, device=logits.device)
+
             logits = sim_matrix / self.temperature  # TODO: Define a new TEMPERATURE for the ROI_CONT_LOSS
-            labels = torch.arange(logits.shape[0], dtype=torch.long, device=logits.device)
             inst_cont_loss = F.cross_entropy(logits, labels, reduction='none')
             cls_weights = torch.tensor(self.inst_cont_loss_cls_weight, device=inst_cont_loss.device)[roi_labels_sa - 1]
             inst_cont_loss = inst_cont_loss * cls_weights
@@ -361,7 +375,7 @@ class PVRCNN_SSL(Detector3DTemplate):
             plt.imshow(sim_matrix.detach().cpu().numpy(), cmap='plasma', vmin=0, vmax=1, aspect='auto')
             plt.colorbar()
             tb_dict['sim_matrix_info'] = plt.gcf()
-            tb_dict['inst_cont_loss'] = inst_cont_loss.item()
+            tb_dict['roi_cont_loss_unlabeled'] = inst_cont_loss.item()
 
         # update dynamic thresh alg
         if self.model_cfg.ADAPTIVE_THRESHOLDING.ENABLE:
