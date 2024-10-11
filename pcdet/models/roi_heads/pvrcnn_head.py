@@ -1,10 +1,9 @@
-import torch
+import torch.nn.functional as F
 import torch.nn as nn
 from ...ops.pointnet2.pointnet2_stack import pointnet2_modules as pointnet2_stack_modules
 from ...utils import common_utils
 from .roi_head_template import RoIHeadTemplate
-from pcdet.utils.prototype_utils import feature_bank_registry
-
+from torch.nn.utils import weight_norm
 
 class PVRCNNHead(RoIHeadTemplate):
     def __init__(self, input_channels, model_cfg, num_class=1,
@@ -46,9 +45,8 @@ class PVRCNNHead(RoIHeadTemplate):
 
         self.proj_size = self.model_cfg.PROJECTION_SIZE
         input_size = self.model_cfg.SHARED_FC[-1]
-        self.projector = nn.Sequential(*[
-            nn.Linear(input_size, self.proj_size)
-        ])
+        self.projector = weight_norm(nn.Linear(input_size, self.proj_size, bias=False))
+        self.projector.weight_g.data.fill_(1)
 
         self.init_weights(weight_init='xavier')
 
@@ -156,6 +154,7 @@ class PVRCNNHead(RoIHeadTemplate):
             contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
         if use_projector:
             shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1)).squeeze()
+            shared_features = F.normalize(shared_features, p=2, dim=-1)
             pooled_features = self.projector(shared_features)
 
         return pooled_features

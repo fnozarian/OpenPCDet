@@ -335,7 +335,7 @@ class PVRCNN_SSL(Detector3DTemplate):
                 batch_dict_clone = self.reverse_augmentation(batch_dict_clone, batch_dict, key='gt_boxes')
 
                 roi_dict_wa = self.get_roi_feats_wa(batch_dict_clone)
-                roi_feats_wa = F.normalize(roi_dict_wa['feats'], dim=-1)
+                roi_feats_wa = roi_dict_wa['feats']
                 assert torch.eq(roi_feats_wa, 0).all(dim=-1).logical_not().all().item(), 'wa feats should not be zero!'
                 # filter out rois with too few points
                 # TODO: Define a new NUM_POINTS_THRESHOLD for the ROI_CONT_LOSS
@@ -346,7 +346,6 @@ class PVRCNN_SSL(Detector3DTemplate):
 
             roi_feats_sa = self.pv_rcnn.roi_head.forward_ret_dict['proj_feats']
             roi_feats_sa = roi_feats_sa[valid_rois_mask.view(-1)]
-            roi_feats_sa = F.normalize(roi_feats_sa, dim=-1)
 
             assert roi_feats_sa.shape[0] == roi_feats_wa.shape[0], 'roi_feats_sa and roi_feats_wa should have the same size!'
             num_rois = roi_feats_sa.shape[0]
