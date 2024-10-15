@@ -156,7 +156,7 @@ class PVRCNNHead(RoIHeadTemplate):
             shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1)).squeeze()
             shared_features = F.normalize(shared_features, p=2, dim=-1)
             pooled_features = self.projector(shared_features)
-
+            pooled_features = F.normalize(pooled_features, p=2, dim=-1)
         return pooled_features
     
 
