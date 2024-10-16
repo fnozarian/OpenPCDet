@@ -154,7 +154,6 @@ class PVRCNNHead(RoIHeadTemplate):
             contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
         if use_projector:
             shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1)).squeeze()
-            shared_features = F.normalize(shared_features, p=2, dim=-1)
             pooled_features = self.projector(shared_features)
             pooled_features = F.normalize(pooled_features, p=2, dim=-1)
         return pooled_features
@@ -185,6 +184,7 @@ class PVRCNNHead(RoIHeadTemplate):
         batch_size_rcnn = pooled_features.shape[0]
         shared_features = self.shared_fc_layer(pooled_features.view(batch_size_rcnn, -1, 1))
         proj_feats = self.projector(shared_features.squeeze())
+        proj_feats = F.normalize(proj_feats, p=2, dim=-1)
         rcnn_cls = self.cls_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, 1 or 2)
         rcnn_reg = self.reg_layers(shared_features).transpose(1, 2).contiguous().squeeze(dim=1)  # (B, C)
 
