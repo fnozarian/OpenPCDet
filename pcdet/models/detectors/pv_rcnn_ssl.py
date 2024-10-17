@@ -32,8 +32,10 @@ class PVRCNN_SSL(Detector3DTemplate):
 
         self.thresh = model_cfg.THRESH
         self.sem_thresh = model_cfg.SEM_THRESH
-        self.unlabeled_supervise_cls = model_cfg.UNLABELED_SUPERVISE_CLS
-        self.unlabeled_supervise_refine = model_cfg.UNLABELED_SUPERVISE_REFINE
+        self.rpn_cls_ulb = model_cfg.RPN_CLS_LOSS_ULB
+        self.rpn_reg_ulb = model_cfg.RPN_REG_LOSS_ULB
+        self.rcnn_cls_ulb = self.model_cfg.RCNN_CLS_LOSS_ULB
+        self.rcnn_reg_ulb = model_cfg.RCNN_REG_LOSS_ULB
         self.unlabeled_weight = model_cfg.UNLABELED_WEIGHT
         self.no_nms = model_cfg.NO_NMS
         self.supervise_mode = model_cfg.SUPERVISE_MODE
@@ -215,31 +217,27 @@ class PVRCNN_SSL(Detector3DTemplate):
             lbl_roi_feats_wa, _ = self.get_roi_feats_wa(batch_dict_clone, chunk=True)
             self.bank.update(**lbl_roi_feats_wa)
 
-        if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False):
-            # using teacher to evaluate student's bg/fg proposals through its rcnn head
-            with torch.no_grad():
-                self._add_teacher_scores(batch_dict, batch_dict_ema, ulb_inds)
-
         disp_dict = {}
         loss_rpn_cls, loss_rpn_box, tb_dict = self.pv_rcnn.dense_head.get_loss()
         loss_point, tb_dict = self.pv_rcnn.point_head.get_loss(tb_dict)
         loss_rcnn_cls, loss_rcnn_box, tb_dict = self.pv_rcnn.roi_head.get_loss(tb_dict)
 
         loss = 0
-        # Use the same reduction method as the baseline model (3diou) by the default
-        reduce_loss_fn = getattr(torch, self.model_cfg.REDUCE_LOSS, 'sum')
-        loss += reduce_loss_fn(loss_rpn_cls[lbl_inds, ...])
-        loss += reduce_loss_fn(loss_rpn_box[lbl_inds, ...]) + reduce_loss_fn(loss_rpn_box[ulb_inds, ...]) * self.unlabeled_weight
-        loss += reduce_loss_fn(loss_point[lbl_inds, ...])
-        loss += reduce_loss_fn(loss_rcnn_cls[lbl_inds, ...])
-        loss += reduce_loss_fn(loss_rcnn_box[lbl_inds, ...])
+        loss += torch.mean(loss_rpn_cls[lbl_inds, ...])
+        loss += torch.mean(loss_rpn_box[lbl_inds, ...])
+        loss += torch.mean(loss_point[lbl_inds, ...])
+        loss += torch.mean(loss_rcnn_cls[lbl_inds, ...])
+        loss += torch.mean(loss_rcnn_box[lbl_inds, ...])
 
-        if self.unlabeled_supervise_cls:
-            loss += reduce_loss_fn(loss_rpn_cls[ulb_inds, ...]) * self.unlabeled_weight
-        if self.model_cfg['ROI_HEAD'].get('ENABLE_SOFT_TEACHER', False) or self.model_cfg.get('UNLABELED_SUPERVISE_OBJ', False):
-            loss += reduce_loss_fn(loss_rcnn_cls[ulb_inds, ...]) * self.unlabeled_weight
-        if self.unlabeled_supervise_refine:
-            loss += reduce_loss_fn(loss_rcnn_box[ulb_inds, ...]) * self.unlabeled_weight
+        if self.rpn_cls_ulb:
+            loss += torch.mean(loss_rpn_cls[ulb_inds, ...]) * self.unlabeled_weight
+        if self.rpn_reg_ulb:
+            loss += torch.mean(loss_rpn_box[ulb_inds, ...]) * self.unlabeled_weight
+        if self.rcnn_cls_ulb:
+            loss += torch.mean(loss_rcnn_cls[ulb_inds, ...]) * self.unlabeled_weight
+        if self.rcnn_reg_ulb:
+            loss += torch.mean(loss_rcnn_box[ulb_inds, ...]) * self.unlabeled_weight
+
         if self.model_cfg['ROI_HEAD'].get('ENABLE_ULB_CLS_DIST_LOSS', False):
             roi_head_forward_dict = self.pv_rcnn.roi_head.forward_ret_dict
             ulb_loss_cls_dist, cls_dist_dict = self.pv_rcnn.roi_head.get_ulb_cls_dist_loss(roi_head_forward_dict)
@@ -397,7 +395,7 @@ class PVRCNN_SSL(Detector3DTemplate):
         if self.model_cfg.get('STORE_SCORES_IN_PKL', False):
             self.dump_statistics(batch_dict, ulb_inds)
 
-        tb_dict = self._split_lbl_ulb_logs(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn)
+        tb_dict = self._split_lbl_ulb_logs(tb_dict, lbl_inds, ulb_inds)
         ret_dict = {
             'loss': loss
         }
@@ -492,12 +490,12 @@ class PVRCNN_SSL(Detector3DTemplate):
         return fig
 
     @staticmethod
-    def _split_lbl_ulb_logs(tb_dict, lbl_inds, ulb_inds, reduce_loss_fn):
+    def _split_lbl_ulb_logs(tb_dict, lbl_inds, ulb_inds):
         tb_dict_ = {}
         for key in tb_dict.keys():
             if isinstance(tb_dict[key], torch.Tensor) and ('loss' in key or 'acc' in key or 'point_pos_num' in key):
-                tb_dict_[f"{key}_labeled"] = reduce_loss_fn(tb_dict[key][lbl_inds, ...])
-                tb_dict_[f"{key}_unlabeled"] = reduce_loss_fn(tb_dict[key][ulb_inds, ...])
+                tb_dict_[f"{key}_labeled"] = torch.mean(tb_dict[key][lbl_inds, ...])
+                tb_dict_[f"{key}_unlabeled"] = torch.mean(tb_dict[key][ulb_inds, ...])
             else:
                 tb_dict_[key] = tb_dict[key]
 
