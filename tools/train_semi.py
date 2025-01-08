@@ -259,11 +259,6 @@ def main():
     model = semi_learning_models[model_name](cfg, datasets)
     model.cuda()
 
-    if dist_train:
-        model = nn.parallel.DistributedDataParallel(model, device_ids=[cfg.LOCAL_RANK % torch.cuda.device_count()])
-
-    optimizer = build_optimizer(model, cfg.OPTIMIZATION.SEMI_SUP_LEARNING.STUDENT)
-
     # load checkpoint if it is possible
     last_epoch = -1
     start_epoch = it = 0
@@ -271,6 +266,7 @@ def main():
     teacher_ckpt_list = glob.glob(str(teacher_ckpt_dir / '*checkpoint_epoch_*.pth'))
     student_ckpt_list = glob.glob(str(student_ckpt_dir / '*checkpoint_epoch_*.pth'))
     if len(teacher_ckpt_list) > 0 and len(student_ckpt_list) > 0:
+        optimizer = build_optimizer(model, cfg.OPTIMIZATION.SEMI_SUP_LEARNING.STUDENT)
         based_on_pretrained = False
         teacher_ckpt_list.sort(key=os.path.getmtime)
         student_ckpt_list.sort(key=os.path.getmtime)
@@ -281,6 +277,8 @@ def main():
             student_ckpt_list[-1], to_cpu=dist_train, optimizer=optimizer, logger=logger
         )
         last_epoch = start_epoch + 1
+    else:
+        optimizer = build_optimizer(model, cfg.OPTIMIZATION.SEMI_SUP_LEARNING.STUDENT)
 
     if based_on_pretrained:
         if args.pretrained_model is not None:
@@ -294,6 +292,10 @@ def main():
         model.teacher.load_params_from_file(filename=pretrained_model, to_cpu=dist_train, logger=logger)
         model.student.load_params_from_file(filename=pretrained_model, to_cpu=dist_train, logger=logger)
 
+    if dist_train:
+        model = nn.parallel.DistributedDataParallel(model, device_ids=[cfg.LOCAL_RANK % torch.cuda.device_count()])
+
+    
     logger.info(model)
     # use labeled data as epoch counter
     student_lr_scheduler, student_lr_warmup_scheduler = build_scheduler(
