@@ -16,7 +16,7 @@ class DINOHead(nn.Module):
         in_dim = model_cfg.get('in_dim', 256)
         out_dim = model_cfg.get('out_dim', 64)
         # self.mlp = self._build_mlp(**mlp_params)
-        self.mlp = self.make_fc_layers(input_channels=in_dim, output_channels=256, fc_list=[256, 256])
+        self.mlp = self.make_fc_layers(input_channels=in_dim, output_channels=256, fc_list=[256])
         # self.apply(self._init_weights)
         self.last_layer = weight_norm(nn.Linear(bottleneck_dim, out_dim, bias=False))
         self.last_layer.weight_g.data.fill_(1)

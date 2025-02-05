@@ -70,7 +70,7 @@ class DINOLoss(nn.Module):
     #     total_loss -= loss1 + loss2
     #     return total_loss
 
-    def forward(self, s2, t1_centered, weights, keep_mask=None):
+    def forward(self, s1, s2, t1_centered, t2_centered, weights, keep_mask=None):
         """
         Cross-entropy between softmax outputs of the teacher and student networks.
         """
@@ -78,14 +78,12 @@ class DINOLoss(nn.Module):
             weights = weights * keep_mask
 
         total_loss = 0
-        # lsm1 = F.log_softmax(s1 / self.student_temp, dim=-1)
+        lsm1 = F.log_softmax(s1 / self.student_temp, dim=-1)
         lsm2 = F.log_softmax(s2 / self.student_temp, dim=-1)
         loss1 = torch.sum(t1_centered * lsm2, dim=-1)
-        # loss2 = torch.sum(t2_centered * lsm1, dim=-1)
-        # loss1 = (loss1 * keep_mask).sum() / keep_mask.sum()
-        # loss2 = (loss2 * keep_mask).sum() / keep_mask.sum()
-        # total_loss -= loss1 + loss2
+        loss2 = torch.sum(t2_centered * lsm1, dim=-1)
         total_loss -= (loss1 * weights).sum() / weights.sum()
+        total_loss -= (loss2 * weights).sum() / weights.sum()
         return total_loss
 
     @torch.no_grad()
