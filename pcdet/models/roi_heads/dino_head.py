@@ -22,7 +22,7 @@ class DINOHead(nn.Module):
         self.last_layer.weight_g.data.fill_(1)
         if model_cfg.get('NORM_LAST_LAYER', False):
             self.last_layer.weight_g.requires_grad = False
-        # self.mask_token = nn.Parameter(torch.randn(1, 128))  # (1, C)
+        self.mask_token = nn.Parameter(torch.randn(1, 128))  # (1, C)
         self.init_weights(weight_init='xavier')
 
     def init_weights(self, weight_init='xavier'):
@@ -50,43 +50,14 @@ class DINOHead(nn.Module):
     #         if isinstance(m, nn.Linear) and m.bias is not None:
     #             nn.init.constant_(m.bias, 0)
 
-    def get_masked_feats(self, batch_dict, crop_size=4):
-        pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
-        grid_size = self.cfgs.ROI_GRID_POOL.GRID_SIZE
-        batch_size_rcnn = pooled_features.shape[0]
-        pooled_features = pooled_features.permute(0, 2, 1). \
-            contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
-
-        if crop_size and crop_size < grid_size:
-            # Random Sub-Grid Crop
-            start_x = random.randint(0, grid_size - crop_size)
-            start_y = random.randint(0, grid_size - crop_size)
-            start_z = random.randint(0, grid_size - crop_size)
-
-            cropped_features = pooled_features[
-                               :,  # Keep batch
-                               :,  # Keep feature dimension
-                               start_x:start_x + crop_size,
-                               start_y:start_y + crop_size,
-                               start_z:start_z + crop_size
-                               ]  # (BxN, C, crop_size, crop_size, crop_size)
-
-            # TODO(farzad): requires clone()?
-            padded_features = self.mask_token.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(pooled_features).clone()  # (BxN, C, 6, 6, 6)
-
-            padded_features[:, :,
-            start_x:start_x + crop_size,
-            start_y:start_y + crop_size,
-            start_z:start_z + crop_size
-            ] = cropped_features
-
-            pooled_features = padded_features  # (BxN, C, 6, 6, 6)
-
-        pooled_features_flat = pooled_features.view(batch_size_rcnn, -1, 1)  # (BxN, Cx6x6x6, 1)
-        shared_features = self.shared_fc_layer(pooled_features_flat).squeeze(-1)  # (BxN, D)
-        shared_features = F.normalize(shared_features, p=2, dim=-1)
-        proj_feats = self.projector(shared_features)
-        return proj_feats
+    def get_masked_feats(self, gpoint_feats):
+        # grid_features (BxN, C, 6, 6, 6)
+        grid_size = gpoint_feats.size(2)
+        mask = torch.rand(grid_size, grid_size, grid_size) > 0.5
+        mask = mask.unsqueeze(0).unsqueeze(0).to(gpoint_feats.device)
+        embedding_expanded = self.mask_token.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(gpoint_feats)
+        masked_features = gpoint_feats * mask + embedding_expanded * (~mask)
+        return masked_features
 
     def get_cls_token(self, grid_feats):
         grid_feats = self.mlp(grid_feats)

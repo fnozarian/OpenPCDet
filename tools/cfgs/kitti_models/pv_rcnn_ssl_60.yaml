@@ -283,8 +283,9 @@ MODEL:
         NAME: DINOHead
         ENABLE: True
         OUT_DIM: 64
-        INPUT: ROI #PL
+        INPUT: PL # ROI
         NORM_LAST_LAYER: True
+        MASK_GPOINTS: False
         MLP:
             nlayers: 3
             in_dim: 256

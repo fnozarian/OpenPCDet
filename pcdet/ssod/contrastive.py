@@ -46,6 +46,8 @@ class Contrastive(nn.Module):
         if cfgs.MODEL.DINO_HEAD.get('ENABLE', False):
             self.dino_loss = DINOLoss(cfgs.MODEL.DINO_HEAD)
 
+        self.mask_gpoint = self.cfgs.MODEL.DINO_HEAD.get('MASK_GPOINTS', False)
+
     @torch.no_grad()
     def _forward_test_teacher(self, batch_dict):
         # self.pv_rcnn_ema.eval()  # https://github.com/yezhen17/3DIoUMatch-PVRCNN/issues/6
@@ -96,7 +98,7 @@ class Contrastive(nn.Module):
                 new_dict[k] = batch_dict[k].clone()
         return new_dict
 
-    def get_rois_cls_token(self, batch_dict, rois, model='teacher', full_forward_pass=False):
+    def get_rois_cls_token(self, batch_dict, rois, model='teacher', full_forward_pass=False, apply_mask=False):
         rois = rois.clone().detach()[..., :7]  # remove the 8th column (cls) if exists
         if full_forward_pass:
             input_keys = ['points', 'voxels', 'voxel_coords', 'voxel_num_points', 'batch_size']
@@ -121,6 +123,10 @@ class Contrastive(nn.Module):
             gpoint_feats = self.student.roi_head.roi_grid_pool(batch_dict_tmp, use_point_cls_score=False)  # (BxN, 6x6x6, C)
             B_N = gpoint_feats.shape[0]
             gpoint_feats = gpoint_feats.permute(0, 2, 1).contiguous().view(B_N, -1, 6, 6, 6)  # (BxN, C, 6, 6, 6)
+
+            if apply_mask:
+                gpoint_feats = self.student.dino_head.get_masked_feats(gpoint_feats)
+
             shared_features = self.student.roi_head.shared_fc_layer(gpoint_feats.view(B_N, -1, 1))
             batch_feats = self.student.dino_head.get_cls_token(shared_features)
 
@@ -187,8 +193,8 @@ class Contrastive(nn.Module):
 
                 t2 = self.get_rois_cls_token(batch_dict_sa_ulb, sa_rois, full_forward_pass=True)
                 t1 = self.get_rois_cls_token(batch_dict_wa_ulb, wa_rois)
-            s2 = self.get_rois_cls_token(batch_dict_sa_ulb, sa_rois, model='student')
-            s1 = self.get_rois_cls_token(batch_dict_wa_ulb, wa_rois, model='student', full_forward_pass=True)
+            s2 = self.get_rois_cls_token(batch_dict_sa_ulb, sa_rois, model='student', apply_mask=self.mask_gpoint)
+            s1 = self.get_rois_cls_token(batch_dict_wa_ulb, wa_rois, model='student', full_forward_pass=True, apply_mask=self.mask_gpoint)
             teacher_output = torch.cat([t1, t2], dim=0).view(-1, t1.shape[-1])  # (BxN, C) N=128
             t1_centered, t2_centered = self.dino_loss.softmax_center_teacher(teacher_output).chunk(2)
             self.dino_loss.update_center(teacher_output, keep_mask.repeat(2))
