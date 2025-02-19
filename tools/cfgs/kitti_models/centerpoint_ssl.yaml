@@ -1,0 +1,202 @@
+CLASS_NAMES: ['Car', 'Pedestrian', 'Cyclist']
+
+DATA_CONFIG:
+    _BASE_CONFIG_: cfgs/dataset_configs/kitti_dataset_ssl.yaml
+    TEACHER_AUGMENTOR:
+        DISABLE_AUG_LIST: [ 'random_world_scaling' ]
+        AUG_CONFIG_LIST:
+            - NAME: random_world_scaling
+              WORLD_SCALE_RANGE: [ 0.95, 1.05 ]
+
+    STUDENT_AUGMENTOR:
+        DISABLE_AUG_LIST: [ 'placeholder' ]
+        AUG_CONFIG_LIST:
+            - NAME: gt_sampling
+              USE_ROAD_PLANE: True
+              DB_INFO_PATH:
+                  - kitti_dbinfos_train.pkl
+              PREPARE: {
+                  filter_by_min_points: [ 'Car:5', 'Pedestrian:5', 'Cyclist:5' ],
+                  filter_by_difficulty: [ -1 ],
+              }
+
+              SAMPLE_GROUPS: [ 'Car:15','Pedestrian:10', 'Cyclist:10' ]
+              NUM_POINT_FEATURES: 4
+              DATABASE_WITH_FAKELIDAR: False
+              REMOVE_EXTRA_WIDTH: [ 0.0, 0.0, 0.0 ]
+              LIMIT_WHOLE_SCENE: False
+
+            - NAME: random_world_flip
+              ALONG_AXIS_LIST: [ 'x' ]  # Previously it was ['x']. Later Add `y` to the list.
+
+            - NAME: random_world_rotation
+              WORLD_ROT_ANGLE: [ -0.78539816, 0.78539816 ]
+
+            - NAME: random_world_scaling
+              WORLD_SCALE_RANGE: [ 0.95, 1.05 ]
+
+MODEL:
+    NAME: CenterPoint
+
+    VFE:
+        NAME: MeanVFE
+
+    BACKBONE_3D:
+        NAME: VoxelResBackBone8x
+
+    MAP_TO_BEV:
+        NAME: HeightCompression
+        NUM_BEV_FEATURES: 256
+
+    BACKBONE_2D:
+        NAME: BaseBEVBackbone
+
+        LAYER_NUMS: [5]
+        LAYER_STRIDES: [1]
+        NUM_FILTERS: [128]
+        UPSAMPLE_STRIDES: [2]
+        NUM_UPSAMPLE_FILTERS: [256]
+
+    DENSE_HEAD:
+        NAME: CenterHead
+        CLASS_AGNOSTIC: False
+
+        CLASS_NAMES_EACH_HEAD: [
+            [ 'Car', 'Pedestrian', 'Cyclist' ]
+        ]
+
+        SHARED_CONV_CHANNEL: 64
+        USE_BIAS_BEFORE_NORM: True
+        NUM_HM_CONV: 2 #  heatmap
+        SEPARATE_HEAD_CFG:
+            HEAD_ORDER: ['center', 'center_z', 'dim', 'rot']
+            HEAD_DICT: {
+                'center': {'out_channels': 2, 'num_conv': 2}, # offset
+                'center_z': {'out_channels': 1, 'num_conv': 2},
+                'dim': {'out_channels': 3, 'num_conv': 2},
+                'rot': {'out_channels': 2, 'num_conv': 2},
+            }
+
+        TARGET_ASSIGNER_CONFIG:
+            FEATURE_MAP_STRIDE: 4
+            NUM_MAX_OBJS: 500
+            GAUSSIAN_OVERLAP: 0.1
+            MIN_RADIUS: 2
+
+        LOSS_CONFIG:
+            LOSS_WEIGHTS: {
+                'cls_weight': 1.0,
+                'loc_weight': 2.0,
+                'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+            }
+        POST_PROCESSING:
+            SCORE_THRESH: 0.7
+            POST_CENTER_LIMIT_RANGE: [-75.2, -75.2, -2, 75.2, 75.2, 4]
+            MAX_OBJ_PER_SAMPLE: 500
+            NMS_CONFIG:
+                NMS_TYPE: nms_gpu
+                NMS_THRESH: 0.1
+                NMS_PRE_MAXSIZE: 4096
+                NMS_POST_MAXSIZE: 500
+
+    DINO_HEAD:
+        NAME: DINOHead
+        ENABLE: True
+        OUT_DIM: 64
+        INPUT: PL # ROI
+        NORM_LAST_LAYER: True
+        MASK_GPOINTS: False
+        MLP:
+            nlayers: 3
+            in_dim: 256
+            bottleneck_dim: 256
+            hidden_dim: 256
+            use_bn: False
+            bias: True
+        LOSS_CONFIG:
+            LOSS_WEIGHTS: {
+                'dino_loss_weight': 1.0,
+            }
+            TEACHER_TEMP: 0.04
+            STUDENT_TEMP: 0.1
+            CENTER_MOMENTUM: 0.8
+
+    POST_PROCESSING:
+        RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
+        SCORE_THRESH: 0.1
+        OUTPUT_RAW_SCORE: False
+
+        EVAL_METRIC: kitti
+
+        NMS_CONFIG:
+            MULTI_CLASSES_NMS: False
+            NMS_TYPE: nms_gpu
+            NMS_THRESH: 0.01
+            NMS_PRE_MAXSIZE: 4096
+            NMS_POST_MAXSIZE: 500
+
+    THRESH: [0.5, 0.25, 0.25]  # Backward compatibility: Moved to ADAPTIVE_THRESHOLDING.
+    SEM_THRESH: [0.4, 0.4, 0.4]  # Backward compatibility: Moved to ADAPTIVE_THRESHOLDING.
+    RPN_CLS_LOSS_ULB: False  # 3DIoUMatch: UNLABELED_SUPERVISE_CLS: False
+    RPN_REG_LOSS_ULB: True  # 3DIoUMatch: UNLABELED_SUPERVISE_REG: True
+    RCNN_CLS_LOSS_ULB: False  # 3DIoUMatch: UNLABELED_SUPERVISE_OBJ: False
+    RCNN_REG_LOSS_ULB: True  # 3DIoUMatch: UNLABELED_SUPERVISE_REFINE: True
+
+    LABELED_WEIGHT: 1.0
+    UNLABELED_WEIGHT: 1.0
+    SUPERVISE_MODE: 0
+    NO_NMS: False
+    EMA_ALPHA: 0.999
+    EMA_UPDATE_INTERVAL: 1
+
+OPTIMIZATION:
+    PRETRAIN:
+        BATCH_SIZE_PER_GPU: 16
+        NUM_EPOCHS: 80
+        REPEAT: 10
+        OPTIMIZER: adam_onecycle
+        LR: 0.003
+        WEIGHT_DECAY: 0.01
+        MOMENTUM: 0.9
+        MOMS: [0.95, 0.85]
+        PCT_START: 0.4
+        DIV_FACTOR: 10
+        DECAY_STEP_LIST: [35, 45]
+        LR_DECAY: 0.1
+        LR_CLIP: 0.0000001
+        LR_WARMUP: False
+        WARMUP_EPOCH: 1
+        GRAD_NORM_CLIP: 10
+
+    SEMI_SUP_LEARNING:
+        NAME: Contrastive  # 'SESS','Pseudo-Label','3DIoUMatch','SE_SSD','Contrastive'
+        LD_BATCH_SIZE_PER_GPU: 6
+        UD_BATCH_SIZE_PER_GPU: 6
+        CONF_THRESH: [0.5, 0.25, 0.25]
+        SEM_THRESH: [0.4, 0.4, 0.4]
+        CAT_LBL_ULB: False
+        NUM_EPOCHS: 60
+        REPEAT: 5
+        TEACHER:
+            NUM_ITERS_PER_UPDATE: 1
+            EMA_EPOCH: [15, 20]
+            RAMPUP_EMA_MOMENTUM: 0.99
+            EMA_MOMENTUM: 0.999
+
+        STUDENT:
+            OPTIMIZER: adam_onecycle
+            LR: 0.01  # previously 0.01
+            WEIGHT_DECAY: 0.01
+            MOMENTUM: 0.9
+            MOMS: [0.95, 0.85]
+            PCT_START: 0.4
+            DIV_FACTOR: 10
+            DECAY_STEP_LIST: [16, 24]  # previously [16, 24]
+            LR_DECAY: 0.1
+            LR_CLIP: 0.0000001
+            LR_WARMUP: False
+            WARMUP_EPOCH: 1  # previously 1
+            GRAD_NORM_CLIP: 10
+
+    TEST:
+        BATCH_SIZE_PER_GPU: 8

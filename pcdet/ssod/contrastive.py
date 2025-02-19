@@ -41,7 +41,7 @@ class Contrastive(nn.Module):
         self.unlabeled_weight = cfgs.MODEL.UNLABELED_WEIGHT
         self.cfgs = cfgs
 
-        self.cls_weights = torch.tensor(model_cfgs['ROI_HEAD']['CLS_WEIGHT'])
+        self.cls_weights = torch.tensor(model_cfgs.DINO_HEAD.LOSS_CONFIG.CLS_WEIGHT)
 
         if cfgs.MODEL.DINO_HEAD.get('ENABLE', False):
             self.dino_loss = DINOLoss(cfgs.MODEL.DINO_HEAD)

@@ -196,7 +196,7 @@ MODEL:
         ENABLE_ULB_CLS_DIST_LOSS: False
         ENABLE_PROTOTYPING: False
         TEMPERATURE: 0.1
-        CLS_WEIGHT: [1.0, 4.0, 4.0]
+
         ENABLE_PROTO_CONTRASTIVE_LOSS: False
         ENABLE_LPCONT_LOSS: False
         PROTO_CONTRASTIVE_LOSS_WEIGHT: 1.0
@@ -294,6 +294,7 @@ MODEL:
             use_bn: False
             bias: True
         LOSS_CONFIG:
+            CLS_WEIGHT: [1.0, 4.0, 4.0]
             LOSS_WEIGHTS: {
                 'dino_loss_weight': 1.0,
             }
