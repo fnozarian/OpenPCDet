@@ -265,7 +265,7 @@ class SSLDataBaseSampler(object):
                 data_dict = self.add_sampled_boxes_to_scene(data_dict, sampled_gt_boxes, total_valid_sampled_dict)
             data_dict.pop('gt_boxes_mask')
 
-        else:
+        # else:
             # sampled_gt_boxes = []
             # total_valid_sampled_dict = []
             # for class_name, sample_group in self.sample_groups.items():
@@ -283,5 +283,5 @@ class SSLDataBaseSampler(object):
             # sampled_gt_boxes = np.concatenate(sampled_gt_boxes, axis=0)
             # if total_valid_sampled_dict.__len__() > 0:
             #     data_dict = self.add_sampled_boxes_to_scene_wo_gt(data_dict, sampled_gt_boxes, total_valid_sampled_dict)
-            pass
+
         return data_dict

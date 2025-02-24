@@ -399,7 +399,8 @@ class KittiUnlabeledDataset(KittiSemiDataset):
 
             input_dict.update({
                 'gt_names': gt_names,
-                'gt_boxes': gt_boxes_lidar
+                'gt_boxes': gt_boxes_lidar,
+                'ulb': True
             })
             if "gt_boxes2d" in get_item_list:
                 input_dict['gt_boxes2d'] = annos["bbox"]
