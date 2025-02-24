@@ -178,38 +178,55 @@ class Contrastive(nn.Module):
             with torch.no_grad():
                 if self.cfgs.MODEL.DINO_HEAD.INPUT == 'ROI':
                     sa_rois = batch_dict_sa_ulb['rois']
-                    sa_roi_labels = batch_dict_sa_ulb['roi_labels'].long().view(-1) - 1
+                    roi_labels = batch_dict_sa_ulb['roi_labels'].long() - 1
                     keep_mask = self.mask_dense_rois(batch_dict_sa_ulb['points'], sa_rois).view(-1).float()
                     wa_rois = transform_aug(sa_rois, batch_dict_sa_ulb, batch_dict_wa_ulb)
                 elif self.cfgs.MODEL.DINO_HEAD.INPUT == 'PL':
                     sa_rois = batch_dict_sa_ulb['gt_boxes'][..., :7]
-                    sa_roi_labels = pls[..., -1].long().view(-1) - 1  # 0-based
+                    roi_labels = pls[..., -1].long() - 1  # 0-based
                     wa_rois = pls[..., :7]
                     keep_mask = torch.logical_not(torch.eq(wa_rois, 0).all(dim=-1)).view(-1).float()
-
-                cls_weights = self.cls_weights.to(sa_roi_labels.device)[sa_roi_labels].view(-1)
+                elif self.cfgs.MODEL.DINO_HEAD.INPUT == 'GT':
+                    wa_rois = batch_dict_wa_ulb['gt_boxes'][..., :7]
+                    roi_labels = batch_dict_wa_ulb['gt_boxes'][..., -1].long() - 1
+                    sa_rois = transform_aug(wa_rois, batch_dict_wa_ulb, batch_dict_sa_ulb)
+                    keep_mask = torch.logical_not(torch.eq(wa_rois, 0).all(dim=-1)).view(-1).float()
+                cls_weights = self.cls_weights.to(roi_labels.device)[roi_labels.view(-1)].view(-1)
                 avg_keep_rois = keep_mask.sum() / sa_rois.shape[0]
                 tb_dict.update({'avg_keep_rois': avg_keep_rois.item()})
 
-                t2 = self.get_rois_cls_token(batch_dict_sa_ulb, sa_rois, full_forward_pass=True)
+                # t2 = self.get_rois_cls_token(batch_dict_sa_ulb, sa_rois, full_forward_pass=True)
                 t1 = self.get_rois_cls_token(batch_dict_wa_ulb, wa_rois)
             s2 = self.get_rois_cls_token(batch_dict_sa_ulb, sa_rois, model='student', apply_mask=self.mask_gpoint)
-            s1 = self.get_rois_cls_token(batch_dict_wa_ulb, wa_rois, model='student', full_forward_pass=True, apply_mask=self.mask_gpoint)
-            teacher_output = torch.cat([t1, t2], dim=0).view(-1, t1.shape[-1])  # (BxN, C) N=128
-            t1_centered, t2_centered = self.dino_loss.softmax_center_teacher(teacher_output).chunk(2)
-            self.dino_loss.update_center(teacher_output, keep_mask.repeat(2))
-            dino_loss = self.dino_loss.forward(s1, s2, t1_centered, t2_centered, cls_weights, keep_mask)
+            # s1 = self.get_rois_cls_token(batch_dict_wa_ulb, wa_rois, model='student', full_forward_pass=True, apply_mask=self.mask_gpoint)
+            # teacher_output = torch.cat([t1, t2], dim=0).view(-1, t1.shape[-1])  # (BxN, C) N=128
+            # t1_centered, t2_centered = self.dino_loss.softmax_center_teacher(teacher_output).chunk(2)
+            t1_centered = self.dino_loss.softmax_center_teacher(t1)
+            # self.dino_loss.update_center(teacher_output, keep_mask.repeat(2))
+            self.dino_loss.update_center(t1, keep_mask)
+            # dino_loss = self.dino_loss.forward(s1, s2, t1_centered, t2_centered, cls_weights, keep_mask)
+            dino_loss = self.dino_loss.forward(s2, t1_centered, cls_weights, keep_mask)
             tb_dict.update({'dino_loss_unlabeled': dino_loss.item()})
             loss += dino_loss * self.cfgs.MODEL.DINO_HEAD.LOSS_CONFIG.LOSS_WEIGHTS.get('dino_loss_weight', 1.0)
 
+            # bs = batch_dict_wa_ulb['batch_size']
+            # for i in range(bs):
+            #     points = batch_dict_sa_ulb['points'][..., 1:4][batch_dict_sa_ulb['points'][:, 0] == i]
+            #     gt_boxes = sa_rois[i].view(-1, 7)
+            #     gt_labels = roi_labels[i].view(-1)
+            #     kmask = keep_mask.chunk(bs)[i].view(-1)
+            #     gt_boxes = gt_boxes[kmask == 1]
+            #     gt_labels = gt_labels[kmask == 1]
+            #     self.vis(points, gt_boxes, gt_labels)
+
             kl_div = F.kl_div(F.log_softmax(s2 / self.dino_loss.student_temp, dim=-1), t1_centered, reduction='batchmean')
             tb_dict.update({'kl_div_t1_s2': kl_div.mean().item()})
-            kl_div2 = F.kl_div(F.log_softmax(s1 / self.dino_loss.student_temp, dim=-1), t2_centered, reduction='batchmean')
-            tb_dict.update({'kl_div_t1_s1': kl_div2.mean().item()})
             entropy = -torch.sum(t1_centered * torch.log(t1_centered + 1e-9), dim=-1)
             tb_dict.update({'entropy_t1': entropy.mean().item()})
-            entropy2 = -torch.sum(t2_centered * torch.log(t2_centered + 1e-9), dim=-1)
-            tb_dict.update({'entropy_t2': entropy2.mean().item()})
+            # kl_div2 = F.kl_div(F.log_softmax(s1 / self.dino_loss.student_temp, dim=-1), t2_centered, reduction='batchmean')
+            # tb_dict.update({'kl_div_t1_s1': kl_div2.mean().item()})
+            # entropy2 = -torch.sum(t2_centered * torch.log(t2_centered + 1e-9), dim=-1)
+            # tb_dict.update({'entropy_t2': entropy2.mean().item()})
 
             # t1_dist = torch.sum(t1_centered * keep_mask.unsqueeze(-1), dim=0) / keep_mask.sum()
             # s2_dist = torch.sum(torch.softmax(s2 / self.dino_loss.student_temp, dim=-1) * keep_mask.unsqueeze(-1), dim=0) / keep_mask.sum()

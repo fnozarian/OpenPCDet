@@ -283,7 +283,7 @@ MODEL:
         NAME: DINOHead
         ENABLE: True
         OUT_DIM: 64
-        INPUT: PL # ROI
+        INPUT: GT # ROI
         NORM_LAST_LAYER: True
         MASK_GPOINTS: False
         MLP:
@@ -298,9 +298,9 @@ MODEL:
             LOSS_WEIGHTS: {
                 'dino_loss_weight': 1.0,
             }
-            TEACHER_TEMP: 0.04
-            STUDENT_TEMP: 0.1
-            CENTER_MOMENTUM: 0.8
+        TEACHER_TEMP: 0.04
+        STUDENT_TEMP: 0.1
+        CENTER_MOMENTUM: 0.8
 
     POST_PROCESSING:
         RECALL_THRESH_LIST: [0.3, 0.5, 0.7]

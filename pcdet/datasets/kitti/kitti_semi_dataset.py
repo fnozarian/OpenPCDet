@@ -385,7 +385,34 @@ class KittiUnlabeledDataset(KittiSemiDataset):
             'frame_id': sample_idx,
             'calib': calib,
         }
-                
+
+        if 'annos' in info:
+            annos = info['annos']
+            annos = common_utils.drop_info_with_name(annos, name='DontCare')
+            loc, dims, rots = annos['location'], annos['dimensions'], annos['rotation_y']
+            gt_names = annos['name']
+            gt_boxes_camera = np.concatenate([loc, dims, rots[..., np.newaxis]], axis=1).astype(np.float32)
+            gt_boxes_lidar = box_utils.boxes3d_kitti_camera_to_lidar(gt_boxes_camera, calib)
+
+            if self.dataset_cfg.get('SHIFT_COOR', None):
+                gt_boxes_lidar[:, 0:3] += self.dataset_cfg.SHIFT_COOR
+
+            input_dict.update({
+                'gt_names': gt_names,
+                'gt_boxes': gt_boxes_lidar
+            })
+            if "gt_boxes2d" in get_item_list:
+                input_dict['gt_boxes2d'] = annos["bbox"]
+            if self.dataset_cfg.get('REMOVE_ORIGIN_GTS', None) and self.training:
+                input_dict['points'] = box_utils.remove_points_in_boxes3d(input_dict['points'], input_dict['gt_boxes'])
+                mask = np.zeros(gt_boxes_lidar.shape[0], dtype=np.bool_)
+                input_dict['gt_boxes'] = input_dict['gt_boxes'][mask]
+                input_dict['gt_names'] = input_dict['gt_names'][mask]
+
+            road_plane = self.get_road_plane(sample_idx)
+            if road_plane is not None:
+                input_dict['road_plane'] = road_plane
+
         if "points" in get_item_list:
             points = self.get_lidar(sample_idx)
             
