@@ -3,11 +3,10 @@ from pcdet.ops.roiaware_pool3d.roiaware_pool3d_utils import points_in_boxes_gpu
 from pcdet.utils.loss_utils import DINOLoss
 from train_utils.semi_utils import transform_aug, load_data_to_gpu
 from tools.visual_utils import open3d_vis_utils as V
-from visual_utils.open3d_vis_utils import Open3DRenderer
+# from visual_utils.open3d_vis_utils import Open3DRenderer
 from pcdet.models import build_network
 import copy
 from torch import nn
-from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
 import numpy as np
 from torch.nn import functional as F
@@ -114,24 +113,26 @@ class Contrastive(nn.Module):
             batch_dict_tmp['rois'] = rois  # replace with the transformed rois
             with torch.no_grad():
                 gpoint_feats = self.teacher.roi_head.roi_grid_pool(batch_dict_tmp, use_point_cls_score=False)  # (BxN, 6x6x6, C)
-                B_N = gpoint_feats.shape[0]
-                gpoint_feats = gpoint_feats.permute(0, 2, 1).contiguous().view(B_N, -1, 6, 6, 6)  # (BxN, C, 6, 6, 6)
-                shared_features = self.teacher.roi_head.shared_fc_layer(gpoint_feats.view(B_N, -1, 1))
-                batch_feats = self.teacher.dino_head.get_cls_token(shared_features)
+                # B_N = gpoint_feats.shape[0]
+                # gpoint_feats = gpoint_feats.permute(0, 2, 1).contiguous().view(B_N, -1, 6, 6, 6)  # (BxN, C, 6, 6, 6)
+                # shared_features = self.teacher.roi_head.shared_fc_layer(gpoint_feats.view(B_N, -1, 1))
+                # batch_feats = self.teacher.dino_head.get_cls_token(shared_features)
+                batch_feats = self.teacher.dino_head.get_cls_token(gpoint_feats)
         else:
             if full_forward_pass:
                 batch_dict_tmp['gt_boxes'] = torch.zeros((rois.shape[0], 1, 8), device=rois.device)  # dummy
                 self._forward_student(batch_dict_tmp)
             batch_dict_tmp['rois'] = rois  # replace with the transformed rois
             gpoint_feats = self.student.roi_head.roi_grid_pool(batch_dict_tmp, use_point_cls_score=False)  # (BxN, 6x6x6, C)
-            B_N = gpoint_feats.shape[0]
-            gpoint_feats = gpoint_feats.permute(0, 2, 1).contiguous().view(B_N, -1, 6, 6, 6)  # (BxN, C, 6, 6, 6)
+            # B_N = gpoint_feats.shape[0]
+            # gpoint_feats = gpoint_feats.permute(0, 2, 1).contiguous().view(B_N, -1, 6, 6, 6)  # (BxN, C, 6, 6, 6)
 
             if apply_mask:
                 gpoint_feats = self.student.dino_head.get_masked_feats(gpoint_feats)
 
-            shared_features = self.student.roi_head.shared_fc_layer(gpoint_feats.view(B_N, -1, 1))
-            batch_feats = self.student.dino_head.get_cls_token(shared_features)
+            # shared_features = self.student.roi_head.shared_fc_layer(gpoint_feats.view(B_N, -1, 1))
+            # batch_feats = self.student.dino_head.get_cls_token(shared_features)
+            batch_feats = self.student.dino_head.get_cls_token(gpoint_feats)
 
         return batch_feats  # (BxN, out_dim)
 
@@ -224,6 +225,8 @@ class Contrastive(nn.Module):
             # gt_labels = gt_labels[kmask == 1].detach().cpu().numpy()
             # tb_dict['fig_scene'] = self.renderer.render_scene_tb(points, gt_boxes, gt_labels)
 
+            s2 = s2[keep_mask.bool()].detach()
+            t1_centered = t1_centered[keep_mask.bool()].detach()
             kl_div = F.kl_div(F.log_softmax(s2 / self.dino_loss.student_temp, dim=-1), t1_centered, reduction='batchmean')
             tb_dict.update({'kl_div_t1_s2': kl_div.mean().item()})
             entropy = -torch.sum(t1_centered * torch.log(t1_centered + 1e-9), dim=-1)

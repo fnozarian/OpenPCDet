@@ -226,11 +226,6 @@ MODEL:
             POOL_RADIUS: [0.8, 1.6]
             NSAMPLE: [16, 16]
             POOL_METHOD: max_pool
-        GRID_TRANSFORMER_ENCODER:
-            FEATURE_DIM: 128
-            NUM_HEADS: 8
-            NUM_LAYERS: 3
-            HIDDEN_DIM: 1024
         TARGET_CONFIG:
             BOX_CODER: ResidualCoder
             ROI_PER_IMAGE: 128
@@ -280,9 +275,9 @@ MODEL:
                 SCALE: [0.25, 0.25, 0.25]
 
     DINO_HEAD:
-        NAME: DINOHead
+        NAME: DINOHeadWithGPointsFormer
         ENABLE: True
-        OUT_DIM: 64
+        OUT_DIM: 128
         INPUT: GT # ROI
         NORM_LAST_LAYER: True
         MASK_GPOINTS: False
@@ -293,6 +288,11 @@ MODEL:
             hidden_dim: 256
             use_bn: False
             bias: True
+        GPOINTS_FORMER:
+            FEATURE_DIM: 128
+            NUM_HEADS: 8
+            NUM_LAYERS: 2
+            FF_DIM: 1024
         LOSS_CONFIG:
             CLS_WEIGHT: [1.0, 4.0, 4.0]
             LOSS_WEIGHTS: {

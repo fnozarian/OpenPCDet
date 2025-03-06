@@ -3,8 +3,9 @@ import torch
 from torch.nn import BatchNorm1d
 import random
 from torch.nn.utils import weight_norm
-from torch.nn.init import trunc_normal_
 from torch.functional import F
+from visual_utils.open3d_vis_utils import Open3DRenderer
+import numpy as np
 
 
 class DINOHead(nn.Module):
@@ -15,9 +16,7 @@ class DINOHead(nn.Module):
         bottleneck_dim = mlp_params.get('bottleneck_dim', 128)
         in_dim = model_cfg.get('in_dim', 256)
         out_dim = model_cfg.get('out_dim', 64)
-        # self.mlp = self._build_mlp(**mlp_params)
         self.mlp = self.make_fc_layers(input_channels=in_dim, output_channels=256, fc_list=[256])
-        # self.apply(self._init_weights)
         self.last_layer = weight_norm(nn.Linear(bottleneck_dim, out_dim, bias=False))
         self.last_layer.weight_g.data.fill_(1)
         if model_cfg.get('NORM_LAST_LAYER', False):
@@ -43,12 +42,6 @@ class DINOHead(nn.Module):
                     init_func(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-
-    # def _init_weights(self, m):
-    #     if isinstance(m, nn.Linear):
-    #         trunc_normal_(m.weight, std=0.02)
-    #         if isinstance(m, nn.Linear) and m.bias is not None:
-    #             nn.init.constant_(m.bias, 0)
 
     def get_masked_feats(self, gpoint_feats):
         # grid_features (BxN, C, 6, 6, 6)
@@ -87,128 +80,127 @@ class DINOHead(nn.Module):
         fc_layers = nn.Sequential(*fc_layers)
         return fc_layers
 
-    def _build_mlp(self, nlayers, in_dim, bottleneck_dim, hidden_dim=None, use_bn=False, bias=True):
-        if nlayers == 1:
-            return nn.Linear(in_dim, bottleneck_dim, bias=bias)
-        else:
-            layers = [nn.Linear(in_dim, hidden_dim, bias=bias)]
-            if use_bn:
-                layers.append(nn.BatchNorm1d(hidden_dim))
-            layers.append(nn.ReLU())
-            for _ in range(nlayers - 2):
-                layers.append(nn.Linear(hidden_dim, hidden_dim, bias=bias))
-                if use_bn:
-                    layers.append(nn.BatchNorm1d(hidden_dim))
-                layers.append(nn.ReLU())
-            layers.append(nn.Linear(hidden_dim, bottleneck_dim, bias=bias))
-            return nn.Sequential(*layers)
 
-
-class DINOHeadWithGridTransformer(DINOHead):
-    def __init__(self, input_channels, model_cfg, num_class=1, **kwargs):
-        super().__init__(input_channels, model_cfg, num_class=num_class, **kwargs)
-        self.grid_points_encoder = GridTransformerEncoder(
-            feature_dim=self.model_cfg.GRID_TRANSFORMER_ENCODER.FEATURE_DIM,
-            num_heads=self.model_cfg.GRID_TRANSFORMER_ENCODER.NUM_HEADS,
-            num_layers=self.model_cfg.GRID_TRANSFORMER_ENCODER.NUM_LAYERS,
-            hidden_dim=self.model_cfg.GRID_TRANSFORMER_ENCODER.HIDDEN_DIM
-        )
-        self.cls_layers = nn.Sequential(nn.Linear(256, 256),
-                                        BatchNorm1d(256),
-                                        nn.ReLU(),
-                                        nn.Linear(256, num_class))
-        self.reg_layers = nn.Sequential(nn.Linear(256, 256),
-                                        BatchNorm1d(256),
-                                        nn.ReLU(),
-                                        nn.Linear(256, self.box_coder.code_size * num_class))
-        self.print_loss_when_eval = False
-        self.init_weights(weight_init='xavier')
-
-    def forward(self, batch_dict, test_only=False):
-        nms_config = self.model_cfg.NMS_CONFIG['TRAIN' if self.training and not test_only else 'TEST']
-        targets_dict = self.proposal_layer(batch_dict, nms_config=nms_config)
-        if (self.training or self.print_loss_when_eval) and not test_only:
-            targets_dict = self.assign_targets(batch_dict)
-            batch_dict['rois'] = targets_dict['rois']
-            batch_dict['roi_labels'] = targets_dict['roi_labels']
-
-        pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
-        grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
-        batch_size_rcnn = pooled_features.shape[0]
-        pooled_features = pooled_features.permute(0, 2, 1). \
-            contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
-
-        refined_grid_features = self.grid_transformer_encoder(pooled_features)
-        shared_features = self.shared_fc_layer(refined_grid_features.contiguous().view(batch_size_rcnn, -1, 1)).squeeze(-1)
-        rcnn_cls = self.cls_layers(shared_features)
-        rcnn_reg = self.reg_layers(shared_features)
-
-        if not self.training or self.predict_boxes_when_training:
-            batch_cls_preds, batch_box_preds = self.generate_predicted_boxes(
-                batch_size=batch_dict['batch_size'], rois=batch_dict['rois'], cls_preds=rcnn_cls, box_preds=rcnn_reg
-            )
-            # note that the rpn batch_cls_preds and batch_box_preds are being overridden here by rcnn preds
-            batch_dict['batch_cls_preds'] = batch_cls_preds
-            batch_dict['batch_box_preds'] = batch_box_preds
-            batch_dict['cls_preds_normalized'] = False
-
-        if self.training or self.print_loss_when_eval:
-            targets_dict['rcnn_cls'] = rcnn_cls
-            targets_dict['rcnn_reg'] = rcnn_reg
-            self.forward_ret_dict = targets_dict
-
-    def get_grid_tokens(self, batch_dict):
-        pooled_features = self.roi_grid_pool(batch_dict)  # (BxN, 6x6x6, C)
-        grid_size = self.model_cfg.ROI_GRID_POOL.GRID_SIZE
-        batch_size_rcnn = pooled_features.shape[0]
-        pooled_features = pooled_features.permute(0, 2, 1). \
-            contiguous().view(batch_size_rcnn, -1, grid_size, grid_size, grid_size)  # (BxN, C, 6, 6, 6)
-        cls_token, grid_patches = self.grid_points_encoder(pooled_features)
-        return cls_token, grid_patches
-
-
-class GridTransformerEncoder(nn.Module):
-    def __init__(self, feature_dim, num_heads, num_layers, hidden_dim):
-        super().__init__()
-        self.flatten_dim = 6 * 6 * 6  # Flattened grid size (6x6x6 = 216)
-        self.pos_embed = nn.Parameter(torch.randn(1, self.flatten_dim + 1, feature_dim))
-        self.cls_token = nn.Parameter(torch.randn(1, 1, feature_dim))  # (1, 1, C)
-
-        self.encoder_layer = nn.TransformerEncoderLayer(
-            d_model=feature_dim,
-            nhead=num_heads,
-            dim_feedforward=hidden_dim,
-            activation="relu"
-        )
-        self.encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
-
-        nn.init.trunc_normal_(self.pos_embed, std=0.02)
-        nn.init.normal_(self.cls_token, std=1e-6)
+class DINOHeadWithGPointsFormer(DINOHead):
+    def __init__(self, model_cfg):
+        super().__init__(model_cfg)
+        self.gpoints_encoder = GridPointsFormer(model_cfg=model_cfg.GPOINTS_FORMER)
 
     def forward(self, batch_dict):
-        pooled_features = self.get_masked_patches(batch_dict)  # (B * N, C, 216)
-        B_N, C, _ = pooled_features.shape
-        pooled_features = pooled_features.permute(0, 2, 1)  # (B * N, 216, C)
-        cls_token = self.cls_token.expand(B_N, -1, -1)  # (B * N, 1, C)
-        features_with_cls = torch.cat([cls_token, pooled_features], dim=1)  # (B * N, 217, C)
-        features_with_pos = features_with_cls + self.pos_embed  # (B * N, 217, C)
-        refined_features = self.encoder(features_with_pos)  # (B * N, 217, D)
-        cls_token = refined_features[:, 0, :]  # (B * N, D)
-        refined_grid_features = refined_features[:, 1:, :]  # (B * N, 216, D)
-        refined_grid_features = refined_grid_features.permute(0, 2, 1)  # (B * N, D, 216)
-        refined_grid_features = refined_grid_features.view(B_N, C, -1)  # (B * N, D, 6x6x6)
-        return cls_token, refined_grid_features
+        return batch_dict
 
-    # TODO: Improve masking
-    def get_masked_patches(self, pooled_features, crop_size=4):
-        grid_size = self.cfgs.ROI_GRID_POOL.GRID_SIZE
-        batch_size_rcnn = pooled_features.shape[0]
-        x = random.randint(0, grid_size - crop_size)
-        y = random.randint(0, grid_size - crop_size)
-        z = random.randint(0, grid_size - crop_size)
-        cropped_features = pooled_features[:, :, x:x + crop_size, y:y + crop_size, z:z + crop_size]
-        # TODO(farzad): requires clone()?
-        padded_features = self.mask_token.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).expand_as(pooled_features).clone()
-        padded_features[:, :, x:x + crop_size, y:y + crop_size, z:z + crop_size] = cropped_features
-        pooled_features_flat = padded_features.view(batch_size_rcnn, -1, self.flatten_dim)  # (BxN, Cx6x6x6)
-        return pooled_features_flat
+    def get_cls_token(self, gpoint_feats):
+        return self.gpoints_encoder(gpoint_feats)
+
+
+class LearnablePositionalEncoder3D(nn.Module):
+    def __init__(self, grid_size=6, embed_dim=128, hidden_dim=256):
+        super().__init__()
+        self.grid_size = grid_size
+        self.embed_dim = embed_dim
+
+        # MLP to map (x, y, z) -> high-dimensional embedding
+        self.mlp = nn.Sequential(
+            nn.Linear(3, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, embed_dim)
+        )
+
+    def forward(self, local_indices):
+        """
+        Args:
+            local_indices: Tensor of shape (N, 3), containing (x, y, z) indices of grid points.
+        Returns:
+            pos_embedding: Tensor of shape (N, embed_dim)
+        """
+        # Normalize indices to range [-1, 1]
+        normalized_indices = (local_indices.float() / (self.grid_size - 1)) * 2 - 1
+
+        # Pass through MLP
+        pos_embedding = self.mlp(normalized_indices)
+        return pos_embedding
+
+
+class PositionalEncoding3D(nn.Module):
+    def __init__(self, channels, grid_size=6):
+        """
+        :param channels: The last dimension of the tensor you want to apply pos emb to.
+        """
+        super(PositionalEncoding3D, self).__init__()
+        self.orig_ch = channels
+        channels = int(np.ceil(channels / 6) * 2)
+        if channels % 2:
+            channels += 1
+        inv_freq = 1.0 / (10000 ** (torch.arange(0, channels, 2).float() / channels))
+        self.register_buffer("inv_freq", inv_freq)
+        self.register_buffer("cached_penc", None, persistent=False)
+        self.channels = channels
+        self.grid_size = grid_size
+
+    def forward(self, tensor):
+        """
+        :param tensor: A 5d tensor of size (batch_size, x, y, z, ch)
+        :return: Positional Encoding Matrix of size (batch_size, x, y, z, ch)
+        """
+        self.cached_penc = None
+
+        pos_x = torch.arange(self.grid_size, device=tensor.device, dtype=self.inv_freq.dtype)
+        pos_y = torch.arange(self.grid_size, device=tensor.device, dtype=self.inv_freq.dtype)
+        pos_z = torch.arange(self.grid_size, device=tensor.device, dtype=self.inv_freq.dtype)
+        sin_inp_x = pos_x.unsqueeze(1) * self.inv_freq.unsqueeze(0)
+        sin_inp_y = pos_y.unsqueeze(1) * self.inv_freq.unsqueeze(0)
+        sin_inp_z = pos_z.unsqueeze(1) * self.inv_freq.unsqueeze(0)
+        emb_x = self.get_emb(sin_inp_x).unsqueeze(1).unsqueeze(1)
+        emb_y = self.get_emb(sin_inp_y).unsqueeze(1)
+        emb_z = self.get_emb(sin_inp_z)
+        emb = torch.zeros((self.grid_size, self.grid_size, self.grid_size, self.channels * 3), device=tensor.device, dtype=tensor.dtype)
+        emb[:, :, :, : self.channels] = emb_x
+        emb[:, :, :, self.channels: 2 * self.channels] = emb_y
+        emb[:, :, :, 2 * self.channels:] = emb_z
+
+        self.cached_penc = emb[:, :, :, :self.orig_ch].unsqueeze(0).view(1, -1, self.orig_ch)
+        return self.cached_penc
+
+    @staticmethod
+    def get_emb(sin_cos_inp):
+        """
+        Gets a base embedding for one dimension with sin and cos intertwined
+        """
+        emb = torch.stack((sin_cos_inp.sin(), sin_cos_inp.cos()), dim=-1)
+        return torch.flatten(emb, -2, -1)
+
+
+class GridPointsFormer(nn.Module):
+    def __init__(self, model_cfg):
+        super().__init__()
+        self.model_cfg = model_cfg
+        num_heads = model_cfg.NUM_HEADS  # 8
+        num_layers = model_cfg.NUM_LAYERS  # 2
+        ff_dim = model_cfg.FF_DIM  # 1024
+        self.feature_dim = model_cfg.FEATURE_DIM  # 128
+        encoder_layer = torch.nn.TransformerEncoderLayer(
+            d_model=self.feature_dim, nhead=num_heads, dim_feedforward=ff_dim, batch_first=True
+        )
+        self.fusion_layer = nn.Linear(2 * self.feature_dim, self.feature_dim)
+        self.cls_token = nn.Parameter(torch.randn(1, 1, self.feature_dim)).cuda()
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.pos_encoder = PositionalEncoding3D(channels=self.feature_dim)
+
+        # self.renderer = Open3DRenderer()
+
+    def forward(self, gpoint_feats):
+        """
+        :param gpoint_feats: (B*num_rois, 6x6x6, C)
+        :return: (B*num_rois, 128)
+        """
+        batch_size = gpoint_feats.shape[0]
+        if self.pos_encoder.cached_penc is not None:
+            pe = self.pos_encoder.cached_penc.repeat(batch_size, 1, 1)
+        else:
+            pe = self.pos_encoder(gpoint_feats.view(-1, 6, 6, 6, self.feature_dim)).repeat(batch_size, 1, 1)
+        gpoint_feats = self.fusion_layer(torch.cat((gpoint_feats, pe), dim=-1))
+        cls_tokens = self.cls_token.expand(gpoint_feats.shape[0], -1, -1)  # (batch_size*num_rois, 1, C)
+        gpoint_feats = torch.cat((cls_tokens, gpoint_feats), dim=1)  # (batch_size*num_rois, 217, C)
+        gpoint_feats = self.encoder(gpoint_feats)  # (batch_size*num_rois, 217, C)
+        cls_token = gpoint_feats[:, 0, :]  # (batch_size*num_rois, C)
+        return cls_token
