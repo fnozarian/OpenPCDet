@@ -394,8 +394,8 @@ OPTIMIZATION:
         REPEAT: 5
         TEACHER:
             NUM_ITERS_PER_UPDATE: 1
-            EMA_EPOCH: [15, 20]
-            RAMPUP_EMA_MOMENTUM: 0.99
+            EMA_EPOCH: [0, 100]  # 3dioumatch: [0, +inf]
+            RAMPUP_EMA_MOMENTUM: 0.999  # 3dioumatch: 0.999
             EMA_MOMENTUM: 0.999
 
         STUDENT:
