@@ -10,25 +10,16 @@ All Rights Reserved 2020.
 
 #include <torch/serialize/tensor.h>
 #include <vector>
-#include <THC/THC.h>
+#include <ATen/ATen.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 #include "vector_pool_gpu.h"
 
-extern THCState *state;
+#include <torch/types.h>
+#define CHECK_CUDA(x) TORCH_CHECK(x.device().is_cuda(), #x " must be a CUDA tensor")
+#define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be a contiguous tensor")
 
-#define CHECK_CUDA(x) do { \
-  if (!x.type().is_cuda()) { \
-    fprintf(stderr, "%s must be CUDA tensor at %s:%d\n", #x, __FILE__, __LINE__); \
-    exit(-1); \
-  } \
-} while (0)
-#define CHECK_CONTIGUOUS(x) do { \
-  if (!x.is_contiguous()) { \
-    fprintf(stderr, "%s must be contiguous tensor at %s:%d\n", #x, __FILE__, __LINE__); \
-    exit(-1); \
-  } \
-} while (0)
 #define CHECK_INPUT(x) CHECK_CUDA(x);CHECK_CONTIGUOUS(x)
 
 
